@@ -1,0 +1,131 @@
+schema: archetipo/plan/v2
+spec_code: US-019
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  US-018 ha introdotto `product_bases.description_ai` e `product_embeddings` (colonna `vector(1024)`, indice HNSW, chiave `product_base_id`+`model`), oltre a `EmbeddingClient` per vettorizzare testo. Non esiste però: (a) nessuna colonna/indice full-text (`tsvector`) da nessuna parte dello schema; (b) nessun `SearchService` o layer di ricerca; (c) `product_attributes` è oggi agganciato a `product_id` (variante), non a `product_base_id`, quindi i filtri range per attributo numerico richiedono un join attraverso `products`. US-019 introduce tutto questo da zero, riusando `EmbeddingClient` così com'è per vettorizzare la query utente.
+
+  **Decisioni chiave**
+
+  1. **Colonna full-text su `product_bases`**: nuova migration che aggiunge `search_vector` di tipo `tsvector` (PostgreSQL) generato come colonna calcolata (`GENERATED ALWAYS AS (to_tsvector('italian', coalesce(title,'') || ' ' || coalesce(description_ai,''))) STORED`) con indice GIN. Su driver non-pgsql (SQLite/test suite) la colonna viene creata come `text` nullable senza generazione, seguendo lo stesso guard `$isPgsql` già usato in `create_product_embeddings_table` — il full-text reale viene validato solo nei test Postgres (pattern `VectorEmbeddingPgvectorTest`), sugli altri driver `SearchService` degrada a `LIKE` (vedi punto 5).
+
+  2. **Filtri per attributo numerico range**: dato che `product_attributes` è per-variante, il filtro range (es. potenza 20-35 kW) si applica con un `whereHas('products.attributes', ...)` da `ProductBase` — un `EXISTS` su `products JOIN product_attributes` filtrato per `key` e `value_num BETWEEN`. Nessuna modifica allo schema esistente: si accetta che il filtro sia "almeno una variante nel range", coerente con la user story (la ricerca è per prodotto-base, il range è un criterio di inclusione del gruppo).
+
+  3. **`SearchService` (`App\Services\Search\SearchService`)**, nuovo, con firma `search(string $query, array $filters = [], int $perPage = 20): LengthAwarePaginator` (o struttura equivalente con meta di raggruppamento). Pipeline:
+     - Calcola l'embedding della query con `EmbeddingClient::embed()`, **passando prima dalla cache**: `Cache::remember("search:query-embedding:" . md5($model.'|'.$query), ttl, fn () => $client->embed($query))`. Il default cache store è `redis` (confermato da `.env.example: CACHE_STORE=redis`), quindi si usa la facade `Cache` standard senza client Redis dedicato — soddisfa il criterio "cache Redis" restando sull'astrazione Laravel idiomatica.
+     - Applica i filtri strutturati (marca, famiglia, attributi range) come primo step della query per ridurre il pool **prima** del ranking (requisito esplicito), tramite query builder su `ProductBase` con eager-load selettivo.
+     - Calcola punteggio full-text (`ts_rank` su `search_vector` con `plainto_tsquery('italian', ?)`) e punteggio vettoriale (`1 - (embedding <=> ?)` come cosine similarity da `product_embeddings`), fusi con formula pesata configurabile: `0.7 * vector_score + 0.3 * fts_score`, pesi letti da `config('search.weights')` (nuova chiave, non hardcoded nel service).
+     - Query costruita con un singolo `SELECT` su Postgres che joina `product_bases`, `product_embeddings` (LEFT JOIN, gestendo prodotti-base senza embedding con punteggio vettoriale 0) e usa `search_vector` per FTS, ordinato per punteggio combinato DESC.
+     - Match per codice esatto (`codice_articolo` su `products`, variante): eseguito come query separata *prima* della fusione — se il termine di ricerca coincide esattamente (case-insensitive) con un `codice_articolo`, il prodotto-base di quella variante viene forzato in testa ai risultati (score massimo), soddisfacendo il criterio "ricerca per codice esatto restituisce il prodotto corretto in testa" anche se il matching semantico non lo classificherebbe primo.
+     - Raggruppamento: risultato finale è una collection di prodotti-base, ciascuno arricchito con `variants_count` (count di `products` figli) e `power_range` (min/max di un attributo numerico rappresentativo, es. `value_num` per `key = 'potenza'`, quando presente) calcolati con subquery aggregate, non N+1 (`withCount`, `withMin`/`withMax` via subselect su `products.attributes`).
+
+  4. **Configurazione pesi e soglie**: nuovo file `config/search.php` con `weights.vector` (default 0.7), `weights.fts` (default 0.3), `cache.ttl` (default 3600s), tutti sovrascrivibili da env (`SEARCH_WEIGHT_VECTOR`, `SEARCH_WEIGHT_FTS`, `SEARCH_QUERY_CACHE_TTL`) — evita costanti hardcoded nel service e rende testabili varianti di peso.
+
+  5. **Degrado su driver non-pgsql**: `SearchService` verifica il driver attivo; se non è `pgsql`, salta i costrutti `tsvector`/`<=>` (non disponibili) e usa un fallback `LIKE` su `title`/`description_ai` senza fusione vettoriale, così la suite di test generica (SQLite) può validare raggruppamento, filtri e ordinamento per codice esatto senza richiedere Postgres; i test di fusione/pesi/performance restano nei test Postgres-only (pattern `RequiresDatabase`/`VectorEmbeddingPgvectorTest`, skip automatico fuori Sail).
+
+  6. **Performance (p95 < 300ms su 42k prodotti-base con HNSW)**: non si introduce un nuovo indice vettoriale (HNSW già presente da US-018); si aggiunge indice GIN su `search_vector` e indici standard su `product_bases.brand_id`/`family_id`/`subfamily_id` se mancanti (verificare in migration). La verifica di performance in questa spec è un test di integrazione con seed di volume ridotto (es. 500-1000 righe) che asserisce solo che la query non degradi in complessità (no N+1, singola query principale); un vero benchmark a 42k righe è demandato a un task manuale/staging fuori dallo scope automatizzabile in CI, annotato come nota nel piano.
+
+  **Alternative scartate**: normalizzare `product_attributes` a livello di `product_base_id` (creerebbe ambiguità su varianti con attributi diversi, fuori scope); usare `pg_trgm` invece di `tsvector` per il full-text (il criterio di accettazione richiede esplicitamente `tsvector` italian).
+
+  ## Strategia di Test
+
+  - Migration `search_vector`: feature test Postgres-only (pattern `VectorEmbeddingPgvectorTest`) che verifica tipo colonna `tsvector`, presenza indice GIN, e che un `to_tsvector` popolato correttamente rifletta `title`/`description_ai`.
+  - `SearchService` — filtri strutturati: test (SQLite, generico) che crea prodotti-base con marche/famiglie/attributi diversi e verifica che i filtri marca/famiglia/range riducano correttamente il pool indipendentemente dal ranking testuale/vettoriale.
+  - `SearchService` — raggruppamento: test che verifica che risultati siano per `product_base_id` (non duplicati per variante) e che `variants_count`/`power_range` siano calcolati correttamente con più varianti sotto lo stesso base.
+  - `SearchService` — match codice esatto: test che una query uguale a un `codice_articolo` esistente restituisce quel prodotto-base in prima posizione indipendentemente dal punteggio semantico.
+  - `SearchService` — fusione pesata: test Postgres-only con embedding e `search_vector` noti che verifica che il punteggio combinato rispetti la formula pesata configurata (variando i pesi in config e verificando che l'ordine cambi di conseguenza).
+  - `SearchService` — cache embedding query: test con `Cache::spy()`/fake store che verifica che una seconda chiamata con la stessa query NON richiami `EmbeddingClient::embed()` (Http::fake + assertSentCount(1) su due invocazioni consecutive).
+  - Performance: test di integrazione Postgres-only con seed ridotto che verifica assenza di N+1 (assertion su numero di query eseguite, es. `DB::listen` o `assertQueryCount` se disponibile) e tempo di esecuzione entro una soglia larga per CI (es. < 1s su seed ridotto), con nota esplicita nel test che il p95 < 300ms su 42k righe va validato in staging.
+  - Nessuna componente UI in questa spec (SearchService backend puro, nessun controller/API esposto): non è richiesta strategia e2e.
+tasks:
+  - id: TASK-01
+    title: 'Migration: search_vector tsvector su product_bases + indice GIN'
+    description: 'Nuova migration che aggiunge a product_bases la colonna search_vector: su driver pgsql, tsvector GENERATED ALWAYS AS (to_tsvector(''italian'', coalesce(title,'''') || '' '' || coalesce(description_ai,''''))) STORED con indice GIN (search_vector); su altri driver (SQLite test), colonna text nullable senza generazione, stesso pattern del guard $isPgsql usato in create_product_embeddings_table. Verificare/aggiungere indici standard su product_bases.brand_id, family_id, subfamily_id se assenti.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: 'Test: struttura tsvector, indice GIN e popolamento search_vector'
+    description: 'Feature test Postgres-only (stesso pattern di VectorEmbeddingPgvectorTest: skip su driver non-pgsql o Postgres irraggiungibile) che verifica tipo colonna tsvector di product_bases.search_vector, presenza indice GIN sulla colonna, e che creando un ProductBase con title/description_ai valorizzati il campo search_vector generato contenga i lexeme attesi (query to_tsvector diretta).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: 'config/search.php: pesi fusione, TTL cache query embedding'
+    description: Nuovo file di configurazione config/search.php con chiavi weights.vector (default 0.7, env SEARCH_WEIGHT_VECTOR), weights.fts (default 0.3, env SEARCH_WEIGHT_FTS), cache.ttl (default 3600, env SEARCH_QUERY_CACHE_TTL). Aggiungere le variabili corrispondenti a .env.example con i default.
+    type: Impl
+    status: TODO
+  - id: TASK-04
+    title: 'SearchService: cache embedding query e match per codice esatto'
+    description: Creare App\Services\Search\SearchService con dipendenza EmbeddingClient iniettata via costruttore. Implementare metodo privato per ottenere l'embedding della query passando da Cache::remember con chiave derivata da modello+query (md5) e TTL da config('search.cache.ttl'). Implementare la ricerca per corrispondenza esatta di codice_articolo (case-insensitive) su Product, che se trovata determina il product_base_id da forzare in cima ai risultati finali.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: 'Test: cache Redis dell''embedding della query'
+    description: Feature test che, con Http::fake sulla chiamata dell'EmbeddingClient e cache store reale (array o redis se disponibile) configurato dal test, esegue SearchService::search() due volte con la stessa query e verifica con Http::assertSentCount(1) che la seconda chiamata non rigeneri l'embedding. Verifica anche che query diverse producano chiavi di cache diverse (secondo assertSentCount incrementale).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: 'SearchService: filtri strutturati (marca, famiglia, attributi range) prima del ranking'
+    description: Estendere SearchService con un metodo che applica filtri opzionali (brand_id, family_id, subfamily_id, e array di filtri attributo {key, min, max}) alla query di base su ProductBase PRIMA di calcolare i punteggi di ranking. Il filtro per attributo numerico usa whereHas('products.attributes', fn ($q) => $q->where('key', $key)->whereBetween('value_num', [$min, $max])). I filtri marca/famiglia sono semplici where su product_bases.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-07
+    title: 'Test: filtri strutturati riducono il pool prima del ranking'
+    description: Feature test (SQLite, generico) che crea prodotti-base con marche/famiglie diverse e varianti con attributi numerici (es. potenza) diversi, ed esegue SearchService::search() con vari filtri combinati, verificando che il result set contenga solo i prodotti-base attesi indipendentemente dal termine di ricerca testuale/vettoriale.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-08
+    title: 'SearchService: fusione pesata full-text + vettoriale (Postgres) e fallback LIKE'
+    description: 'Implementare la query principale: su driver pgsql, join tra product_bases (con search_vector) e product_embeddings (LEFT JOIN per model corrente), calcolo ts_rank(search_vector, plainto_tsquery(''italian'', ?)) come punteggio FTS e (1 - (embedding <=> ?)) come punteggio vettoriale (0 se embedding assente), fusi con formula weights.vector*vector_score + weights.fts*fts_score da config(''search''), ORDER BY punteggio combinato DESC. Su driver non-pgsql, fallback a LIKE su title/description_ai senza fusione vettoriale (nessun tsvector/operatore <=> disponibile). Il match per codice esatto (TASK-04) viene anteposto ai risultati fusi con punteggio massimo forzato.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-05
+      - TASK-06
+  - id: TASK-09
+    title: 'Test: fusione pesata vettoriale+FTS e ordinamento per punteggio combinato'
+    description: Feature test Postgres-only (pattern VectorEmbeddingPgvectorTest, skip fuori Sail) che inserisce prodotti-base con embedding noti e description_ai/title controllati, mocka l'embedding della query di ricerca (Http::fake), ed esegue SearchService::search() verificando che l'ordine dei risultati rispetti la formula pesata (0.7 vettoriale/0.3 FTS di default); ripete il test con pesi invertiti via config override e verifica che l'ordine cambi coerentemente.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-10
+    title: 'Test: match per codice esatto in testa ai risultati'
+    description: Feature test che crea un product_base con una variante di codice_articolo noto e un contenuto semantico volutamente non correlato al termine di ricerca; esegue SearchService::search() con quel codice esatto come query e verifica che il product_base corrispondente sia il primo risultato, anche in presenza di altri prodotti-base con punteggio semantico più alto.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-11
+    title: 'SearchService: raggruppamento con variants_count e power_range'
+    description: Arricchire i risultati con variants_count (numero di varianti Product figlie del product_base) e power_range (min/max di value_num per un attributo numerico rappresentativo tra le varianti, quando presente) calcolati con withCount/subselect aggregati (no N+1). Definire la struttura di ritorno di search() (es. paginator di DTO/array con product_base + meta di raggruppamento).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-12
+    title: 'Test: raggruppamento per product_base_id con variants_count e power_range corretti'
+    description: Feature test che crea un product_base con piu varianti aventi attributo potenza diverso ed esegue SearchService::search(), verificando che il risultato compaia una sola volta (non duplicato per variante), con variants_count pari al numero di varianti e power_range coerente con i valori min/max effettivi.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-11
+  - id: TASK-13
+    title: 'Test: performance query di ricerca (no N+1, soglia CI) su seed ridotto'
+    description: Feature test Postgres-only con seed di alcune centinaia di prodotti-base ed embedding, che esegue SearchService::search() e verifica assenza di N+1 (conteggio query tramite DB::listen entro un limite fisso basso, indipendente dal numero di risultati) e un tempo di esecuzione entro una soglia larga adeguata a CI. Includere nel commento del test una nota esplicita che la soglia p95 < 300ms su 42k prodotti-base va validata in staging/production, non riproducibile in modo affidabile in CI.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+      - TASK-11

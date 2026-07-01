@@ -6,7 +6,7 @@ epic:
   title: Motore di Ricerca Ibrido
 priority: HIGH
 points: 5
-status: TODO
+status: PLANNED
 scope: MVP
 body: |-
   #### US-019: SearchService con fusione vettoriale, full-text e filtri strutturati
