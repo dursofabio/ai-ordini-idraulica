@@ -60,102 +60,117 @@ tasks:
     title: Config model_fast/model_smart e .env.example
     description: Estendere config/services.php nel blocco 'anthropic' con model_fast (env ANTHROPIC_MODEL_FAST, default claude-3-5-haiku-latest) e model_smart (env ANTHROPIC_MODEL_SMART, default claude-sonnet-4-5). Documentare le stesse variabili in .env.example.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'TaxonomyCatalog: tassonomia chiusa marche/famiglie/sottofamiglie'
     description: Creare App\Services\Ai\TaxonomyCatalog che carica e memoizza (per istanza) Brand/Family/Subfamily esistenti ed espone un rendering testuale per il prompt e i metodi isValidBrand/isValidFamily/isValidSubfamily per la validazione dell'output AI.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-02
   - id: TASK-03
     title: 'Test: TaxonomyCatalog validazione tassonomia chiusa'
     description: Feature test che verifica che TaxonomyCatalog riconosca come validi solo marche/famiglie/sottofamiglie esistenti nel database (case-insensitive su name/slug) e rigetti qualsiasi valore non presente.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: 'ClassificationPromptBuilder: payload messages per lotto'
     description: 'Creare App\Services\Ai\ClassificationPromptBuilder che, dato un lotto di prodotti e un TaxonomyCatalog, costruisce il payload ''messages'' per ClaudeClient::messages() richiedendo una risposta JSON con schema {results: [{codice_articolo, brand, family, subfamily, product_type, enriched_description, confidence}]} e includendo l''elenco tassonomia chiuso nel prompt.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-04
   - id: TASK-05
     title: 'Test: ClassificationPromptBuilder include lotto e tassonomia'
     description: Feature test che verifica che il payload generato includa tutti i codice_articolo del lotto passato e l'elenco delle marche/famiglie esistenti nel testo del prompt.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: 'ClassificationResponseValidator: parsing e validazione schema/tassonomia'
     description: Creare App\Services\Ai\ClassificationResponseValidator che decodifica il content di ClaudeResponse, verifica JSON sintatticamente valido, struttura attesa (un risultato per ogni codice_articolo richiesto) e che marca/famiglia/sottofamiglia valorizzate appartengano alla tassonomia chiusa (via TaxonomyCatalog), restituendo un DTO ValidatedClassification o lanciando InvalidClassificationResponseException.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: ClassificationResponseValidator accetta/rigetta risposte'
     description: Feature test che verifica accettazione di una risposta JSON conforme e rigetto (con eccezione) per JSON sintatticamente non valido, struttura con chiavi/risultati mancanti, e marca/famiglia fuori tassonomia.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: 'ClassifyProductsBatchJob: classificazione lotto con modello veloce'
     description: Creare App\Jobs\ClassifyProductsBatchJob (ShouldQueue, onQueue('enrichment')) che riceve un lotto di ID prodotto, costruisce il prompt via ClassificationPromptBuilder, chiama ClaudeClient::messages() col modello configurato in model_fast, valida la risposta con ClassificationResponseValidator e crea un EnrichmentLog (step 'ai_classification') per ogni prodotto con input/output/confidence/model/tokens_in/tokens_out (token del lotto ripartiti per prodotto). Salta i prodotti già completamente classificati (idempotenza).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
       - TASK-06
       - TASK-01
+    ref: TASK-08
   - id: TASK-09
     title: 'Test: ClassifyProductsBatchJob successo con modello veloce'
     description: Feature test con Http::fake() che stub una risposta valida al primo tentativo (tutte confidence >= 60) e verifica che venga creato un EnrichmentLog per prodotto con model = model_fast, token ripartiti correttamente, e che non venga effettuata alcuna chiamata col modello smart.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-09
   - id: TASK-10
     title: 'ClassifyProductsBatchJob: retry singolo su JSON invalido e needs_review'
     description: Estendere il job per ritentare una sola volta (stesso modello, stesso prompt) quando la risposta non supera la validazione; se anche il secondo tentativo fallisce, impostare enrichment_status='needs_review' su tutti i prodotti del lotto e loggare comunque un EnrichmentLog per prodotto con l'errore di validazione e confidence null, senza lanciare eccezioni.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-10
   - id: TASK-11
     title: 'Test: ClassifyProductsBatchJob doppio fallimento JSON → needs_review'
     description: Feature test con Http::fake() che restituisce JSON non valido su entrambi i tentativi; verifica enrichment_status='needs_review' su tutti i prodotti del lotto, presenza dei log di errore per ciascuno, e Http::assertSentCount pari a 2 (un retry).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-10
+    ref: TASK-11
   - id: TASK-12
     title: 'ClassifyProductsBatchJob: escalation a modello smart su bassa confidenza'
     description: Estendere il job affinché, per ogni risultato valido con confidence < 60, effettui una seconda chiamata ClaudeClient::messages() con model_smart per il solo prodotto interessato, sovrascrivendo il risultato di quel prodotto prima del logging finale (model registrato = model_smart per quel record).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-09
+    ref: TASK-12
   - id: TASK-13
     title: 'Test: ClassifyProductsBatchJob escalation modello smart'
     description: Feature test con Http::fake() in cui la risposta del lotto contiene un item con confidence < 60; verifica che venga effettuata una chiamata aggiuntiva usando model_smart solo per quel prodotto (assert su modello nel body della seconda richiesta) e che il log finale di quel prodotto riporti model_smart.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-12
+    ref: TASK-13
   - id: TASK-14
     title: 'ClassificationBatchDispatcher: selezione ed accodamento lotti'
     description: Creare App\Services\Enrichment\ClassificationBatchDispatcher che seleziona i prodotti con brand_id o family_id nulli e enrichment_status='pending', li divide in lotti da 20 a 50 (default 40) e dispatcha un ClassifyProductsBatchJob per lotto.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-14
   - id: TASK-15
     title: 'Test: ClassificationBatchDispatcher selezione e dimensione lotti'
     description: Feature test con Queue::fake() e un set misto di prodotti (con/senza brand, enrichment_status vari) che verifica che vengano dispatchati job solo per i prodotti eleggibili e che ogni lotto passato al job abbia dimensione tra 20 e 50.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-14
+    ref: TASK-15

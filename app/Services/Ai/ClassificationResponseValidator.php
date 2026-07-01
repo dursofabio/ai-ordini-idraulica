@@ -1,0 +1,114 @@
+<?php
+
+namespace App\Services\Ai;
+
+use App\Exceptions\InvalidClassificationResponseException;
+use Illuminate\Support\Collection;
+
+/**
+ * Parses and validates a batch classification response from the Anthropic
+ * Messages API against the schema expected by
+ * {@see ClassificationPromptBuilder} and the closed catalog taxonomy.
+ *
+ * A response is only accepted when it is syntactically valid JSON, has a
+ * `results` array with exactly one entry per requested codice_articolo, and
+ * every non-null brand/family/subfamily value belongs to the existing
+ * taxonomy. Anything else raises {@see InvalidClassificationResponseException}
+ * so the caller can retry or fall back to `needs_review`.
+ */
+class ClassificationResponseValidator
+{
+    /**
+     * @param  Collection<int, string>  $expectedCodiciArticolo
+     *
+     * @throws InvalidClassificationResponseException
+     */
+    public function validate(ClaudeResponse $response, Collection $expectedCodiciArticolo, TaxonomyCatalog $taxonomy): ValidatedClassification
+    {
+        $decoded = json_decode($response->content, associative: true);
+
+        if (! is_array($decoded)) {
+            throw new InvalidClassificationResponseException('La risposta AI non è un JSON valido.');
+        }
+
+        if (! isset($decoded['results']) || ! is_array($decoded['results'])) {
+            throw new InvalidClassificationResponseException('La risposta AI non contiene un array "results".');
+        }
+
+        $results = collect();
+
+        foreach ($decoded['results'] as $item) {
+            $classified = $this->toClassifiedProduct($item, $taxonomy);
+
+            $results->put($classified->codiceArticolo, $classified);
+        }
+
+        $missing = $expectedCodiciArticolo->diff($results->keys());
+
+        if ($missing->isNotEmpty()) {
+            throw new InvalidClassificationResponseException(
+                'La risposta AI non include un risultato per: '.$missing->implode(', ').'.'
+            );
+        }
+
+        return new ValidatedClassification($results);
+    }
+
+    private function toClassifiedProduct(mixed $item, TaxonomyCatalog $taxonomy): ClassifiedProduct
+    {
+        if (! is_array($item)) {
+            throw new InvalidClassificationResponseException('Un elemento di "results" non è un oggetto valido.');
+        }
+
+        $codiceArticolo = $item['codice_articolo'] ?? null;
+
+        if (! is_string($codiceArticolo) || $codiceArticolo === '') {
+            throw new InvalidClassificationResponseException('Un elemento di "results" non ha un codice_articolo valido.');
+        }
+
+        $brand = $this->nullableString($item['brand'] ?? null);
+        $family = $this->nullableString($item['family'] ?? null);
+        $subfamily = $this->nullableString($item['subfamily'] ?? null);
+
+        if ($brand !== null && ! $taxonomy->isValidBrand($brand)) {
+            throw new InvalidClassificationResponseException(
+                "La marca «{$brand}» per il codice {$codiceArticolo} non appartiene alla tassonomia esistente."
+            );
+        }
+
+        if ($family !== null && ! $taxonomy->isValidFamily($family)) {
+            throw new InvalidClassificationResponseException(
+                "La famiglia «{$family}» per il codice {$codiceArticolo} non appartiene alla tassonomia esistente."
+            );
+        }
+
+        if ($subfamily !== null && ! $taxonomy->isValidSubfamily($subfamily, $family)) {
+            throw new InvalidClassificationResponseException(
+                "La sottofamiglia «{$subfamily}» per il codice {$codiceArticolo} non appartiene alla tassonomia esistente."
+            );
+        }
+
+        $confidence = $item['confidence'] ?? null;
+
+        return new ClassifiedProduct(
+            codiceArticolo: $codiceArticolo,
+            brand: $brand,
+            family: $family,
+            subfamily: $subfamily,
+            productType: $this->nullableString($item['product_type'] ?? null),
+            enrichedDescription: $this->nullableString($item['enriched_description'] ?? null),
+            confidence: is_numeric($confidence) ? (int) $confidence : null,
+        );
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+}

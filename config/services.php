@@ -38,6 +38,8 @@ return [
     'anthropic' => [
         'api_key' => env('ANTHROPIC_API_KEY'),
         'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-5'),
+        'model_fast' => env('ANTHROPIC_MODEL_FAST', 'claude-3-5-haiku-latest'),
+        'model_smart' => env('ANTHROPIC_MODEL_SMART', 'claude-sonnet-4-5'),
         'version' => env('ANTHROPIC_VERSION', '2023-06-01'),
         'base_url' => env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
         'timeout' => env('ANTHROPIC_TIMEOUT', 120),
