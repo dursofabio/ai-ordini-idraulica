@@ -58,46 +58,53 @@ tasks:
     title: 'GroupingResolver: scheletro, normalizzazione taglia, calcolo grouping_key'
     description: 'Creare App\Services\Enrichment\GroupingResolver con resolve(Product $product): bool. Guardia idempotenza su product_base_id già valorizzato e su brand_id nullo (skip). Implementare normalizeForGrouping() che rimuove il token taglia (numero 2-4 cifre dopo il trattino in pattern serie tipo VAI 8-025) da description_clean/description_raw e restituisce la stringa normalizzata in maiuscolo.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Test normalizzazione e calcolo grouping_key
     description: 'Feature test per il calcolo della grouping_key: stessa marca+tipo+serie con taglie diverse produce la stessa key; token taglia assente dalla key risultante; marca o serie diversa produce key diversa.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'GroupingResolver: creazione/riuso product_base e title leggibile'
     description: 'Aggiungere a GroupingResolver la logica di persistenza: ProductBase::updateOrCreate([''grouping_key'' => $key], [''title'' => ..., ''brand_id'' => ...]) con title composto da marca + descrizione normalizzata in Title Case; assegnare product_base_id e grouping_key al prodotto.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Test creazione/riuso product_base e title
     description: 'Feature test che verifica: un nuovo grouping_key crea un product_base con title leggibile; un grouping_key già esistente viene riusato (nessun duplicato in product_bases); tutte le varianti del gruppo risultano associate allo stesso product_base_id.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Guardia idempotenza e caso senza brand
     description: 'Estendere GroupingResolver: no-op se product_base_id già valorizzato; no-op (product_base_id resta null) se brand_id non è risolto.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: Test idempotenza e guardia brand mancante
     description: 'Feature test: rieseguire resolve() su un prodotto già assegnato non crea un secondo product_base né lo riassegna; un prodotto senza brand_id risolto resta con product_base_id null dopo resolve().'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Test di regressione VAILLANT VAI 8 WNI (4 taglie)
     description: 'Feature test dedicato alla demo della spec: 4 prodotti VAILLANT VAI 8-025/035/050/065 WNI condividono lo stesso product_base_id e il product_base.title è leggibile (marca + tipo + serie, senza taglia).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-07
