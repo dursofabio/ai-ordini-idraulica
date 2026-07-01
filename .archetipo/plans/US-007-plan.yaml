@@ -1,0 +1,108 @@
+schema: archetipo/plan/v2
+spec_code: US-007
+body: |-
+  # US-007: Lettura XLSX a chunk in staging_articoli — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-002 — Importazione XLSX
+  **Priorità:** HIGH | **Punti:** 3
+  **Bloccata da:** US-006 (stato REVIEW — precondizione soddisfatta)
+
+  **User Story**
+  Come amministratore del catalogo, voglio che il file XLSX da 42.000+ righe venga letto in chunk tramite job in coda, così da evitare timeout e picchi di memoria durante l'importazione.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'import di un file da 42.614 righe completa senza errori di memoria; le righe sono presenti in `staging_articoli` con tutti i campi mappati correttamente e la riga grezza in `raw_row`.
+
+  **Criteri di Accettazione**
+  - [ ] Il reader processa chunk da 1.000 righe senza superare i limiti di memoria PHP
+  - [ ] Ogni riga in `staging_articoli` ha `codice_articolo`, `descrizione`, `costo`, `giacenza` e `raw_row` popolati
+  - [ ] Le colonne dell'XLSX sono mappate correttamente tramite heading row (es. 'Descrizione Marca' → `descrizione_marca`)
+  - [ ] Righe con `codice_articolo` vuoto vengono saltate e il conteggio skippate è registrato nel batch
+
+  ---
+
+  ## Technical Solution
+
+  US-006 ha già creato l'orchestrazione del batch (`ImportBatchService`, enum `ImportBatchStatus`, comando `catalog:import`) che si ferma allo stato `uploaded`. Questa spec aggiunge il **livello di lettura effettiva** dell'XLSX dentro `staging_articoli`, delegato a un **job in coda** che streamma il file a chunk. Il nodo critico delle 42.614 righe è la memoria: un reader in-memory (es. PhpSpreadsheet caricando l'intero foglio) supererebbe i limiti PHP, quindi si adotta un **lettore in streaming** (`spatie/simple-excel`, che incapsula `openspout`) la cui `LazyCollection` legge una riga alla volta mantenendo la memoria piatta indipendentemente dal numero di righe; il `->chunk(1000)` bufferizza solo 1.000 righe per volta per la bulk insert.
+
+  È inoltre presente un **disallineamento di schema** da sanare: lo schema di `staging_articoli` (US-005) ha una colonna `payload` (json) generica, ma i Criteri di Accettazione richiedono esplicitamente `raw_row` più le colonne tipizzate `descrizione`, `costo`, `giacenza`. Si evolve quindi lo schema rinominando `payload → raw_row` e aggiungendo le tre colonne tipizzate (allineando i test di schema/relazioni di US-005). Il conteggio delle righe skippate richiede una nuova colonna `skipped_rows` su `import_batches`.
+
+  - **Dipendenza `spatie/simple-excel`**: reader XLSX in streaming a bassa memoria (wrapper di `openspout`). Nessuna libreria Excel è presente in `composer.json`; si aggiunge questa perché espone una `LazyCollection` di righe con auto-mappatura dell'heading row (chiavi = intestazioni), ideale per il chunking richiesto dall'AC. Compatibile con PHP 8.3 / Laravel 13.
+  - **Evoluzione schema `staging_articoli`** (migration, nessuna nuova tabella): `renameColumn('payload', 'raw_row')` (json, riga grezza completa), + `descrizione` (text nullable), `costo` (decimal(14,4) nullable), `giacenza` (decimal(14,3) nullable — le giacenze idrauliche possono essere frazionarie). Aggiornamento del model `StagingArticolo` (`#[Fillable]` con i nuovi campi, cast `raw_row => array`, `costo`/`giacenza` => `decimal`) e della `StagingArticoloFactory`.
+  - **Evoluzione schema `import_batches`**: aggiunta colonna `skipped_rows` (unsignedInteger default 0) per registrare le righe saltate; aggiornamento di `#[Fillable]`/cast su `ImportBatch` e della relativa factory.
+  - **Mappatura heading row**: le intestazioni reali del file (`Codice articolo`, `Descrizione`, `Costo un.1`, `Giac.att.1`, `Descrizione Marca`, …) vengono normalizzate in snake_case (`Descrizione Marca` → `descrizione_marca`, `Costo un.1` → `costo_un_1`, `Giac.att.1` → `giac_att_1`) e l'intera riga normalizzata viene salvata in `raw_row`. Da `raw_row` si estraggono i campi tipizzati tramite una **mappa di colonne centralizzata** (costante): `codice_articolo ← codice_articolo`, `descrizione ← descrizione`, `costo ← costo_un_1`, `giacenza ← giac_att_1`. Centralizzare la mappa isola le specificità del tracciato TeamSystem e rende banale correggere l'associazione.
+  - **Job in coda `App\Jobs\ImportXlsxJob`**: dispatchato sulla coda `import` (già definita in `config/horizon.php`), `$tries = 1`, `$timeout` ampio (es. 0/illimitato) dato il volume. Il costruttore riceve l'`ImportBatch` e il path assoluto del file. `handle(ImportBatchService $service)`: (1) transizione `uploaded → importing` (`markImporting`); (2) stream del reader con `->getRows()->chunk(1000)`: per ogni chunk normalizza le intestazioni, estrae i campi tipizzati, **salta le righe con `codice_articolo` vuoto** incrementando un contatore locale di skippate, e fa una **bulk insert** (`StagingArticolo::insert()`, con `raw_row` serializzato json e timestamp espliciti dato che `insert()` bypassa i cast) delle righe valide; (3) aggiorna i contatori `total_rows`/`processed_rows`/`skipped_rows` sul batch; (4) su completamento della lettura transizione `importing → enriching` (segnala lettura completata e batch pronto per l'arricchimento, la cui `enriching → completed` appartiene a una spec successiva); (5) `failed()` / catch → `markFailed`.
+  - **Wiring del comando**: `CatalogImportCommand` (US-006) attualmente crea solo il batch in `uploaded`. Si estende per fare `ImportXlsxJob::dispatch($batch, $absolutePath)` dopo la creazione, così l'AC «letto in chunk tramite job in coda» è soddisfatto end-to-end. Assunzione: il file resta accessibile sul filesystem al worker (il path assoluto è passato al job); lo spostamento in object storage è fuori scope MVP.
+
+  ---
+
+  ## Test Strategy
+
+  Spec backend/CLI senza UI: feature test in-memory SQLite (trait `RequiresDatabase` + `RefreshDatabase`), coerente con US-005/US-006. Le fixture XLSX vengono generate al volo con `SimpleExcelWriter` usando le **intestazioni reali** del tracciato, così i test esercitano davvero il percorso di lettura+mappatura senza dipendere dal file da 42 MB. Nessun test e2e è richiesto (nessuna interazione utente).
+
+  - **Test regressione schema (US-005)**: aggiornare `VectorStagingAuditSchemaTest` e `VectorStagingAuditRelationsTest` per il rename `payload → raw_row` e verificare la presenza delle nuove colonne `descrizione`/`costo`/`giacenza` su `staging_articoli` e `skipped_rows` su `import_batches`; round-trip del cast `raw_row => array`.
+  - **Test lettura & mappatura**: generare una fixture XLSX (intestazioni reali, poche righe) e far girare `ImportXlsxJob` in modalità sync; verificare che ogni riga in `staging_articoli` abbia `codice_articolo`, `descrizione`, `costo`, `giacenza` valorizzati e che `raw_row` contenga le chiavi snake_case (incl. `descrizione_marca`).
+  - **Test skip codice vuoto**: fixture con alcune righe a `Codice articolo` vuoto → quelle righe non vengono inserite e `import_batches.skipped_rows` riporta il conteggio corretto; `total_rows`/`processed_rows` coerenti.
+  - **Test chunking multi-blocco**: fixture con > 1.000 righe (es. 2.500) → tutte le righe valide inserite e i contatori corretti, dimostrando che il loop di chunk copre più blocchi. Il tetto di memoria reale sulle 42.614 righe è verificato manualmente contro `docs/data/inventario articoli.xlsx` (step di verifica perf, annotato qui: eseguire `catalog:import` sul file reale e osservare `memory_get_peak_usage`).
+  - **Test ciclo di stato del job**: il job porta il batch `uploaded → importing → enriching` su successo e `→ failed` su errore di lettura (file corrotto/mancante).
+  - **Test comando `catalog:import` end-to-end**: `artisan('catalog:import', ['path' => fixture])` crea il batch e dispatcha `ImportXlsxJob` sulla coda `import` (`Queue::fake()` + `assertPushed`), oppure in sync popola `staging_articoli`.
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Dipendenza spatie/simple-excel (reader streaming)
+    description: Aggiungere spatie/simple-excel (wrapper openspout) via composer come reader XLSX in streaming a bassa memoria, compatibile con PHP 8.3/Laravel 13. Verificare l'autoload.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Evoluzione schema staging_articoli + import_batches
+    description: 'Migration: rinominare staging_articoli.payload → raw_row e aggiungere descrizione (text), costo (decimal 14,4), giacenza (decimal 14,3) nullable; aggiungere import_batches.skipped_rows (unsignedInteger default 0). Aggiornare model StagingArticolo/ImportBatch (Fillable, cast) e le relative factory.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Regressione test schema/relazioni US-005
+    description: Aggiornare VectorStagingAuditSchemaTest e VectorStagingAuditRelationsTest per il rename payload→raw_row, la presenza delle nuove colonne (descrizione/costo/giacenza, skipped_rows) e il round-trip del cast raw_row => array.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: 'ImportXlsxJob: lettura streaming a chunk + mappatura'
+    description: Creare App\Jobs\ImportXlsxJob (coda import, tries 1, timeout ampio) che transiziona uploaded→importing, streamma il reader con chunk(1000), normalizza le intestazioni in snake_case, estrae i campi tipizzati tramite mappa colonne centralizzata, salta le righe con codice_articolo vuoto (contatore skippate), bulk-inserisce le righe valide con raw_row, aggiorna total/processed/skipped e transiziona importing→enriching (o →failed su errore).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+  - id: TASK-05
+    title: 'Test job: mappatura, skip, chunking multi-blocco, stati'
+    description: 'Feature test (RequiresDatabase) che genera fixture XLSX con SimpleExcelWriter (intestazioni reali): verifica campi tipizzati e chiavi snake_case in raw_row (incl. descrizione_marca), skip delle righe a codice vuoto con skipped_rows corretto, inserimento completo su fixture >1000 righe (multi-chunk) e transizioni di stato uploaded→importing→enriching/failed.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Wiring CatalogImportCommand → dispatch ImportXlsxJob
+    description: Estendere CatalogImportCommand (US-006) per dispatchare ImportXlsxJob con il batch e il path assoluto del file dopo la creazione del batch, mantenendo la gestione di duplicato/file mancante già presente.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-07
+    title: Test comando catalog:import end-to-end
+    description: Feature test che invoca artisan('catalog:import') con una fixture valida e verifica che il batch venga creato e ImportXlsxJob dispatchato sulla coda import (Queue::fake + assertPushed) o, in sync, che staging_articoli venga popolata.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
