@@ -53,46 +53,53 @@ tasks:
     title: Migrazione tabella brands
     description: Creare la migrazione per la tabella `brands` con id, name, slug (unique), aliases (json nullable) e timestamps.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Migrazione tabella families
     description: Creare la migrazione per la tabella `families` con id, name, slug (unique), aliases (json nullable) e timestamps.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-02
   - id: TASK-03
     title: Migrazione tabella subfamilies
     description: Creare la migrazione per `subfamilies` con id, name, slug (unique), aliases (json nullable), family_id (foreignId nullable constrained->nullOnDelete verso families) e timestamps.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Modelli Eloquent Brand, Family, Subfamily
     description: 'Creare i tre modelli in app/Models con #[Fillable], HasFactory, cast di aliases ad array, e relazioni Family hasMany Subfamily / Subfamily belongsTo Family.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Factory per Brand, Family, Subfamily
     description: Creare BrandFactory, FamilyFactory, SubfamilyFactory con name, slug unico, aliases plausibili; SubfamilyFactory associa una Family di default.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Test schema e cast JSON dei brand
     description: Test feature che verifica esistenza colonne delle tre tabelle e il round-trip del cast JSON di aliases sul modello Brand, su SQLite in-memory.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: Test relazione Family/Subfamily e factory
     description: Test che verifica la relazione belongsTo/hasMany con family_id nullable e che i factory producano modelli validi e persistibili.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-07

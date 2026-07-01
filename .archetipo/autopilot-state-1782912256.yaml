@@ -7,7 +7,7 @@ autopilot:
   exit_condition: null
   on_error: ask
   extra_instructions: "Ad ogni step (plan/implement), preparare un commit git adeguato."
-  current_spec_index: 3
+  current_spec_index: 4
   status: running
   started_at: "2026-07-01T15:24:00"
   updated_at: "2026-07-01T15:24:00"
@@ -56,10 +56,10 @@ queue:
         summary: "7 task (3 migrazioni brands/families/subfamilies, modelli Eloquent con cast JSON aliases e relazione nullable, factory, 2 feature test SQLite); spec -> PLANNED. No UI."
         timestamp: "2026-07-01T16:18:00"
       implement:
-        status: pending
-        summary: null
-        timestamp: null
-    result: pending
+        status: success
+        summary: "3 migrazioni (brands/families/subfamilies, slug unique, aliases json, family_id FK nullable), 3 modelli con cast array e relazioni hasMany/belongsTo, 3 factory. 2 feature test SQLite (23 pass/3 skip). Review: no critical. Spec -> REVIEW."
+        timestamp: "2026-07-01T16:22:00"
+    result: completed
 
   - code: US-004
     title: "Migrazioni prodotto: product_bases, products, product_attributes"

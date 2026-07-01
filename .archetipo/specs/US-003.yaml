@@ -6,7 +6,7 @@ epic:
   title: Modello Dati
 priority: HIGH
 points: 2
-status: PLANNED
+status: REVIEW
 scope: MVP
 body: |-
   #### US-003: Migrazioni anagrafiche: brands, families, subfamilies
