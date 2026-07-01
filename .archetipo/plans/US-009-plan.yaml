@@ -1,0 +1,87 @@
+schema: archetipo/plan/v2
+spec_code: US-009
+body: |
+  # US-009: BrandResolver con regex e dizionario alias — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-003 — Arricchimento Deterministico
+  **Priorità:** HIGH | **Punti:** 3
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo, voglio che la marca venga recuperata automaticamente dalla descrizione dei prodotti tramite regole deterministiche, così da ridurre il numero di articoli senza marca prima di ricorrere all'AI.
+
+  **Criteri di Accettazione**
+  - [ ] Il pattern `-MARCA-` a fine descrizione viene riconosciuto con `confidence=95` e `brand_source='regex'`
+  - [ ] Il match inline dal dizionario alias viene riconosciuto con `confidence=80`
+  - [ ] La marca estratta viene rimossa dalla `description_clean`
+  - [ ] Articoli senza match lasciano `brand_id=null` senza alterare lo stato di arricchimento
+  - [ ] I test unitari coprono: pattern fine stringa, match inline, nessun match, match ambiguo
+
+  ---
+
+  ## Technical Solution
+
+  `products` ha già `brand_id`, `brand_source` e `confidence` (da US-004), ma non esiste ancora `description_clean`: US-010 (bloccata da questa spec) leggerà quel campo per estrarre gli attributi tecnici su un testo ripulito dal rumore della marca, quindi questa spec introduce la colonna e il primo resolver che la popola. `Brand` ha già `aliases` (JSON) da US-004/US-005-adiacenti. Il resolver è una classe di dominio pura, senza job/comando di orchestrazione: l'esecuzione su un batch di prodotti è demandata a una spec futura dell'epica Comandi (EP-008), coerente con come US-006 ha separato l'orchestrazione dallo schema.
+
+  - **Migration `description_clean`**: aggiunge `products.description_clean` (`text`, nullable, `->after('description_raw')`). Nessun backfill: il resolver tratta `null` come "non ancora ripulita" e usa `description_raw` come sorgente al primo passaggio.
+  - **`App\Services\Enrichment\BrandResolver`**: nuova sotto-cartella `Enrichment` sotto `app/Services/` (finora piatto con un solo service) perché EP-003 aggiungerà altri resolver dello stesso tipo in US-010/US-011/US-012 — raggrupparli evita di sporcare la root di `Services/`. Espone `resolve(Product $product): bool` (true se una marca è stata assegnata):
+    - **Idempotenza/priorità delle fonti**: se `$product->brand_id` è già valorizzato (da file, AI o inserimento manuale in spec future) il metodo ritorna `false` senza toccare nulla — il resolver deterministico non deve mai retrocedere una fonte più autorevole a `regex`/`dictionary`.
+    - **Testo sorgente**: `$product->description_clean ?? $product->description_raw`, trimmato. Questo rende il metodo rieseguibile in sicurezza sullo stesso prodotto senza doppie pulizie.
+    - **Step 1 — pattern regex di suffisso**: `/-(\S+)-\s*$/u` sul testo sorgente cattura il token tra l'ultimo trattino e la fine stringa (es. `RUBINETTO LAVABO-GROHE-`). Se il token corrisponde (case-insensitive, match esatto) al `name` o a un elemento di `aliases` di un `Brand`, si assegna quel brand con `brand_source='regex'`, `confidence=95`, e si rimuove l'intero segmento matchato (incluso i trattini) da `description_clean`.
+    - **Step 2 — dizionario alias inline**: eseguito solo se lo step 1 non ha prodotto un match. Costruisce una regex ad alternanza con tutti i `name`/`aliases` noti (escaped, ordinati per lunghezza decrescente, delimitati da `\b`, case-insensitive) e la applica al testo sorgente. Si raccoglie l'insieme dei brand distinti trovati:
+      - **1 brand distinto** → si assegna con `brand_source='dictionary'`, `confidence=80`, rimuovendo l'occorrenza matchata da `description_clean`.
+      - **0 o ≥2 brand distinti (match ambiguo)** → nessuna assegnazione: `brand_id` resta `null`, `description_clean` viene comunque valorizzata con il testo sorgente trimmato (serve comunque a US-010 a valle) ma senza rimuovere nulla.
+    - **`enrichment_status` non viene mai toccato** dal resolver, in nessuno dei quattro esiti (match regex, match dictionary, nessun match, match ambiguo) — è materia di un'orchestrazione futura che decide quando l'intera pipeline deterministica è esaurita.
+    - **Confidence condivisa**: `products.confidence` è un'unica colonna condivisa fra i futuri resolver (brand/family/subfamily), vincolo già esistente dello schema US-004 — non viene modificato in questa spec.
+    - **Lookup dei brand**: `Brand::all()` caricato una sola volta per istanza di `BrandResolver` (proprietà lazy), evitando N+1 quando lo stesso resolver viene riusato su più prodotti da un futuro job.
+
+  ---
+
+  ## Test Strategy
+
+  Spec di dominio senza UI: feature test in-memory SQLite (`RequiresDatabase` + `RefreshDatabase`), stesso pattern delle spec precedenti dell'epica. Nessun test e2e è richiesto (nessuna interazione utente).
+
+  - **Test regressione schema**: aggiornare `ProductCatalogSchemaTest::test_products_table_has_expected_columns` per includere `description_clean`.
+  - **Test pattern fine stringa**: descrizione che termina con `-MARCA-` corrispondente a un `Brand` esistente (per `name` e, in un secondo caso, per un elemento di `aliases`) → `brand_id` assegnato, `brand_source='regex'`, `confidence=95`, `description_clean` senza il segmento `-MARCA-`.
+  - **Test match inline dal dizionario**: descrizione con l'alias del brand incastonato a metà testo (nessun pattern di suffisso) → `brand_id` assegnato, `brand_source='dictionary'`, `confidence=80`, `description_clean` senza il token del brand.
+  - **Test nessun match**: descrizione priva di qualunque alias/nome noto → `brand_id` resta `null`, `brand_source`/`confidence` restano `null`, `description_clean` uguale al testo sorgente trimmato, `enrichment_status` invariato.
+  - **Test match ambiguo**: descrizione che contiene alias di due `Brand` distinti (nessun pattern di suffisso) → nessuna assegnazione, `brand_id` resta `null`, `description_clean` non alterata (nessuna rimozione).
+  - **Test idempotenza**: prodotto con `brand_id` già valorizzato (es. `brand_source='manual'`) → `resolve()` ritorna `false` e non modifica alcun campo, anche se la descrizione contiene un altro alias riconoscibile.
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Migration description_clean su products
+    description: 'Aggiungere la colonna products.description_clean (text, nullable, after description_raw) tramite migration dedicata. Nessun backfill: null indica testo non ancora ripulito.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Regressione schema products
+    description: Aggiornare ProductCatalogSchemaTest::test_products_table_has_expected_columns per includere description_clean tra le colonne attese.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: 'BrandResolver: pattern regex, dizionario alias, idempotenza'
+    description: 'Creare App\Services\Enrichment\BrandResolver con resolve(Product $product): bool. Step 1 regex suffisso -MARCA- (confidence=95, brand_source=regex). Step 2 dizionario alias inline con rilevamento ambiguita (confidence=80, brand_source=dictionary, 0 o 2+ match distinti = nessuna assegnazione). Guardia idempotenza se brand_id gia valorizzato. Rimozione del segmento marca da description_clean sui soli match risolti; enrichment_status mai toccato.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: 'Test BrandResolver: suffisso, inline, nessun match, ambiguo, idempotenza'
+    description: 'Feature test (RequiresDatabase + RefreshDatabase) che copre: match regex di suffisso su name e su alias; match inline dal dizionario; nessun match (brand_id null, description_clean invariata, enrichment_status invariato); match ambiguo tra due brand distinti (nessuna assegnazione); idempotenza su prodotto gia risolto (brand_id preesistente non sovrascritto).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
