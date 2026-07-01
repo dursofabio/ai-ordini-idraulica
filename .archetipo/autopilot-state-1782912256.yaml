@@ -7,7 +7,7 @@ autopilot:
   exit_condition: null
   on_error: ask
   extra_instructions: "Ad ogni step (plan/implement), preparare un commit git adeguato."
-  current_spec_index: 1
+  current_spec_index: 2
   status: running
   started_at: "2026-07-01T15:24:00"
   updated_at: "2026-07-01T15:24:00"
@@ -24,10 +24,10 @@ queue:
         summary: "9 task (6 impl + 3 test) salvati in US-001-plan.yaml; spec -> PLANNED. Nessun mockup (infra, no UI)."
         timestamp: "2026-07-01T15:26:00"
       implement:
-        status: pending
-        summary: null
-        timestamp: null
-    result: pending
+        status: success
+        summary: "Scaffold Laravel 13 + Sail; compose.yaml con pgvector/pgvector:pg16 e redis:alpine (healthcheck+volumi); migration idempotente enable_pgvector; .env pgsql/redis. 3 test integrazione (7 pass/1 skip live). Code review: 1 fix (extension su testing DB). Spec -> REVIEW."
+        timestamp: "2026-07-01T15:42:00"
+    result: completed
 
   - code: US-002
     title: "Filament 5 e Horizon installati e accessibili"

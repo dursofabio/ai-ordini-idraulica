@@ -56,63 +56,72 @@ tasks:
     title: Scaffolding progetto Laravel con Sail
     description: Generare da zero un nuovo progetto Laravel con Laravel Sail preconfigurato per i servizi pgsql e redis. Committare la struttura base (composer.json, artisan, docker-compose.yml, .env.example).
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Configurare immagine PostgreSQL 16 + pgvector nel docker-compose
     description: Sostituire l'immagine pgsql di default con pgvector/pgvector:pg16 nel docker-compose.yml, mantenendo volume persistente, credenziali da .env e healthcheck.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Configurare servizio Redis nel docker-compose
     description: Assicurare la presenza del servizio redis (immagine ufficiale) con volume persistente e healthcheck redis-cli ping nel docker-compose.yml.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Impostare variabili d'ambiente in .env.example
     description: Configurare DB_CONNECTION=pgsql, DB_HOST=pgsql, QUEUE_CONNECTION=redis, CACHE_STORE=redis, REDIS_HOST=redis e relativi default in .env.example e .env.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Migration per abilitare l'estensione pgvector
     description: Creare una migration che esegue CREATE EXTENSION IF NOT EXISTS vector; così l'estensione risulta attiva dopo sail artisan migrate senza intervento manuale.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-05
   - id: TASK-06
     title: Test di integrazione connettività PostgreSQL + pgvector
     description: Test (Pest/PHPUnit) che verifica la connessione a PostgreSQL e che SELECT 1 FROM pg_extension WHERE extname='vector' restituisca una riga.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Test di integrazione connettività Redis
     description: Test che esegue Redis::connection()->ping() e verifica la risposta PONG, confermando la raggiungibilità del servizio Redis.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
       - TASK-04
+    ref: TASK-07
   - id: TASK-08
     title: Test di verifica configurazione ambiente
     description: Test che asserisce config('database.default')=pgsql, config('queue.default')=redis, config('cache.default')=redis, allineati ai criteri di accettazione.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-08
   - id: TASK-09
     title: Aggiornare README con istruzioni di avvio e checklist di verifica
     description: Documentare sail up, sail artisan migrate e la checklist di smoke manuale (tre container, pgvector attivo, redis PONG) per l'onboarding a zero configurazione.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
       - TASK-05
+    ref: TASK-09

@@ -6,7 +6,7 @@ epic:
   title: Fondamenta del Progetto
 priority: HIGH
 points: 3
-status: PLANNED
+status: REVIEW
 scope: MVP
 body: |-
   #### US-001: Setup ambiente Sail con PostgreSQL/pgvector e Redis
