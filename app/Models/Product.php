@@ -100,16 +100,6 @@ class Product extends Model
     }
 
     /**
-     * The vector embeddings generated for this product.
-     *
-     * @return HasMany<ProductEmbedding, $this>
-     */
-    public function embeddings(): HasMany
-    {
-        return $this->hasMany(ProductEmbedding::class);
-    }
-
-    /**
      * The enrichment audit log entries for this product.
      *
      * @return HasMany<EnrichmentLog, $this>

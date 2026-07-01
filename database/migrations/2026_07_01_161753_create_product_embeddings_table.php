@@ -16,7 +16,7 @@ return new class extends Migration
 
         Schema::create('product_embeddings', function (Blueprint $table) use ($isPgsql) {
             $table->id();
-            $table->foreignId('product_id')->constrained('products')->cascadeOnDelete();
+            $table->foreignId('product_base_id')->constrained('product_bases')->cascadeOnDelete();
             $table->text('content');
             $table->string('model');
             $table->unsignedSmallInteger('dimensions')->default(1024);
@@ -33,8 +33,8 @@ return new class extends Migration
 
             $table->timestamps();
 
-            // One embedding per product per model.
-            $table->unique(['product_id', 'model']);
+            // One embedding per product-base per model.
+            $table->unique(['product_base_id', 'model']);
         });
 
         // Approximate nearest-neighbour index for cosine similarity search.

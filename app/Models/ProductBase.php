@@ -8,8 +8,9 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
-#[Fillable(['title', 'grouping_key', 'brand_id', 'family_id', 'subfamily_id'])]
+#[Fillable(['title', 'description_ai', 'grouping_key', 'brand_id', 'family_id', 'subfamily_id'])]
 class ProductBase extends Model
 {
     /** @use HasFactory<ProductBaseFactory> */
@@ -23,6 +24,31 @@ class ProductBase extends Model
     public function products(): HasMany
     {
         return $this->hasMany(Product::class);
+    }
+
+    /**
+     * The vector embedding generated from this base's `description_ai`.
+     *
+     * @return HasOne<ProductEmbedding, $this>
+     */
+    public function embedding(): HasOne
+    {
+        return $this->hasOne(ProductEmbedding::class);
+    }
+
+    /**
+     * Deterministically compose the text fed to the embedding provider from
+     * title, brand, family, and subfamily, skipping any relation that is
+     * null so the result stays stable regardless of taxonomy completeness.
+     */
+    public function composeDescriptionAi(): string
+    {
+        return implode(' ', array_filter([
+            $this->title,
+            $this->brand?->name,
+            $this->family?->name,
+            $this->subfamily?->name,
+        ]));
     }
 
     /**

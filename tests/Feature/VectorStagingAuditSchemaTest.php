@@ -47,7 +47,7 @@ class VectorStagingAuditSchemaTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('product_embeddings'));
         $this->assertTrue(Schema::hasColumns('product_embeddings', [
-            'id', 'product_id', 'content', 'model', 'dimensions', 'embedding',
+            'id', 'product_base_id', 'content', 'model', 'dimensions', 'embedding',
             'created_at', 'updated_at',
         ]));
     }
@@ -87,9 +87,9 @@ class VectorStagingAuditSchemaTest extends TestCase
         $this->assertCompositeIndex('enrichment_logs', ['product_id', 'step']);
     }
 
-    public function test_product_embeddings_has_product_model_unique_index(): void
+    public function test_product_embeddings_has_product_base_model_unique_index(): void
     {
-        $this->assertCompositeIndex('product_embeddings', ['product_id', 'model'], unique: true);
+        $this->assertCompositeIndex('product_embeddings', ['product_base_id', 'model'], unique: true);
     }
 
     public function test_import_batch_status_defaults_to_uploaded(): void

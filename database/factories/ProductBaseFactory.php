@@ -25,6 +25,7 @@ class ProductBaseFactory extends Factory
 
         return [
             'title' => $title,
+            'description_ai' => $title,
             'grouping_key' => Str::slug($title).'-'.fake()->unique()->numerify('######'),
             'brand_id' => Brand::factory(),
             'family_id' => Family::factory(),

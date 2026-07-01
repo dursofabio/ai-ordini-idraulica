@@ -2,7 +2,7 @@
 
 namespace Database\Factories;
 
-use App\Models\Product;
+use App\Models\ProductBase;
 use App\Models\ProductEmbedding;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
@@ -29,10 +29,10 @@ class ProductEmbeddingFactory extends Factory
         );
 
         return [
-            'product_id' => Product::factory(),
+            'product_base_id' => ProductBase::factory(),
             'content' => fake()->sentence(8),
-            // Randomised so two default embeddings for the same product don't
-            // collide on the unique (product_id, model) index.
+            // Randomised so two default embeddings for the same product base
+            // don't collide on the unique (product_base_id, model) index.
             'model' => fake()->unique()->lexify('text-embedding-??????'),
             'dimensions' => $dimensions,
             'embedding' => '['.implode(',', $values).']',

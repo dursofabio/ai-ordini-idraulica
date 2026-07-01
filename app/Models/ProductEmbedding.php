@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 #[Fillable([
-    'product_id',
+    'product_base_id',
     'content',
     'model',
     'dimensions',
@@ -33,12 +33,12 @@ class ProductEmbedding extends Model
     }
 
     /**
-     * The product this embedding belongs to.
+     * The product-base this embedding belongs to.
      *
-     * @return BelongsTo<Product, $this>
+     * @return BelongsTo<ProductBase, $this>
      */
-    public function product(): BelongsTo
+    public function productBase(): BelongsTo
     {
-        return $this->belongsTo(Product::class);
+        return $this->belongsTo(ProductBase::class, 'product_base_id');
     }
 }

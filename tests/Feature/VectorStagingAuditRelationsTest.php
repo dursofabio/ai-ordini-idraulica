@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\EnrichmentLog;
 use App\Models\ImportBatch;
 use App\Models\Product;
+use App\Models\ProductBase;
 use App\Models\ProductEmbedding;
 use App\Models\StagingArticolo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -12,10 +13,11 @@ use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
 /**
- * US-005 acceptance criteria — relations, JSON casts and audit token counting:
+ * US-005/US-018 acceptance criteria — relations, JSON casts and audit token counting:
  *  - EnrichmentLog stores input/output JSON with a clean array round-trip.
  *  - EnrichmentLog records step, confidence, model and token counts.
- *  - Product hasMany embeddings / enrichmentLogs; ImportBatch hasMany stagingArticoli.
+ *  - ProductBase hasOne embedding; Product hasMany enrichmentLogs;
+ *    ImportBatch hasMany stagingArticoli.
  *  - Cascade / nullOnDelete behave as declared.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
@@ -65,18 +67,15 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertSame('ART-9', $fresh->raw_row['codice_articolo']);
     }
 
-    public function test_product_has_many_embeddings(): void
+    public function test_product_base_has_one_embedding(): void
     {
-        $product = Product::factory()->create();
+        $productBase = ProductBase::factory()->create();
         ProductEmbedding::factory()->create([
-            'product_id' => $product->id, 'model' => 'model-a',
-        ]);
-        ProductEmbedding::factory()->create([
-            'product_id' => $product->id, 'model' => 'model-b',
+            'product_base_id' => $productBase->id, 'model' => 'model-a',
         ]);
 
-        $this->assertCount(2, $product->embeddings);
-        $this->assertInstanceOf(ProductEmbedding::class, $product->embeddings->first());
+        $this->assertInstanceOf(ProductEmbedding::class, $productBase->embedding);
+        $this->assertSame('model-a', $productBase->embedding->model);
     }
 
     public function test_product_has_many_enrichment_logs(): void
@@ -88,13 +87,15 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertInstanceOf(EnrichmentLog::class, $product->enrichmentLogs->first());
     }
 
-    public function test_embedding_and_enrichment_log_belong_to_product(): void
+    public function test_embedding_belongs_to_product_base_and_log_belongs_to_product(): void
     {
+        $productBase = ProductBase::factory()->create();
+        $embedding = ProductEmbedding::factory()->create(['product_base_id' => $productBase->id]);
+
         $product = Product::factory()->create();
-        $embedding = ProductEmbedding::factory()->create(['product_id' => $product->id]);
         $log = EnrichmentLog::factory()->create(['product_id' => $product->id]);
 
-        $this->assertSame($product->id, $embedding->product->id);
+        $this->assertSame($productBase->id, $embedding->productBase->id);
         $this->assertSame($product->id, $log->product->id);
     }
 
@@ -107,15 +108,23 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertSame($batch->id, $batch->stagingArticoli->first()->importBatch->id);
     }
 
-    public function test_deleting_product_cascades_to_embeddings_and_logs(): void
+    public function test_deleting_product_base_cascades_to_embeddings(): void
+    {
+        $productBase = ProductBase::factory()->create();
+        ProductEmbedding::factory()->create(['product_base_id' => $productBase->id]);
+
+        $productBase->delete();
+
+        $this->assertDatabaseCount('product_embeddings', 0);
+    }
+
+    public function test_deleting_product_cascades_to_enrichment_logs(): void
     {
         $product = Product::factory()->create();
-        ProductEmbedding::factory()->create(['product_id' => $product->id]);
         EnrichmentLog::factory()->count(2)->create(['product_id' => $product->id]);
 
         $product->delete();
 
-        $this->assertDatabaseCount('product_embeddings', 0);
         $this->assertDatabaseCount('enrichment_logs', 0);
     }
 
