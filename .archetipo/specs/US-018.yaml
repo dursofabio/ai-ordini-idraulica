@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-018
+title: Job embedding prodotti-base e storage su pgvector
+epic:
+  code: EP-005
+  title: Embedding Vettoriale
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-017
+scope: MVP
+body: |-
+  #### US-018: Job embedding prodotti-base e storage su pgvector
+
+  **Epica:** EP-005 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-017
+
+  **User Story**
+  Come operatore commerciale,
+  voglio che ogni prodotto-base abbia un vettore semantico aggiornato nella tabella pgvector,
+  così da poter trovare articoli tramite ricerca semantica anche con termini diversi da quelli nella descrizione originale.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, eseguire `php artisan catalog:embed --missing` genera un vettore per ogni prodotto-base privo di embedding; la tabella `product_embeddings` è popolata; una query di similarità coseno restituisce risultati ordinati correttamente per pertinenza semantica.
+
+  **Criteri di Accettazione**
+  - [ ] Il job genera un embedding dalla `description_ai` del prodotto-base e lo salva tramite `updateOrCreate`
+  - [ ] Esiste sempre al massimo un embedding per product_base
+  - [ ] La rigenerazione viene avviata automaticamente quando `description_ai` cambia
+  - [ ] Il job usa la coda `embed` dedicata e logga gli errori senza interrompere gli altri job del batch

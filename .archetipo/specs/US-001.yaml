@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-001
+title: Setup ambiente Sail con PostgreSQL/pgvector e Redis
+epic:
+  code: EP-000
+  title: Fondamenta del Progetto
+priority: HIGH
+points: 3
+status: TODO
+scope: MVP
+body: |-
+  #### US-001: Setup ambiente Sail con PostgreSQL/pgvector e Redis
+
+  **Epica:** EP-000 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio un ambiente Docker funzionante con PostgreSQL 16 + pgvector e Redis,
+  così da poter sviluppare e testare tutte le funzionalità del catalogo senza configurazioni manuali.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, uno sviluppatore può eseguire `sail up` e verificare che PostgreSQL risponde, l'estensione `vector` è attiva e Redis è raggiungibile.
+
+  **Criteri di Accettazione**
+  - [ ] `sail up` avvia tutti i container (laravel.test, pgsql, redis) senza errori
+  - [ ] `SELECT 1 FROM pg_extension WHERE extname='vector'` restituisce una riga in PostgreSQL
+  - [ ] Redis risponde al PING tramite `sail redis-cli ping`
+  - [ ] Le variabili d'ambiente DB_CONNECTION=pgsql, QUEUE_CONNECTION=redis, CACHE_STORE=redis sono configurate in .env.example

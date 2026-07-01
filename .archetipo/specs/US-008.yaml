@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-008
+title: Upsert idempotente da staging a products
+epic:
+  code: EP-002
+  title: Importazione XLSX
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-007
+scope: MVP
+body: |-
+  #### US-008: Upsert idempotente da staging a products
+
+  **Epica:** EP-002 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-007
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che il contenuto dello staging venga promosso a products in modo idempotente,
+  così da reimportare il file senza duplicati e riarricchire solo gli articoli la cui descrizione è cambiata.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, eseguire due import consecutivi dello stesso file lascia il conteggio di `products` invariato; modificare la descrizione di un articolo nel file e reimportarlo reimposta il suo `enrichment_status` a `pending`; aggiornare solo costo o giacenza non altera lo stato di arricchimento.
+
+  **Criteri di Accettazione**
+  - [ ] Record nuovo → INSERT con `enrichment_status='pending'` e `is_active` calcolato
+  - [ ] Record esistente con `description_raw` cambiata → UPDATE + reset `enrichment_status='pending'`
+  - [ ] Record esistente invariato nel testo → UPDATE solo costo/giacenza, nessun reset dello stato
+  - [ ] `is_active=false` se `costo=0 AND giacenza<=0`
+  - [ ] Il conteggio `rows_new` e `rows_updated` in `import_batches` è corretto al termine

@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-004
+title: 'Migrazioni prodotto: product_bases, products, product_attributes'
+epic:
+  code: EP-001
+  title: Modello Dati
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-003
+scope: MVP
+body: |-
+  #### US-004: Migrazioni prodotto: product_bases, products, product_attributes
+
+  **Epica:** EP-001 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-003
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio le migrazioni per product_bases, products e product_attributes con i modelli Eloquent,
+  così da avere la struttura dati centrale su cui poggia tutta la pipeline di arricchimento e la ricerca.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, `php artisan migrate` crea le tre tabelle; un prodotto può essere creato con la sua chiave naturale, associato a un product_base, e i suoi attributi tecnici possono essere interrogati per chiave e valore numerico con i filtri range.
+
+  **Criteri di Accettazione**
+  - [ ] Le tabelle `product_bases`, `products`, `product_attributes` esistono con tutti i campi dello schema
+  - [ ] `products.codice_articolo` ha un indice unique
+  - [ ] `products.enrichment_status` ha un indice e il default `pending`
+  - [ ] `product_attributes` ha gli indici compositi su `(key, value_num)` e `(product_id, key)`
+  - [ ] I modelli Eloquent hanno le relazioni corrette: productBase, brand, family, subfamily, attributes

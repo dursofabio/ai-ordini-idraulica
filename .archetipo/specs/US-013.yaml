@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-013
+title: Client Claude HTTP per chiamate Messages e Batch
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 2
+status: TODO
+scope: MVP
+body: |-
+  #### US-013: Client Claude HTTP per chiamate Messages e Batch
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio un client HTTP per le API di Claude configurato tramite variabili d'ambiente,
+  così da poter chiamare l'AI in modo sicuro e controllato da tutti i job di arricchimento.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un test con mock HTTP invia correttamente una richiesta alle API Anthropic con gli header richiesti e riceve una risposta parsata con content e usage; la chiave API non è mai hardcodata nel codice.
+
+  **Criteri di Accettazione**
+  - [ ] Il client legge modello e chiave API da `config('services.anthropic.*')`
+  - [ ] Le chiamate includono gli header `x-api-key` e `anthropic-version` corretti
+  - [ ] Il client ha retry configurabile (max 2 tentativi, delay 2s) e timeout di 120s
+  - [ ] L'uso dei token (`tokens_in`, `tokens_out`) è estratto dalla risposta e restituito al chiamante
+  - [ ] Un test con mock HTTP verifica comportamento su risposta valida e su errore HTTP 4xx/5xx

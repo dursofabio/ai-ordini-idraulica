@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-014
+title: Job classificazione AI a lotti con output strutturato
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 5
+status: TODO
+blocked_by:
+  - US-013
+scope: MVP
+body: |-
+  #### US-014: Job classificazione AI a lotti con output strutturato
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-013
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che i prodotti privi di marca o famiglia vengano classificati automaticamente dall'AI in lotti,
+  così da completare la tassonomia del catalogo in modo rapido ed economico.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, avviare l'arricchimento AI su 100 prodotti senza marca crea i job in coda, li elabora e produce output JSON con marca, famiglia, sottofamiglia, tipo prodotto e descrizione arricchita; i risultati sono loggati in `enrichment_logs` con token e modello utilizzato.
+
+  **Criteri di Accettazione**
+  - [ ] Il job aggrega 20-50 prodotti per chiamata API per ridurre l'overhead
+  - [ ] La risposta è JSON valido con lo schema atteso; se non valida → un retry, poi `needs_review`
+  - [ ] Solo famiglie e marche della tassonomia esistente possono essere assegnate (tassonomia chiusa)
+  - [ ] Ogni elaborazione produce un record in `enrichment_logs` con input, output, confidence, tokens, modello
+  - [ ] Il job usa il modello veloce (haiku) per la classificazione massiva e il modello smart (sonnet) solo per i casi a bassa confidenza

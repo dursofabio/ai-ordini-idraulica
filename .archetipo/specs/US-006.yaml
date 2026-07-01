@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-006
+title: Creazione batch import con deduplicazione hash
+epic:
+  code: EP-002
+  title: Importazione XLSX
+priority: HIGH
+points: 2
+status: TODO
+scope: MVP
+body: |-
+  #### US-006: Creazione batch import con deduplicazione hash
+
+  **Epica:** EP-002 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio poter avviare un'importazione da file XLSX con rilevamento automatico dei duplicati,
+  così da non reimportare inutilmente file già elaborati e avere un log completo di ogni operazione.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, caricare due volte lo stesso file XLSX produce un solo import_batch completato; il secondo tentativo viene bloccato con un avviso; i metadati del batch (nome file, hash, status) sono visibili nel database.
+
+  **Criteri di Accettazione**
+  - [ ] L'avvio di un import crea un record `import_batches` con filename, hash MD5 e status `uploaded`
+  - [ ] Un secondo import dello stesso file (hash identico a un batch completato) restituisce un avviso e non crea un nuovo batch
+  - [ ] Lo status del batch avanza correttamente: `uploaded` → `importing` → `enriching` → `completed`/`failed`
+  - [ ] Il comando `catalog:import` accetta il path del file come argomento

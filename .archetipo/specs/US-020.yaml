@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-020
+title: API REST GET /api/search con filtri e paginazione
+epic:
+  code: EP-006
+  title: Motore di Ricerca Ibrido
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-019
+scope: MVP
+body: |-
+  #### US-020: API REST GET /api/search con filtri e paginazione
+
+  **Epica:** EP-006 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-019
+
+  **User Story**
+  Come sviluppatore di un'applicazione client,
+  voglio un endpoint REST per la ricerca del catalogo con filtri e paginazione,
+  così da integrare la ricerca in qualsiasi frontend o sistema esterno tramite una API standardizzata.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, `GET /api/search?q=vaillant+unita+interna&family=condizionamento&potenza_min=2&potenza_max=6` restituisce un JSON paginato con prodotti-base raggruppati, varianti, punteggi e metadati di pagina.
+
+  **Criteri di Accettazione**
+  - [ ] GET /api/search accetta i parametri: `q`, `brand`, `family`, `potenza_min`, `potenza_max`, `only_available`, `page`
+  - [ ] La risposta include `data[]` (product_base con varianti e attributi) e `meta` (total, page)
+  - [ ] I parametri non valorizzati sono ignorati senza produrre errori
+  - [ ] La risposta ha Content-Type application/json e status 200 anche con zero risultati
+  - [ ] I risultati espongono `variants_count` e il range degli attributi numerici (es. `potenza_range`)

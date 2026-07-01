@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-027
+title: Scheduler per reimport automatico e job notturno embedding
+epic:
+  code: EP-008
+  title: Comandi e Scheduling
+priority: LOW
+points: 2
+status: TODO
+blocked_by:
+  - US-026
+scope: Growth
+body: |-
+  #### US-027: Scheduler per reimport automatico e job notturno embedding
+
+  **Epica:** EP-008 | **Priorità:** LOW | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** US-026
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che il sistema verifichi periodicamente se il file gestionale è cambiato e avvii automaticamente un reimport,
+  così da mantenere il catalogo aggiornato senza intervento manuale.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, modificare il file in `storage/import/` avvia automaticamente l'import al prossimo ciclo dello scheduler; ogni notte vengono generati gli embedding mancanti; i log non producono rumore quando non ci sono modifiche.
+
+  **Criteri di Accettazione**
+  - [ ] Lo scheduler controlla il file sorgente e avvia l'import solo se l'hash è cambiato rispetto all'ultimo batch completato
+  - [ ] Un job notturno genera gli embedding per i prodotti-base senza vettore
+  - [ ] La frequenza di controllo è configurabile tramite variabile d'ambiente
+  - [ ] I log dello scheduler registrano le esecuzioni senza produrre rumore quando non ci sono modifiche

@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-017
+title: Client embedding Voyage AI configurabile
+epic:
+  code: EP-005
+  title: Embedding Vettoriale
+priority: HIGH
+points: 2
+status: TODO
+scope: MVP
+body: |-
+  #### US-017: Client embedding Voyage AI configurabile
+
+  **Epica:** EP-005 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio un client HTTP per il provider di embedding configurato tramite variabili d'ambiente,
+  così da poter vettorizzare le descrizioni dei prodotti-base in modo uniforme e sostituibile senza modificare il codice applicativo.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un test con mock HTTP invia correttamente una stringa al provider e riceve un vettore float[1024]; la chiave API e il modello non sono mai hardcodati nel codice.
+
+  **Criteri di Accettazione**
+  - [ ] Il client legge endpoint, modello e chiave da `config('services.embedding.*')`
+  - [ ] Il client restituisce un array di float con dimensione `EMBEDDING_DIM` coerente con la colonna `vector(N)`
+  - [ ] Un test con mock HTTP verifica il comportamento su risposta valida e su errore del provider
+  - [ ] Il client è iniettabile tramite dependency injection per facilitare i test

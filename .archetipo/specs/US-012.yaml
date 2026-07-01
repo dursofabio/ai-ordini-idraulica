@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-012
+title: Propagazione famiglia/sottofamiglia nel product_base
+epic:
+  code: EP-003
+  title: Arricchimento Deterministico
+priority: MEDIUM
+points: 2
+status: TODO
+blocked_by:
+  - US-011
+scope: MVP
+body: |-
+  #### US-012: Propagazione famiglia/sottofamiglia nel product_base
+
+  **Epica:** EP-003 | **Priorità:** MEDIUM | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** US-011
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che la famiglia e la sottofamiglia vengano propagate automaticamente alle varianti prive di classificazione all'interno dello stesso product_base,
+  così da aumentare la copertura della tassonomia prima di richiedere l'intervento dell'AI.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, se 3 varianti su 4 di un product_base hanno `family_id` valorizzato, la quarta viene aggiornata automaticamente con lo stesso valore e `family_source='propagated'`.
+
+  **Criteri di Accettazione**
+  - [ ] Varianti senza `family_id` all'interno di un product_base ricevono il `family_id` prevalente nel gruppo
+  - [ ] Le varianti aggiornate hanno `family_source='propagated'`
+  - [ ] La propagazione non sovrascrive valori con `family_source='file'`, `'ai'` o `'manual'`
+  - [ ] Il job è idempotente: rieseguirlo non altera varianti già classificate

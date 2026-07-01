@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-009
+title: BrandResolver con regex e dizionario alias
+epic:
+  code: EP-003
+  title: Arricchimento Deterministico
+priority: HIGH
+points: 3
+status: TODO
+scope: MVP
+body: |-
+  #### US-009: BrandResolver con regex e dizionario alias
+
+  **Epica:** EP-003 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che la marca venga recuperata automaticamente dalla descrizione dei prodotti tramite regole deterministiche,
+  così da ridurre il numero di articoli senza marca prima di ricorrere all'AI.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, eseguire l'arricchimento deterministico su un campione di articoli senza marca recupera la marca correttamente per i casi con pattern `-MARCA-` a fine stringa e per i match inline dal dizionario; la `description_clean` non contiene più il testo della marca.
+
+  **Criteri di Accettazione**
+  - [ ] Il pattern `-MARCA-` a fine descrizione viene riconosciuto con `confidence=95` e `brand_source='regex'`
+  - [ ] Il match inline dal dizionario alias viene riconosciuto con `confidence=80`
+  - [ ] La marca estratta viene rimossa dalla `description_clean`
+  - [ ] Articoli senza match lasciano `brand_id=null` senza alterare lo stato di arricchimento
+  - [ ] I test unitari coprono: pattern fine stringa, match inline, nessun match, match ambiguo

@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-025
+title: Dashboard widget copertura catalogo e costi AI
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 3
+status: TODO
+scope: MVP
+body: |-
+  #### US-025: Dashboard widget copertura catalogo e costi AI
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio una dashboard che mostri la copertura attuale di marca, famiglia e sottofamiglia e i costi AI per batch,
+  così da monitorare la qualità del catalogo e il budget speso senza interrogare il database manualmente.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, la dashboard Filament mostra le percentuali di copertura per marca, famiglia e sottofamiglia, il numero di articoli per stato di arricchimento e il costo AI stimato dell'ultimo batch.
+
+  **Criteri di Accettazione**
+  - [ ] Widget copertura: percentuale di prodotti con marca, famiglia e sottofamiglia valorizzate
+  - [ ] Widget stato: conteggio articoli per `enrichment_status` (pending, enriched, needs_review, done)
+  - [ ] Widget costi AI: somma token (in + out) per batch con stima costo in valuta
+  - [ ] Widget articoli inattivi: conteggio `is_active=false`
+  - [ ] I widget si aggiornano senza ricaricare la pagina

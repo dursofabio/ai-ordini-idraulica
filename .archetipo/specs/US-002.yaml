@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-002
+title: Filament 5 e Horizon installati e accessibili
+epic:
+  code: EP-000
+  title: Fondamenta del Progetto
+priority: HIGH
+points: 2
+status: TODO
+blocked_by:
+  - US-001
+scope: MVP
+body: |-
+  #### US-002: Filament 5 e Horizon installati e accessibili
+
+  **Epica:** EP-000 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** US-001
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio Filament 5 e Laravel Horizon installati e accessibili via browser,
+  così da avere il backoffice di amministrazione e il monitoring delle code pronti per i prossimi incrementi.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, uno sviluppatore può aprire /admin e /horizon nel browser e vedere rispettivamente la dashboard Filament e la dashboard Horizon attive e funzionanti.
+
+  **Criteri di Accettazione**
+  - [ ] GET /admin risponde con la pagina di login di Filament senza errori 500
+  - [ ] GET /horizon risponde con la dashboard di Horizon
+  - [ ] Le code `import`, `enrich`, `embed`, `default` sono definite nella configurazione di Horizon
+  - [ ] Un utente admin può autenticarsi al backoffice Filament

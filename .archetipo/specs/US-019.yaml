@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-019
+title: SearchService con fusione vettoriale, full-text e filtri strutturati
+epic:
+  code: EP-006
+  title: Motore di Ricerca Ibrido
+priority: HIGH
+points: 5
+status: TODO
+scope: MVP
+body: |-
+  #### US-019: SearchService con fusione vettoriale, full-text e filtri strutturati
+
+  **Epica:** EP-006 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come operatore commerciale,
+  voglio poter cercare articoli con parole chiave, codici tecnici o descrizioni in linguaggio naturale e ricevere risultati raggruppati per prodotto-base,
+  così da trovare rapidamente l'articolo giusto anche quando non ricordo il codice esatto o uso sinonimi del dominio.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, cercare 'scaldabagno a pompa di calore' restituisce prodotti-base rilevanti ordinati per punteggio; il raggruppamento espone il numero di varianti disponibili e il range di potenza; una ricerca per codice esatto restituisce il prodotto corretto in testa.
+
+  **Criteri di Accettazione**
+  - [ ] La ricerca combina punteggio vettoriale (coseno) e full-text (`tsvector` italian) tramite fusione pesata (es. 70% vettoriale, 30% FTS)
+  - [ ] I risultati sono raggruppati per `product_base_id`, non per singola variante
+  - [ ] I filtri per marca, famiglia e attributi numerici range riducono correttamente il pool prima del ranking
+  - [ ] Il p95 di latenza è < 300ms su 42k prodotti-base con indice HNSW attivo
+  - [ ] L'embedding della query è calcolato con cache Redis per evitare chiamate ripetute

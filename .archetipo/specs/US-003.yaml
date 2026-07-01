@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-003
+title: 'Migrazioni anagrafiche: brands, families, subfamilies'
+epic:
+  code: EP-001
+  title: Modello Dati
+priority: HIGH
+points: 2
+status: TODO
+scope: MVP
+body: |-
+  #### US-003: Migrazioni anagrafiche: brands, families, subfamilies
+
+  **Epica:** EP-001 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio le migrazioni per brands, families e subfamilies con i relativi modelli Eloquent,
+  così da poter normalizzare le anagrafiche del catalogo e associare i prodotti a entità condivise e riutilizzabili.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, `php artisan migrate` crea le tre tabelle; un brand con aliases JSON e una famiglia con la sua sottofamiglia possono essere creati e recuperati correttamente tramite i modelli Eloquent.
+
+  **Criteri di Accettazione**
+  - [ ] Le tabelle `brands`, `families`, `subfamilies` esistono con tutti i campi dello schema (id, name, slug, aliases, timestamps)
+  - [ ] `Brand` espone il campo `aliases` come cast JSON
+  - [ ] `Subfamily` appartiene a `Family` tramite `family_id` nullable
+  - [ ] I factory generano dati validi per i test unitari e di feature

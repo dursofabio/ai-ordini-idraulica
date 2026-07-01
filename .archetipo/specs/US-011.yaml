@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-011
+title: Clustering prodotti-base tramite grouping_key
+epic:
+  code: EP-003
+  title: Arricchimento Deterministico
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-010
+scope: MVP
+body: |-
+  #### US-011: Clustering prodotti-base tramite grouping_key
+
+  **Epica:** EP-003 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-010
+
+  **User Story**
+  Come operatore commerciale,
+  voglio che le varianti dello stesso articolo commerciale siano raggruppate automaticamente sotto un unico prodotto-base,
+  così da non vedere risultati duplicati nella ricerca per ogni taglia o misura dello stesso prodotto.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, le 4 varianti della serie 'VAI 8 WNI VAILLANT' (025/035/050/065) condividono lo stesso `product_base_id`; il product_base ha un titolo leggibile generato automaticamente da tipo + serie + marca.
+
+  **Criteri di Accettazione**
+  - [ ] Varianti con stessa marca + tipo + serie generano la stessa `grouping_key` (hash normalizzato)
+  - [ ] Il token taglia (es. `025`, `035`) viene escluso dal calcolo della `grouping_key`
+  - [ ] Un `product_base` viene creato o riutilizzato per ogni gruppo distinto con `title` leggibile
+  - [ ] Tutte le varianti del gruppo vengono associate al `product_base` tramite `product_base_id`
+  - [ ] Il test di regressione verifica il caso VAILLANT VAI 8 WNI con 4 taglie

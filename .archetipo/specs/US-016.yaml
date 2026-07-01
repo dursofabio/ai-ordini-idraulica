@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-016
+title: Cache arricchimento e tetto di spesa AI configurabile
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: MEDIUM
+points: 2
+status: TODO
+blocked_by:
+  - US-015
+scope: MVP
+body: |-
+  #### US-016: Cache arricchimento e tetto di spesa AI configurabile
+
+  **Epica:** EP-004 | **Priorità:** MEDIUM | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** US-015
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che descrizioni identiche non vengano inviate all'AI una seconda volta e che esista un limite di spesa configurabile per batch,
+  così da contenere i costi AI su reimport frequenti e su grandi volumi.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, reimportare un file con 1.000 articoli invariati non genera nuove chiamate API; configurare un tetto di spesa blocca l'elaborazione quando il costo stimato supera il limite e registra l'evento nei log.
+
+  **Criteri di Accettazione**
+  - [ ] Una cache (keyed su hash della `description_raw`) restituisce l'arricchimento precedente senza chiamare l'API
+  - [ ] Il tetto di spesa per batch è configurabile tramite variabile d'ambiente
+  - [ ] Quando il tetto viene raggiunto il job si ferma e logga l'evento con il costo stimato
+  - [ ] Descrizioni identiche su batch diversi contano come un solo arricchimento

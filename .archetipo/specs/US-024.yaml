@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-024
+title: Azione upload XLSX con barra progresso
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: HIGH
+points: 3
+status: TODO
+scope: MVP
+body: |-
+  #### US-024: Azione upload XLSX con barra progresso
+
+  **Epica:** EP-007 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio caricare il file XLSX direttamente dal backoffice Filament e monitorare il progresso dell'importazione,
+  così da non dover accedere alla riga di comando per avviare un import.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'amministratore può caricare un file XLSX dal backoffice, vedere l'avanzamento dell'operazione e ricevere una notifica al termine con il riepilogo delle righe importate, aggiornate e saltate.
+
+  **Criteri di Accettazione**
+  - [ ] Il backoffice espone un'azione o pagina dedicata per l'upload di file XLSX
+  - [ ] Il progresso dell'import è visibile (es. tramite polling sullo stato del batch o indicatore Filament)
+  - [ ] Al termine viene mostrato il riepilogo: righe totali, nuove, aggiornate, skippate
+  - [ ] Un file non XLSX o danneggiato produce un messaggio di errore chiaro senza eccezioni non gestite

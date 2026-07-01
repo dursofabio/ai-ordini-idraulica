@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-007
+title: Lettura XLSX a chunk in staging_articoli
+epic:
+  code: EP-002
+  title: Importazione XLSX
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-006
+scope: MVP
+body: |-
+  #### US-007: Lettura XLSX a chunk in staging_articoli
+
+  **Epica:** EP-002 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-006
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che il file XLSX da 42.000+ righe venga letto in chunk tramite job in coda,
+  così da evitare timeout e picchi di memoria durante l'importazione.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'import di un file da 42.614 righe completa senza errori di memoria; le righe sono presenti in `staging_articoli` con tutti i campi mappati correttamente e la riga grezza in `raw_row`.
+
+  **Criteri di Accettazione**
+  - [ ] Il reader processa chunk da 1.000 righe senza superare i limiti di memoria PHP
+  - [ ] Ogni riga in `staging_articoli` ha `codice_articolo`, `descrizione`, `costo`, `giacenza` e `raw_row` popolati
+  - [ ] Le colonne dell'XLSX sono mappate correttamente tramite heading row (es. 'Descrizione Marca' → `descrizione_marca`)
+  - [ ] Righe con `codice_articolo` vuoto vengono saltate e il conteggio skippate è registrato nel batch

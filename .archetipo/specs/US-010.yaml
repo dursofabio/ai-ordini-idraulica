@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-010
+title: Estrattori attributi tecnici regex (kW, litri, pollici, materiale)
+epic:
+  code: EP-003
+  title: Arricchimento Deterministico
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-009
+scope: MVP
+body: |-
+  #### US-010: Estrattori attributi tecnici regex (kW, litri, pollici, materiale)
+
+  **Epica:** EP-003 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-009
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che gli attributi tecnici (potenza kW, capacità litri, attacchi pollici, dimensioni, materiale) vengano estratti automaticamente dalle descrizioni tramite pattern regex,
+  così da abilitare i filtri range nella ricerca senza richiedere intervento manuale.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, processare un campione di descrizioni crea i record `product_attributes` attesi; una query `key='potenza_kw' AND value_num BETWEEN 2 AND 6` restituisce i prodotti corretti.
+
+  **Criteri di Accettazione**
+  - [ ] L'estrattore kW popola `value_num` e `unit='kW'` per descrizioni tipo `3.5KW` e codici serie tipo `VAI 8-025`
+  - [ ] L'estrattore litri popola `value_num` e `unit='L'` per descrizioni tipo `BOLLITORE 800 LT`
+  - [ ] L'estrattore pollici popola `value_num` e `unit='"'` per descrizioni tipo `RIDUTTORE 1"`
+  - [ ] L'estrattore materiale popola `value_text` per sigle come `RG`, `INOX`, `PVC`, `RAME`
+  - [ ] Gli attributi hanno `source='regex'` e i numerici hanno `value_num` valorizzato per i filtri range

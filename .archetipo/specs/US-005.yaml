@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-005
+title: Tabelle vettoriali, staging e audit
+epic:
+  code: EP-001
+  title: Modello Dati
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-004
+scope: MVP
+body: |-
+  #### US-005: Tabelle vettoriali, staging e audit
+
+  **Epica:** EP-001 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-004
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio le tabelle product_embeddings (con colonna vector), staging_articoli, import_batches e enrichment_logs,
+  così da poter tracciare ogni import, arricchimento AI e vettore in modo completo e auditabile.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, `php artisan migrate` crea tutte le tabelle; la colonna `embedding vector(1024)` esiste e l'indice HNSW è attivo; un enrichment_log può essere creato con input/output JSON e token conteggiati.
+
+  **Criteri di Accettazione**
+  - [ ] Le tabelle `product_embeddings`, `staging_articoli`, `import_batches`, `enrichment_logs` esistono
+  - [ ] `product_embeddings.embedding` è di tipo `vector(1024)` con indice HNSW `vector_cosine_ops`
+  - [ ] `import_batches.hash` ha un indice per la deduplicazione
+  - [ ] `enrichment_logs` registra `step`, `input`, `output`, `confidence`, `model`, `tokens_in`, `tokens_out`

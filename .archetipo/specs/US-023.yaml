@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-023
+title: Coda revisione 'Da revisionare' con azioni conferma/correggi/scarta
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: HIGH
+points: 5
+status: TODO
+scope: MVP
+body: |-
+  #### US-023: Coda revisione 'Da revisionare' con azioni conferma/correggi/scarta
+
+  **Epica:** EP-007 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio una coda di lavoro con tutti gli articoli a bassa confidenza AI e azioni rapide per confermare, correggere o scartare le proposte,
+  così da supervisionare la qualità del catalogo in modo efficiente senza dover aprire ogni record singolarmente.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, la pagina 'Da revisionare' mostra gli articoli con `enrichment_status='needs_review'` ordinati per confidenza crescente; cliccando 'Conferma' i valori AI vengono promossi e il record sparisce dalla coda; cliccando 'Correggi' si apre un form inline per inserire i valori corretti.
+
+  **Criteri di Accettazione**
+  - [ ] La lista mostra: descrizione originale, proposta AI (marca, famiglia), confidenza
+  - [ ] Azione 'Conferma' → promuove i valori AI, `enrichment_status='done'`
+  - [ ] Azione 'Correggi' → salva i valori inseriti con `source='manual'`, `enrichment_status='done'`
+  - [ ] Azione 'Scarta' → cancella la proposta AI e mantiene `needs_review` per una futura ri-elaborazione
+  - [ ] Il contatore totale degli articoli in coda è visibile in testa alla pagina

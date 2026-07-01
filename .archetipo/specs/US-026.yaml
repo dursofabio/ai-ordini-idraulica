@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-026
+title: Comandi artisan per la gestione del catalogo
+epic:
+  code: EP-008
+  title: Comandi e Scheduling
+priority: MEDIUM
+points: 3
+status: TODO
+scope: MVP
+body: |-
+  #### US-026: Comandi artisan per la gestione del catalogo
+
+  **Epica:** EP-008 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come sviluppatore o amministratore di sistema,
+  voglio comandi artisan per avviare manualmente import, arricchimento, embedding e reindex,
+  così da poter eseguire operazioni di manutenzione e debug dalla riga di comando senza passare dal backoffice.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, `php artisan catalog:import storage/catalogo.xlsx` avvia un import completo e riporta il riepilogo; `php artisan catalog:embed --missing` genera gli embedding mancanti; ogni comando produce output leggibile con contatori e status finale.
+
+  **Criteri di Accettazione**
+  - [ ] `catalog:import {file}` avvia staging + upsert e riporta il riepilogo (totali, nuovi, aggiornati)
+  - [ ] `catalog:enrich {--only=pending}` esegue Step A e dispatcha Step B per i record pending
+  - [ ] `catalog:embed {--missing}` dispatcha EmbedProductBaseJob per i product_base senza embedding
+  - [ ] `catalog:reindex` ricostruisce gli indici FTS (tsvector) su product_bases
+  - [ ] Ogni comando gestisce gli errori e restituisce exit code non-zero in caso di fallimento

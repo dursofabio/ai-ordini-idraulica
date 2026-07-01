@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-021
+title: Resource prodotti e prodotti-base con override manuale
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: HIGH
+points: 5
+status: TODO
+scope: MVP
+body: |-
+  #### US-021: Resource prodotti e prodotti-base con override manuale
+
+  **Epica:** EP-007 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio poter visualizzare, filtrare e correggere manualmente marca, famiglia e attributi di ogni prodotto e prodotto-base dal backoffice,
+  così da mantenere la qualità del catalogo senza accedere al database direttamente.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'amministratore può aprire un prodotto dal backoffice, modificare la marca assegnata e salvare; il prodotto mostra `brand_source='manual'` e `brand_confidence=100`; l'AI non sovrascrive quel valore nei reimport successivi.
+
+  **Criteri di Accettazione**
+  - [ ] `ProductResource` espone lista con filtri per stato arricchimento, marca e famiglia
+  - [ ] La modifica manuale di marca/famiglia imposta `source='manual'` e `confidence=100`
+  - [ ] `ProductBaseResource` permette di modificare `title` e `description_ai`
+  - [ ] Il pulsante 'Rigenera embedding' su un product_base dispatcha il job di embedding
+  - [ ] I valori con `source='manual'` sono visivamente distinti dagli altri in lista e in dettaglio

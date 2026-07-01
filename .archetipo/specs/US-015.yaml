@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-015
+title: Scrittura arricchimento con regole di confidenza
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 3
+status: TODO
+blocked_by:
+  - US-014
+scope: MVP
+body: |-
+  #### US-015: Scrittura arricchimento con regole di confidenza
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-014
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che i risultati dell'AI vengano applicati ai prodotti solo se superano una soglia di confidenza,
+  così da mantenere alta la qualità del catalogo e identificare facilmente gli articoli da revisionare manualmente.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un articolo con `confidence=90` viene arricchito automaticamente con `enrichment_status='enriched'`; uno con `confidence=70` riceve i valori AI ma viene marcato `needs_review`; uno con `confidence=40` non riceve valori AI e viene marcato `needs_review`.
+
+  **Criteri di Accettazione**
+  - [ ] `confidence >= 85` → applica valori AI, `enrichment_status='enriched'`
+  - [ ] `confidence 60-84` → applica valori AI, `enrichment_status='needs_review'`
+  - [ ] `confidence < 60` → non applica valori AI, `enrichment_status='needs_review'`
+  - [ ] I valori con `brand_source='manual'` non vengono mai sovrascritti dall'AI
+  - [ ] Ogni applicazione aggiorna il campo `source` con `'ai'` e il campo `confidence` con il valore ricevuto
