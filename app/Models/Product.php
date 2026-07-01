@@ -97,4 +97,24 @@ class Product extends Model
     {
         return $this->hasMany(ProductAttribute::class);
     }
+
+    /**
+     * The vector embeddings generated for this product.
+     *
+     * @return HasMany<ProductEmbedding, $this>
+     */
+    public function embeddings(): HasMany
+    {
+        return $this->hasMany(ProductEmbedding::class);
+    }
+
+    /**
+     * The enrichment audit log entries for this product.
+     *
+     * @return HasMany<EnrichmentLog, $this>
+     */
+    public function enrichmentLogs(): HasMany
+    {
+        return $this->hasMany(EnrichmentLog::class);
+    }
 }

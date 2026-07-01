@@ -56,59 +56,68 @@ tasks:
     title: Migration import_batches
     description: Creare la migration create_import_batches_table con filename, hash (indicizzato per dedup), status (default pending, indicizzato), contatori total/processed/error_rows, started_at/finished_at e timestamps.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Migration staging_articoli
     description: Creare la migration create_staging_articoli_table con FK nullable import_batch_id (nullOnDelete), payload JSON, row_number, codice_articolo (indicizzato), status (default pending, indicizzato) ed error.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Migration product_embeddings con vector(1024) + HNSW
     description: Creare la migration con FK product_id (cascade), content, model, colonna embedding vector(1024) su pgsql (fallback text) e indice HNSW vector_cosine_ops guardato dal driver pgsql; indice unico (product_id, model).
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-03
   - id: TASK-04
     title: Migration enrichment_logs
     description: Creare la migration create_enrichment_logs_table con FK product_id (cascade), step (indicizzato), input/output JSON, confidence, model, tokens_in, tokens_out e indice composito (product_id, step).
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-04
   - id: TASK-05
     title: Model Eloquent + relazioni
     description: Creare i model ProductEmbedding, StagingArticolo, ImportBatch, EnrichmentLog con Fillable, casts e relazioni; aggiungere le relazioni inverse embeddings/enrichmentLogs su Product.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Factory per i nuovi model
     description: Creare le factory per ProductEmbedding, StagingArticolo, ImportBatch, EnrichmentLog coerenti con lo stile US-004 e SQLite-safe per i test.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Test schema, indici e default
     description: Feature test (RequiresDatabase + RefreshDatabase) che verifica esistenza tabelle/colonne, indice su import_batches.hash, indici su status/step, indici compositi e default pending.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: Test relazioni, cast JSON e audit token
     description: Feature test che crea un EnrichmentLog con input/output JSON e token, verifica il round-trip dei cast e le relazioni Product->embeddings/enrichmentLogs e ImportBatch->stagingArticoli.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-08
   - id: TASK-09
     title: Test pgvector (solo pgsql)
     description: Test che salta su driver non-pgsql e su Postgres verifica il tipo colonna vector e l'esistenza dell'indice HNSW su product_embeddings.embedding.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-09
