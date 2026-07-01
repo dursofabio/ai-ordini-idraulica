@@ -37,7 +37,7 @@ class ProductCatalogSchemaTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('products'));
         $this->assertTrue(Schema::hasColumns('products', [
-            'id', 'codice_articolo', 'description_raw', 'descrizione_marca',
+            'id', 'codice_articolo', 'description_raw', 'description_clean', 'descrizione_marca',
             'costo', 'giacenza', 'is_active', 'enrichment_status',
             'product_base_id', 'brand_id', 'family_id', 'subfamily_id',
             'brand_source', 'family_source', 'subfamily_source', 'source',

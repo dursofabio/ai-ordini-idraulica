@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable([
     'codice_articolo',
     'description_raw',
+    'description_clean',
     'descrizione_marca',
     'costo',
     'giacenza',

@@ -63,25 +63,29 @@ tasks:
     title: Migration description_clean su products
     description: 'Aggiungere la colonna products.description_clean (text, nullable, after description_raw) tramite migration dedicata. Nessun backfill: null indica testo non ancora ripulito.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Regressione schema products
     description: Aggiornare ProductCatalogSchemaTest::test_products_table_has_expected_columns per includere description_clean tra le colonne attese.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'BrandResolver: pattern regex, dizionario alias, idempotenza'
     description: 'Creare App\Services\Enrichment\BrandResolver con resolve(Product $product): bool. Step 1 regex suffisso -MARCA- (confidence=95, brand_source=regex). Step 2 dizionario alias inline con rilevamento ambiguita (confidence=80, brand_source=dictionary, 0 o 2+ match distinti = nessuna assegnazione). Guardia idempotenza se brand_id gia valorizzato. Rimozione del segmento marca da description_clean sui soli match risolti; enrichment_status mai toccato.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: 'Test BrandResolver: suffisso, inline, nessun match, ambiguo, idempotenza'
     description: 'Feature test (RequiresDatabase + RefreshDatabase) che copre: match regex di suffisso su name e su alias; match inline dal dizionario; nessun match (brand_id null, description_clean invariata, enrichment_status invariato); match ambiguo tra due brand distinti (nessuna assegnazione); idempotenza su prodotto gia risolto (brand_id preesistente non sovrascritto).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
