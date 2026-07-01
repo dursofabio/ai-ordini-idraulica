@@ -1,0 +1,135 @@
+schema: archetipo/plan/v2
+spec_code: US-020
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+
+  US-019 ha introdotto `App\Services\Search\SearchService::search(string $query, array $filters = []): Collection<SearchResult>`, che applica filtri strutturati per `brand_id`/`family_id`/`subfamily_id`/`attributes` (range numerici via `key`+`min`+`max`) e restituisce risultati raggruppati per `product_base_id` con `variants_count` e `power_range`. Non esiste pero **nessuna pagination** nel service (usa `->get()` eager), **nessun endpoint HTTP**: non c'e `routes/api.php`, non c'e la entry `api:` in `bootstrap/app.php` (che oggi registra solo `web`, `commands`, `health`), non esiste `app/Http/Controllers/Api`, non esiste `app/Http/Resources`, e non e installato Sanctum (non richiesto: l'endpoint e pubblico/interno, nessun criterio di accettazione menziona autenticazione). US-020 aggiunge tutto questo, riusando `SearchService` con un'estensione minima e non distruttiva.
+
+  **Decisioni chiave**
+
+  1. **Estensione non distruttiva di `SearchService::search()`**: aggiungo parametri opzionali `int $page = 1` e `int $perPage = 20` alla firma esistente. Quando *nessuno dei due* e esplicitamente passato mantengo il comportamento US-019 (nessuna breaking change per i 7 test esistenti in `tests/Feature/SearchService*Test.php`, che chiamano `search($query, $filters)` senza pagination). Internamente, la pipeline (`applyFilters` -> `applyRanking` -> `withGroupingMeta`) resta identica; cambia solo la chiamata terminale da `->get()` a `->paginate($perPage, ['*'], 'page', $page)`, con mapping degli item paginati in `SearchResult` dentro un nuovo metodo che preserva i metadati del paginator. Ritorno: `LengthAwarePaginator` il cui `getCollection()` contiene `SearchResult` invece di `ProductBase`, ottenuto con `$paginator->setCollection($paginator->getCollection()->map(...))` — pattern idiomatico Laravel, nessuna nuova classe di paginazione custom.
+
+  2. **`only_available` — nuovo filtro in `applyFilters()`**: non esiste oggi un concetto di disponibilita nel service. L'unico segnale di stock su `Product` e `giacenza` (decimal). Aggiungo alla firma dei `$filters` la chiave opzionale `only_available: bool`, che se `true` applica `whereHas('products', fn ($q) => $q->where('giacenza', '>', 0))` sul builder di `ProductBase` — coerente con la semantica "almeno una variante disponibile", identica all'approccio gia usato per i filtri attributo range (query EXISTS su `products`).
+
+  3. **Bootstrap API routing**: aggiungo `api: __DIR__.'/../routes/api.php'` a `withRouting()` in `bootstrap/app.php` (nuova entry, le altre restano invariate) e creo `routes/api.php` con `Route::get('/search', [SearchController::class, 'index'])`. Nessun prefisso esplicito necessario: Laravel applica automaticamente il prefisso `api/` quando la entry `api` e configurata in `withRouting`, risultando in `GET /api/search` come richiesto dal criterio di accettazione.
+
+  4. **`SearchController` (`App\Http\Controllers\Api\SearchController`)**, nuovo, unico metodo `index(SearchRequest $request): JsonResponse`. Pipeline: valida via Form Request, risolve `brand`/`family` (slug o nome, case-insensitive) nei rispettivi `brand_id`/`family_id` con una query `where('slug', ...) orWhere('name', ...)` — se non trovato, il filtro viene semplicemente ignorato (nessun prodotto in quella fascia = 0 risultati, non un errore, coerente col criterio "parametri non valorizzati/non risolvibili non producono errori"). Compone l'array `$filters` per `SearchService::search()`: `brand_id`, `family_id` (da slug risolti), `only_available` (bool da query `only_available=1`), `attributes` (se `potenza_min`/`potenza_max` presenti, aggiunge `{key: 'potenza_kw', min, max}` — riusa `SearchService::POWER_ATTRIBUTE_KEY`, reso `public` per evitare duplicazione della stringa magica). Chiama `SearchService::search($q, $filters, page: $request->integer('page', 1))` e restituisce `SearchResultCollection` (API Resource).
+
+  5. **`SearchRequest` (Form Request)**: valida tutti i parametri come **opzionali** (`sometimes|nullable`) — nessun campo required, coerente col criterio "parametri non valorizzati sono ignorati senza produrre errori". Regole: `q` string nullable (default `''` se assente, la ricerca vuota e valida e restituisce il pool filtrato/non filtrato), `brand`/`family` string, `potenza_min`/`potenza_max` numeric (con validazione incrociata min<=max quando entrambi presenti), `only_available` boolean, `page` integer min:1. Eventuali valori non validi (es. `potenza_min` non numerico) producono 422 con errori di validazione — comportamento standard Laravel FormRequest, non in conflitto col criterio di accettazione (che si riferisce a parametri *assenti*, non a valori malformati).
+
+  6. **`SearchResult` API Resource** (`App\Http\Resources\SearchResultResource` + `SearchResultCollection`): serializza ogni `SearchResult` (DTO da US-019) in JSON con struttura `{ id, title, brand, family, subfamily, variants: [...], variants_count, potenza_range: {min, max} }` — il campo e nominato `potenza_range` (non `power_range`) per allinearsi esattamente al criterio di accettazione ("es. `potenza_range`") pur mantenendo `power_range_min/max` come nomi interni PHP del DTO US-019 (nessuna modifica al DTO, solo mapping nel Resource). `variants` include per ogni `Product` figlio: `codice_articolo`, `descrizione_marca`/`description_clean`, `costo`, `giacenza`. La `SearchResultCollection` eredita il wrapping automatico di Laravel per le risorse paginate (`data` + `meta` + `links`), delegando la sorgente dei dati al `LengthAwarePaginator` restituito da `SearchService::search()` (vedi punto 1) cosi `meta` include nativamente `total`/`current_page`/`per_page`/`last_page` — soddisfa il criterio `meta (total, page)` come sottoinsieme del meta standard Laravel, scelta idiomatica preferita a un DTO custom.
+
+  7. **Status code e content-type con zero risultati**: nessuna gestione speciale necessaria — un `LengthAwarePaginator` vuoto serializzato da una Resource Collection produce naturalmente `data: []`, `meta.total: 0`, HTTP 200, `Content-Type: application/json` (comportamento di default delle API Resource Laravel). Il controller non deve mai lanciare 404 per ricerca senza risultati.
+
+  8. **Nessuna autenticazione**: la spec non richiede Sanctum ne un guard — l'endpoint resta pubblico, coerente con l'assenza di qualunque criterio di accettazione relativo ad auth/autorizzazione. Non si introduce middleware `auth:sanctum` ne si installa il pacchetto (evita di aggiungere una dipendenza non richiesta, rispettando la regola "non modificare le dipendenze senza approvazione").
+
+  **Alternative scartate**: paginazione manuale della `Collection` gia caricata in memoria con `->slice()` (scartata: richiederebbe comunque eseguire la query completa senza `LIMIT`/`OFFSET` a livello SQL, pessima per performance su 42k prodotti-base, in conflitto con l'obiettivo di performance di US-019); DTO di risposta custom invece di API Resource (scartata: Laravel API Resource e lo standard idiomatico del framework per questo caso, con wrapping `data`/`meta` gratuito); middleware `auth:sanctum` (scartata: nessun criterio di accettazione lo richiede, fuori scope).
+
+  ## Strategia di Test
+
+  - `SearchService` — pagination: feature test (SQLite, generico, pattern esistente in `SearchServiceFiltersTest`) che crea piu di 20 `ProductBase` e verifica che `search($q, [], page: 1, perPage: 5)` restituisca un `LengthAwarePaginator` con `count() === 5`, `total() === N`, e che `page: 2` restituisca elementi diversi dalla pagina 1. Verifica anche che la chiamata legacy senza `page`/`perPage` (usata dai test US-019 esistenti) continui a funzionare invariata.
+  - `SearchService` — filtro `only_available`: feature test che crea varianti con `giacenza > 0` e `giacenza = 0` sotto product-base diversi, verificando che `only_available: true` escluda i product-base le cui varianti hanno tutte `giacenza = 0`.
+  - `SearchController` — endpoint happy path: feature test `getJson('/api/search?q=...&brand=...&family=...&potenza_min=2&potenza_max=6')` che verifica status 200, `Content-Type: application/json`, struttura `data[]` con `variants_count`/`potenza_range`, e `meta.total`/`meta.current_page` presenti e corretti.
+  - `SearchController` — parametri ignorati senza errore: feature test che chiama `/api/search` senza alcun parametro (solo `q` assente) e verifica 200 con l'intero pool (non filtrato) invece di un errore 422/500; altro test con `brand`/`family` inesistenti verifica 200 con `data: []` invece di errore.
+  - `SearchController` — zero risultati: feature test con query che non produce match (es. brand/potenza incompatibili) verifica esplicitamente status 200, `Content-Type: application/json`, `data: []`, `meta.total: 0`.
+  - `SearchController` — validazione valori malformati: feature test con `potenza_min` non numerico o `potenza_min > potenza_max` verifica 422 con errori di validazione strutturati (comportamento standard FormRequest, non in conflitto con l'ignorare parametri *assenti*).
+  - `SearchController` — risoluzione brand/family da slug: feature test che verifica sia lo slug (`brand=vaillant`) sia il nome (case-insensitive) risolvano correttamente al filtro `brand_id` atteso.
+  - Nessuna componente UI in questa spec (endpoint REST puro): non e richiesta strategia e2e.
+tasks:
+  - id: TASK-01
+    title: 'SearchService: pagination opzionale (page/perPage) senza breaking change'
+    description: 'Estendere App\Services\Search\SearchService::search() con parametri opzionali int $page = 1, int $perPage = 20. La pipeline applyFilters -> applyRanking -> withGroupingMeta resta identica; la chiamata terminale usa ->paginate($perPage, [''*''], ''page'', $page) invece di ->get(), poi si rimappano gli item paginati in SearchResult preservando i metadati del LengthAwarePaginator (setCollection). Rendere public la costante POWER_ATTRIBUTE_KEY (da private a public) per riuso dal controller. Il tipo di ritorno cambia da Collection<SearchResult> a LengthAwarePaginator (la cui collection interna contiene SearchResult): verificare che le chiamate esistenti nei test US-019 (che iterano/contano il risultato come Collection) restino compatibili, dato che LengthAwarePaginator espone count()/first()/map() equivalenti.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: 'Test: SearchService pagination (page/perPage, retrocompatibilita chiamata legacy)'
+    description: 'Feature test (SQLite) in tests/Feature/SearchServicePaginationTest.php che crea >20 ProductBase e verifica: paginate(perPage:5, page:1) restituisce 5 elementi e total() corretto; page:2 restituisce elementi diversi da page:1; la chiamata search($q, $filters) senza page/perPage (come nei test US-019 esistenti) continua a restituire tutti i risultati sulla singola pagina di default (perPage=20) senza errori. Eseguire anche gli 7 test esistenti tests/Feature/SearchService*Test.php per confermare nessuna regressione.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: 'SearchService: filtro only_available (giacenza > 0)'
+    description: Estendere applyFilters() in SearchService per gestire la chiave opzionale $filters['only_available'] (bool). Se true, applica whereHas('products', fn ($q) => $q->where('giacenza', '>', 0)) sul builder di ProductBase, stesso pattern EXISTS gia usato per il filtro attributes.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: 'Test: filtro only_available esclude product-base senza varianti disponibili'
+    description: Feature test (SQLite) che crea ProductBase con varianti aventi giacenza > 0 e ProductBase con tutte le varianti a giacenza = 0, verificando che search($q, ['only_available' => true]) restituisca solo i product-base con almeno una variante disponibile.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: 'Bootstrap routing API: routes/api.php + entry in bootstrap/app.php'
+    description: 'Creare routes/api.php (nuovo file) e registrare la entry api: __DIR__.''/../routes/api.php'' in withRouting() dentro bootstrap/app.php, senza modificare le entry web/commands/health esistenti. Nessun middleware di autenticazione richiesto (endpoint pubblico, nessun criterio di accettazione lo richiede).'
+    type: Impl
+    status: TODO
+  - id: TASK-06
+    title: 'SearchRequest: Form Request con validazione parametri opzionali'
+    description: 'Creare App\Http\Requests\SearchRequest (php artisan make:request SearchRequest) con regole: q (string, nullable, sometimes), brand (string, nullable, sometimes), family (string, nullable, sometimes), potenza_min/potenza_max (numeric, nullable, sometimes, con regola custom o after() hook che verifica potenza_min <= potenza_max quando entrambi presenti), only_available (boolean, nullable, sometimes), page (integer, min:1, nullable, sometimes). authorize() ritorna true (endpoint pubblico).'
+    type: Impl
+    status: TODO
+  - id: TASK-07
+    title: 'Test: validazione SearchRequest (422 su valori malformati, 200 su parametri assenti)'
+    description: 'Feature test che verifica: GET /api/search senza parametri risponde 200 (non 422); GET /api/search?potenza_min=abc risponde 422 con errori di validazione; GET /api/search?potenza_min=10&potenza_max=2 (min > max) risponde 422.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-08
+    title: 'SearchResultResource + SearchResultCollection: serializzazione JSON con potenza_range'
+    description: 'Creare App\Http\Resources\SearchResultResource (php artisan make:resource SearchResultResource) che serializza un App\Services\Search\SearchResult in { id, title, brand, family, subfamily, variants: [{codice_articolo, descrizione_marca, description_clean, costo, giacenza}], variants_count, potenza_range: {min, max} }, mappando powerRangeMin/powerRangeMax del DTO su potenza_range.min/max. Creare App\Http\Resources\SearchResultCollection che eredita il wrapping automatico data/meta/links di Laravel per risorse paginate.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-09
+    title: 'SearchController: risoluzione brand/family da slug e composizione filtri'
+    description: 'Creare App\Http\Controllers\Api\SearchController (php artisan make:controller Api/SearchController) con metodo index(SearchRequest $request): JsonResponse. Risolve brand/family da query string (slug o nome, case-insensitive, query where(''slug'', ...) orWhere(''name'', ''ilike''/''like'', ...)) ai rispettivi brand_id/family_id; se non risolvibili, filtro ignorato silenziosamente (nessun errore). Compone $filters per SearchService::search(): brand_id, family_id, only_available, attributes (se potenza_min/potenza_max presenti, {key: SearchService::POWER_ATTRIBUTE_KEY, min, max}). Chiama SearchService::search($request->string(''q'', '''')->toString(), $filters, page: $request->integer(''page'', 1)) e restituisce new SearchResultCollection($paginator).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-03
+      - TASK-05
+      - TASK-06
+      - TASK-08
+  - id: TASK-10
+    title: Route GET /api/search -> SearchController@index
+    description: 'Aggiungere in routes/api.php: Route::get(''/search'', [SearchController::class, ''index''])->name(''api.search''). Verificare con php artisan route:list --path=api che GET /api/search sia registrato correttamente (prefisso api/ applicato automaticamente da withRouting).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-09
+  - id: TASK-11
+    title: 'Test: GET /api/search happy path con filtri combinati'
+    description: 'Feature test in tests/Feature/SearchControllerTest.php: seed di ProductBase/Product/Brand/Family/ProductAttribute coerenti con l''esempio della spec (vaillant, condizionamento, potenza 2-6). getJson(''/api/search?q=vaillant+unita+interna&family=condizionamento&potenza_min=2&potenza_max=6'') verifica status 200, header Content-Type application/json, struttura data[] con variants_count e potenza_range popolati correttamente, meta.total e meta.current_page presenti.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
+  - id: TASK-12
+    title: 'Test: GET /api/search con parametri assenti o non risolvibili (nessun errore)'
+    description: 'Feature test: GET /api/search (nessun parametro) risponde 200 con l''intero pool non filtrato; GET /api/search?brand=marca-inesistente risponde 200 con data: [] (non errore); GET /api/search?family=famiglia-inesistente idem.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
+  - id: TASK-13
+    title: 'Test: GET /api/search zero risultati (200 + JSON + data vuoto)'
+    description: 'Feature test con combinazione di filtri che non produce match (es. potenza_min/potenza_max fuori range di qualunque variante seedata) verifica esplicitamente status 200, Content-Type application/json, data: [], meta.total: 0.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
+  - id: TASK-14
+    title: 'Test: GET /api/search risoluzione brand/family da slug e da nome'
+    description: Feature test che crea un Brand con slug 'vaillant' e name 'Vaillant', verifica che sia ?brand=vaillant (slug) sia ?brand=Vaillant (nome, case-insensitive) producano lo stesso filtro brand_id e lo stesso result set.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
