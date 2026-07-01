@@ -4,8 +4,10 @@ namespace App\Console\Commands;
 
 use App\Exceptions\DuplicateImportException;
 use App\Jobs\ImportXlsxJob;
+use App\Jobs\PromoteStagingToProductsJob;
 use App\Services\ImportBatchService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Bus;
 use InvalidArgumentException;
 
 class CatalogImportCommand extends Command
@@ -37,10 +39,13 @@ class CatalogImportCommand extends Command
             return self::FAILURE;
         }
 
-        ImportXlsxJob::dispatch($batch, (string) realpath($path));
+        Bus::chain([
+            new ImportXlsxJob($batch, (string) realpath($path)),
+            new PromoteStagingToProductsJob($batch),
+        ])->dispatch();
 
         $this->info("Import avviato: batch #{$batch->id} ({$batch->filename}) — stato {$batch->status->value}.");
-        $this->line('Lettura del file accodata sulla coda «import».');
+        $this->line('Import accodato sulla coda «import».');
 
         return self::SUCCESS;
     }

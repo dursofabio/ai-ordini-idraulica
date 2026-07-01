@@ -67,39 +67,45 @@ tasks:
     title: Migration + model rows_new/rows_updated su import_batches
     description: Migration che aggiunge import_batches.rows_new e rows_updated (unsignedInteger default 0, dopo skipped_rows). Aggiornare ImportBatch (#[Fillable], cast integer) e ImportBatchFactory (default 0).
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Regressione schema import_batches
     description: Aggiornare VectorStagingAuditSchemaTest::test_import_batches_table_has_expected_columns per includere rows_new e rows_updated tra le colonne attese.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'PromoteStagingToProductsJob: upsert idempotente staging→products'
     description: Creare App\Jobs\PromoteStagingToProductsJob (coda import, tries 1, timeout ampio) che legge staging_articoli del batch a chunk(1000), recupera i products esistenti per codice_articolo nel chunk, separa le righe in due gruppi upsert (nuove/descrizione cambiata → scrive description_raw e forza enrichment_status='pending'; descrizione invariata → aggiorna solo costo/giacenza/is_active), calcola is_active da costo/giacenza (null trattati come 0), accumula rows_new/rows_updated, aggiorna import_batches a fine job e transiziona enriching→completed (o →failed su errore, mirror di ImportXlsxJob::failed()).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: 'Test PromoteStagingToProductsJob: insert/update/reset/is_active/conteggi/chunking/idempotenza/stati'
     description: 'Feature test (RequiresDatabase) che copre: insert nuovo record con enrichment_status pending; update con descrizione cambiata → reset a pending; update con descrizione invariata → nessun reset, solo costo/giacenza/is_active; matrice is_active da costo/giacenza; conteggi rows_new/rows_updated corretti; chunking multi-blocco (>1000 righe); doppia esecuzione idempotente (products invariato, rows_new=0 la seconda volta); transizione enriching→completed e →failed su errore.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: 'Wiring CatalogImportCommand: chain ImportXlsxJob → PromoteStagingToProductsJob'
     description: Sostituire ImportXlsxJob::dispatch($batch, $path) in CatalogImportCommand con Bus::chain([new ImportXlsxJob($batch, $path), new PromoteStagingToProductsJob($batch)])->dispatch(), mantenendo la coda import e la gestione duplicato/file mancante già presente.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: 'Regressione comando catalog:import: chain e popolamento products end-to-end'
     description: 'Aggiornare CatalogImportDispatchTest: asserire (Bus::fake) che il chain dispatchato includa PromoteStagingToProductsJob, e nel test end-to-end in sync verificare che dopo il comando anche products risulti popolata coerentemente con staging_articoli.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06

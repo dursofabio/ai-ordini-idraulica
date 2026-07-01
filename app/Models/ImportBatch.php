@@ -17,6 +17,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'processed_rows',
     'error_rows',
     'skipped_rows',
+    'rows_new',
+    'rows_updated',
     'started_at',
     'finished_at',
 ])]
@@ -38,6 +40,8 @@ class ImportBatch extends Model
             'processed_rows' => 'integer',
             'error_rows' => 'integer',
             'skipped_rows' => 'integer',
+            'rows_new' => 'integer',
+            'rows_updated' => 'integer',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
         ];

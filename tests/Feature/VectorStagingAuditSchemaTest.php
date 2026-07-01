@@ -30,7 +30,7 @@ class VectorStagingAuditSchemaTest extends TestCase
         $this->assertTrue(Schema::hasTable('import_batches'));
         $this->assertTrue(Schema::hasColumns('import_batches', [
             'id', 'filename', 'hash', 'status', 'total_rows', 'processed_rows',
-            'error_rows', 'skipped_rows', 'started_at', 'finished_at', 'created_at', 'updated_at',
+            'error_rows', 'skipped_rows', 'rows_new', 'rows_updated', 'started_at', 'finished_at', 'created_at', 'updated_at',
         ]));
     }
 

@@ -27,6 +27,8 @@ class ImportBatchFactory extends Factory
             'processed_rows' => 0,
             'error_rows' => 0,
             'skipped_rows' => 0,
+            'rows_new' => 0,
+            'rows_updated' => 0,
             'started_at' => null,
             'finished_at' => null,
         ];
