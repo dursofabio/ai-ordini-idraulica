@@ -47,4 +47,14 @@ return [
         'retry_delay_ms' => env('ANTHROPIC_RETRY_DELAY_MS', 2000),
     ],
 
+    'embedding' => [
+        'base_url' => env('EMBEDDING_BASE_URL', 'http://localhost:11434'),
+        'model' => env('EMBEDDING_MODEL', 'bge-m3'),
+        'api_key' => env('EMBEDDING_API_KEY'),
+        'dimensions' => env('EMBEDDING_DIM', 1024),
+        'timeout' => env('EMBEDDING_TIMEOUT', 120),
+        'retry_times' => env('EMBEDDING_RETRY_TIMES', 2),
+        'retry_delay_ms' => env('EMBEDDING_RETRY_DELAY_MS', 2000),
+    ],
+
 ];

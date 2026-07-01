@@ -60,60 +60,69 @@ tasks:
     title: Configurazione services.embedding e .env.example
     description: Aggiungere il blocco 'embedding' a config/services.php con base_url (default Ollama http://localhost:11434), model (default 'bge-m3'), api_key, dimensions (default 1024), timeout, retry_times, retry_delay_ms letti da env(). Documentare le stesse variabili in .env.example seguendo lo stile del blocco ANTHROPIC_*.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'EmbeddingClient: pendingRequest() con header opzionale, timeout e retry'
     description: 'Creare App\Services\Ai\EmbeddingClient con un metodo privato pendingRequest() che configura content-type: application/json, header Authorization solo se api_key è valorizzata, baseUrl, timeout e retry, tutto letto da config(''services.embedding.*''). Nessuna chiave o modello hardcodato.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'Test: header e payload della richiesta embed()'
     description: Feature test EmbeddingClientTest con Http::fake() che verifica che embed() invii POST a /api/embeddings con payload {model, prompt} corretto (valori da config) e che l'header Authorization sia presente solo quando api_key è configurata.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: EmbeddingClient::embed() con parsing e validazione dimensione vettore
     description: 'Implementare il metodo pubblico embed(string $text): array che esegue la richiesta tramite pendingRequest(), estrae il campo ''embedding'' dalla risposta Ollama e restituisce un array<int, float>, lanciando RuntimeException se la lunghezza non coincide con config(''services.embedding.dimensions'').'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-04
   - id: TASK-05
     title: 'Test: parsing risposta valida e mismatch di dimensione'
     description: Feature test con Http::fake() che stub una risposta valida a 1024 elementi e verifica il float[] restituito da embed(); test separato che stub una risposta con dimensione diversa e verifica il lancio di RuntimeException.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Gestione errori 4xx/5xx e retry configurabile su embed()
     description: Assicurare che pendingRequest()/embed() propaghi Illuminate\Http\Client\RequestException dopo i tentativi configurati su risposte di errore HTTP del provider, senza swallowing silenzioso.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: errore provider e conteggio retry'
     description: Feature test con Http::fake() a sequenza di risposte di errore (es. 500, 500) che verifica il lancio di RequestException e che il numero di richieste inviate rispetti retry_times configurato tramite Http::assertSentCount.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: GenerateProductEmbeddingJob in coda dedicata
     description: Creare App\Jobs\GenerateProductEmbeddingJob (ShouldQueue, onQueue('embeddings')) che riceve un productId, costruisce il testo da vettorizzare dal prodotto, chiama EmbeddingClient::embed() via method injection in handle(), e fa updateOrCreate su ProductEmbedding (product_id + model, content, dimensions, embedding).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-08
   - id: TASK-09
     title: 'Test: GenerateProductEmbeddingJob dispatch e persistenza'
     description: 'Feature test GenerateProductEmbeddingJobTest: un test con Queue::fake() verifica il dispatch sulla coda ''embeddings''; un test con Http::fake() ed esecuzione sincrona del job verifica che venga creata/aggiornata la riga ProductEmbedding corretta a partire da una risposta embedding valida.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-09
