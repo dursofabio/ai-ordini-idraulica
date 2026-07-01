@@ -6,7 +6,7 @@ epic:
   title: Modello Dati
 priority: HIGH
 points: 3
-status: PLANNED
+status: REVIEW
 blocked_by:
   - US-003
 scope: MVP

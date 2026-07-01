@@ -56,48 +56,55 @@ tasks:
     title: Migrazione tabella product_bases
     description: Creare la migrazione per `product_bases` con id, title (nullable), grouping_key (string unique), brand_id/family_id/subfamily_id (foreignId nullable constrained->nullOnDelete verso le anagrafiche US-003) e timestamps.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Migrazione tabella products
     description: Creare la migrazione per `products` con codice_articolo (unique), description_raw, descrizione_marca, costo, giacenza, is_active, enrichment_status (default 'pending', indice), product_base_id e brand/family/subfamily_id (foreignId nullable nullOnDelete), brand_source/family_source/subfamily_source, source, confidence, grouping_key (indice), timestamps.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Migrazione tabella product_attributes
     description: Creare la migrazione per `product_attributes` con product_id (foreignId cascadeOnDelete), key, value_num, value_text, unit, source, timestamps e gli indici compositi (key, value_num) e (product_id, key).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Modelli Eloquent ProductBase, Product, ProductAttribute
     description: 'Creare i tre modelli in app/Models con #[Fillable], HasFactory, casts appropriati e relazioni: Product belongsTo ProductBase/Brand/Family/Subfamily e hasMany ProductAttribute (attributes); ProductBase hasMany Product; ProductAttribute belongsTo Product.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Factory per ProductBase, Product, ProductAttribute
     description: Creare ProductBaseFactory, ProductFactory, ProductAttributeFactory con dati validi (codice_articolo e grouping_key unici, associazioni coerenti verso base e anagrafiche).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Test schema, indici e default
     description: Test feature su SQLite in-memory che verifica esistenza colonne delle tre tabelle, unique su codice_articolo, default 'pending' e indice su enrichment_status, indici compositi su product_attributes.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: Test relazioni, query range attributi e factory
     description: Test che verifica le relazioni ProductBase/Product/attributi con FK nullable, la query key='potenza_kw' AND value_num BETWEEN 2 AND 6, e che i factory producano modelli validi e persistibili.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-07

@@ -7,7 +7,7 @@ autopilot:
   exit_condition: null
   on_error: ask
   extra_instructions: "Ad ogni step (plan/implement), preparare un commit git adeguato."
-  current_spec_index: 4
+  current_spec_index: 5
   status: running
   started_at: "2026-07-01T15:24:00"
   updated_at: "2026-07-01T15:24:00"
@@ -72,10 +72,10 @@ queue:
         summary: "7 task (migrazioni product_bases/products/product_attributes, modelli con relazioni productBase/brand/family/subfamily/attributes, factory, 2 test); spec -> PLANNED. No UI."
         timestamp: "2026-07-01T16:26:00"
       implement:
-        status: pending
-        summary: null
-        timestamp: null
-    result: pending
+        status: success
+        summary: "3 migrazioni (product_bases/products/product_attributes, codice_articolo unique, enrichment_status indicizzato default pending, indici compositi), 3 modelli con relazioni e cast, 3 factory. 2 feature test (41 pass/3 skip). Review: no critical. Spec -> REVIEW."
+        timestamp: "2026-07-01T16:31:00"
+    result: completed
 
   - code: US-005
     title: "Tabelle vettoriali, staging e audit"
