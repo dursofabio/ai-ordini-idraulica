@@ -62,47 +62,54 @@ tasks:
     title: Dipendenza spatie/simple-excel (reader streaming)
     description: Aggiungere spatie/simple-excel (wrapper openspout) via composer come reader XLSX in streaming a bassa memoria, compatibile con PHP 8.3/Laravel 13. Verificare l'autoload.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Evoluzione schema staging_articoli + import_batches
     description: 'Migration: rinominare staging_articoli.payload → raw_row e aggiungere descrizione (text), costo (decimal 14,4), giacenza (decimal 14,3) nullable; aggiungere import_batches.skipped_rows (unsignedInteger default 0). Aggiornare model StagingArticolo/ImportBatch (Fillable, cast) e le relative factory.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Regressione test schema/relazioni US-005
     description: Aggiornare VectorStagingAuditSchemaTest e VectorStagingAuditRelationsTest per il rename payload→raw_row, la presenza delle nuove colonne (descrizione/costo/giacenza, skipped_rows) e il round-trip del cast raw_row => array.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: 'ImportXlsxJob: lettura streaming a chunk + mappatura'
     description: Creare App\Jobs\ImportXlsxJob (coda import, tries 1, timeout ampio) che transiziona uploaded→importing, streamma il reader con chunk(1000), normalizza le intestazioni in snake_case, estrae i campi tipizzati tramite mappa colonne centralizzata, salta le righe con codice_articolo vuoto (contatore skippate), bulk-inserisce le righe valide con raw_row, aggiorna total/processed/skipped e transiziona importing→enriching (o →failed su errore).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
+    ref: TASK-04
   - id: TASK-05
     title: 'Test job: mappatura, skip, chunking multi-blocco, stati'
     description: 'Feature test (RequiresDatabase) che genera fixture XLSX con SimpleExcelWriter (intestazioni reali): verifica campi tipizzati e chiavi snake_case in raw_row (incl. descrizione_marca), skip delle righe a codice vuoto con skipped_rows corretto, inserimento completo su fixture >1000 righe (multi-chunk) e transizioni di stato uploaded→importing→enriching/failed.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Wiring CatalogImportCommand → dispatch ImportXlsxJob
     description: Estendere CatalogImportCommand (US-006) per dispatchare ImportXlsxJob con il batch e il path assoluto del file dopo la creazione del batch, mantenendo la gestione di duplicato/file mancante già presente.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: Test comando catalog:import end-to-end
     description: Feature test che invoca artisan('catalog:import') con una fixture valida e verifica che il batch venga creato e ImportXlsxJob dispatchato sulla coda import (Queue::fake + assertPushed) o, in sync, che staging_articoli venga popolata.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07

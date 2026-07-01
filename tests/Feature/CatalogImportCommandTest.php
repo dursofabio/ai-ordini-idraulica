@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use App\Enums\ImportBatchStatus;
+use App\Jobs\ImportXlsxJob;
 use App\Models\ImportBatch;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
@@ -21,6 +23,17 @@ class CatalogImportCommandTest extends TestCase
 {
     use RefreshDatabase;
     use RequiresDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The command dispatches ImportXlsxJob (US-007); this suite covers batch
+        // creation/dedup only, so the actual read is faked out here. The job's
+        // own behaviour is exercised in ImportXlsxJobTest and the end-to-end
+        // dispatch in CatalogImportDispatchTest.
+        Queue::fake();
+    }
 
     private function makeFile(string $contents): string
     {
@@ -44,6 +57,8 @@ class CatalogImportCommandTest extends TestCase
             'status' => ImportBatchStatus::Uploaded->value,
         ]);
 
+        Queue::assertPushed(ImportXlsxJob::class);
+
         @unlink($path);
     }
 
@@ -61,6 +76,7 @@ class CatalogImportCommandTest extends TestCase
 
         // Only the pre-existing completed batch remains; no new one created.
         $this->assertDatabaseCount('import_batches', 1);
+        Queue::assertNotPushed(ImportXlsxJob::class);
 
         @unlink($path);
     }

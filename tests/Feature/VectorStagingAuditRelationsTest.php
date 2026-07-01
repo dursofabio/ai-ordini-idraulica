@@ -53,16 +53,16 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertSame(340, $fresh->tokens_out);
     }
 
-    public function test_staging_articolo_casts_payload_json(): void
+    public function test_staging_articolo_casts_raw_row_json(): void
     {
         $row = StagingArticolo::factory()->create([
-            'payload' => ['codice_articolo' => 'ART-9', 'costo' => 12.5],
+            'raw_row' => ['codice_articolo' => 'ART-9', 'costo_un_1' => 12.5],
         ]);
 
         $fresh = $row->fresh();
 
-        $this->assertIsArray($fresh->payload);
-        $this->assertSame('ART-9', $fresh->payload['codice_articolo']);
+        $this->assertIsArray($fresh->raw_row);
+        $this->assertSame('ART-9', $fresh->raw_row['codice_articolo']);
     }
 
     public function test_product_has_many_embeddings(): void

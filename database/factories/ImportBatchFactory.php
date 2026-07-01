@@ -26,6 +26,7 @@ class ImportBatchFactory extends Factory
             'total_rows' => fake()->numberBetween(0, 1000),
             'processed_rows' => 0,
             'error_rows' => 0,
+            'skipped_rows' => 0,
             'started_at' => null,
             'finished_at' => null,
         ];

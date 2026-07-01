@@ -20,16 +20,23 @@ class StagingArticoloFactory extends Factory
     public function definition(): array
     {
         $codice = Str::upper(fake()->bothify('???-#####'));
+        $descrizione = fake()->sentence(4);
+        $costo = fake()->randomFloat(2, 1, 5000);
+        $giacenza = fake()->randomFloat(3, 0, 500);
 
         return [
             'import_batch_id' => ImportBatch::factory(),
-            'payload' => [
+            'raw_row' => [
                 'codice_articolo' => $codice,
-                'descrizione' => fake()->sentence(4),
-                'costo' => fake()->randomFloat(2, 1, 5000),
+                'descrizione' => $descrizione,
+                'costo_un_1' => $costo,
+                'giac_att_1' => $giacenza,
             ],
             'row_number' => fake()->numberBetween(1, 1000),
             'codice_articolo' => $codice,
+            'descrizione' => $descrizione,
+            'costo' => $costo,
+            'giacenza' => $giacenza,
             'status' => 'pending',
             'error' => null,
         ];

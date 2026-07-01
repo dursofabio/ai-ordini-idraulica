@@ -30,7 +30,7 @@ class VectorStagingAuditSchemaTest extends TestCase
         $this->assertTrue(Schema::hasTable('import_batches'));
         $this->assertTrue(Schema::hasColumns('import_batches', [
             'id', 'filename', 'hash', 'status', 'total_rows', 'processed_rows',
-            'error_rows', 'started_at', 'finished_at', 'created_at', 'updated_at',
+            'error_rows', 'skipped_rows', 'started_at', 'finished_at', 'created_at', 'updated_at',
         ]));
     }
 
@@ -38,8 +38,8 @@ class VectorStagingAuditSchemaTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('staging_articoli'));
         $this->assertTrue(Schema::hasColumns('staging_articoli', [
-            'id', 'import_batch_id', 'payload', 'row_number', 'codice_articolo',
-            'status', 'error', 'created_at', 'updated_at',
+            'id', 'import_batch_id', 'raw_row', 'row_number', 'codice_articolo',
+            'descrizione', 'costo', 'giacenza', 'status', 'error', 'created_at', 'updated_at',
         ]));
     }
 
@@ -105,7 +105,7 @@ class VectorStagingAuditSchemaTest extends TestCase
     public function test_staging_articolo_status_defaults_to_pending(): void
     {
         $row = StagingArticolo::create([
-            'payload' => ['codice_articolo' => 'ART-1'],
+            'raw_row' => ['codice_articolo' => 'ART-1'],
             'row_number' => 1,
         ]);
 

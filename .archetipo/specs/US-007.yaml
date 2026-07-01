@@ -6,7 +6,7 @@ epic:
   title: Importazione XLSX
 priority: HIGH
 points: 3
-status: PLANNED
+status: REVIEW
 blocked_by:
   - US-006
 scope: MVP

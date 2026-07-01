@@ -10,9 +10,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 #[Fillable([
     'import_batch_id',
-    'payload',
+    'raw_row',
     'row_number',
     'codice_articolo',
+    'descrizione',
+    'costo',
+    'giacenza',
     'status',
     'error',
 ])]
@@ -36,8 +39,10 @@ class StagingArticolo extends Model
     protected function casts(): array
     {
         return [
-            'payload' => 'array',
+            'raw_row' => 'array',
             'row_number' => 'integer',
+            'costo' => 'decimal:4',
+            'giacenza' => 'decimal:3',
         ];
     }
 
