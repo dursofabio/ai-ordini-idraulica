@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\ImportBatchStatus;
 use Database\Factories\ImportBatchFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -31,6 +32,7 @@ class ImportBatch extends Model
     protected function casts(): array
     {
         return [
+            'status' => ImportBatchStatus::class,
             'total_rows' => 'integer',
             'processed_rows' => 'integer',
             'error_rows' => 'integer',

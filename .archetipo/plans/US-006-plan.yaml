@@ -56,39 +56,45 @@ tasks:
     title: Enum ImportBatchStatus + cast sul model
     description: 'Creare App\Enums\ImportBatchStatus (string-backed: uploaded/importing/enriching/completed/failed) con canTransitionTo() che codifica il grafo delle transizioni ammesse; aggiungere il cast ''status'' => ImportBatchStatus::class su ImportBatch.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'ImportBatchService: startImport + dedup + transizioni'
     description: Creare App\Services\ImportBatchService con startImport(path) che valida il file, calcola md5_file, deduplica contro batch completed (altrimenti crea il batch in status uploaded con started_at) e i metodi di transizione di stato validati tramite l'enum. Definire DuplicateImportException e InvalidStatusTransitionException.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Comando Artisan catalog:import
     description: Creare CatalogImportCommand con signature 'catalog:import {path}' che delega a ImportBatchService::startImport, stampa id/stato del batch su successo, un avviso sul duplicato senza creare record ed errore su file mancante.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Test hash, creazione e deduplicazione
     description: Feature test (RequiresDatabase + RefreshDatabase) che verifica creazione batch con hash MD5 corretto e status uploaded, il blocco del duplicato verso un batch completed e la riammissione del reimport dopo un batch failed.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-04
   - id: TASK-05
     title: Test ciclo di stato
     description: Feature test che verifica le transizioni ammesse uploaded→importing→enriching→completed/failed (con finished_at sugli stati terminali) e il rifiuto delle transizioni illegali con InvalidStatusTransitionException.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-05
   - id: TASK-06
     title: Test comando catalog:import
     description: Feature test che invoca artisan('catalog:import') con file valido (creazione + successo), con hash già completed (avviso, nessun nuovo batch) e con path inesistente (errore).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-06

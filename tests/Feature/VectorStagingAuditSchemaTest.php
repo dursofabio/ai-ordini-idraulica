@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\ImportBatchStatus;
 use App\Models\ImportBatch;
 use App\Models\StagingArticolo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -91,14 +92,14 @@ class VectorStagingAuditSchemaTest extends TestCase
         $this->assertCompositeIndex('product_embeddings', ['product_id', 'model'], unique: true);
     }
 
-    public function test_import_batch_status_defaults_to_pending(): void
+    public function test_import_batch_status_defaults_to_uploaded(): void
     {
         $batch = ImportBatch::create([
             'filename' => 'listino.xlsx',
             'hash' => hash('sha256', 'listino.xlsx'),
         ]);
 
-        $this->assertSame('pending', $batch->fresh()->status);
+        $this->assertSame(ImportBatchStatus::Uploaded, $batch->fresh()->status);
     }
 
     public function test_staging_articolo_status_defaults_to_pending(): void

@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->string('filename');
             $table->string('hash')->index();
-            $table->string('status')->default('pending')->index();
+            $table->string('status')->default('uploaded')->index();
             $table->unsignedInteger('total_rows')->default(0);
             $table->unsignedInteger('processed_rows')->default(0);
             $table->unsignedInteger('error_rows')->default(0);
