@@ -56,60 +56,68 @@ tasks:
     title: Pagina custom ReviewQueue con tabella scoperta su needs_review
     description: 'Generare App\Filament\Pages\ReviewQueue (php artisan make:filament-page ReviewQueue --no-interaction), implementare HasTable + InteractsWithTable. Query: Product::where(''enrichment_status'',''needs_review'') ordinata per confidence crescente (NULL prima). Colonne: description_raw, brand.name, family.name, confidence (badge colorato per fascia). Registrare la pagina in navigazione con label ''Da revisionare'' (AC1).'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Contatore totale in intestazione pagina
     description: Configurare $table->heading()/->description() con closure che calcola Product::where('enrichment_status','needs_review')->count() ad ogni render, mostrato come testo 'N articoli da revisionare' in testa alla pagina (AC5).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Azione 'Conferma'
     description: Aggiungere recordAction Action::make('confirm') (colore success, icona check) che esegue $record->update(['enrichment_status' => 'enriched']) senza toccare brand_id/family_id/subfamily_id/*_source, seguita da Notification::make()->success()->send() (AC2).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Azione 'Correggi' con form inline
     description: Aggiungere recordAction Action::make('correct') con ->schema([Select brand_id, Select family_id (live), Select subfamily_id reattivo sulla famiglia]) e ->fillForm() precompilato dai valori correnti del record (pattern ProductForm, US-021). L'action salva i campi inviati, imposta *_source='manual' per i campi modificati, source='manual', confidence=100, enrichment_status='enriched' (AC3).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-04
   - id: TASK-05
     title: Azione 'Scarta' con conferma
     description: Aggiungere recordAction Action::make('discard') (colore danger, icona cestino, ->requiresConfirmation()) che azzera brand_id/family_id/subfamily_id e i relativi *_source solo quando non sono 'manual', azzera source/confidence, e imposta esplicitamente enrichment_status='needs_review' (AC4).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-05
   - id: TASK-06
     title: 'Test: query, ordinamento, colonne e contatore della coda'
     description: 'Feature test con Livewire::test su ReviewQueue: solo prodotti needs_review sono visibili, ordinati per confidence crescente (NULL prima); colonne description_raw/brand.name/family.name/confidence mostrano i valori attesi; contatore in intestazione riflette il conteggio corretto e si aggiorna dopo un''azione (AC1, AC5). Test di regressione: prodotti pending/enriched non compaiono mai in coda.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: azioni Conferma, Correggi, Scarta'
     description: 'Feature test con callTableAction su ReviewQueue per ciascuna azione: ''confirm'' imposta enrichment_status=''enriched'' e rimuove il record dalla coda senza alterare brand_id/family_id/*_source; ''correct'' salva i valori inviati, imposta *_source=''manual''/source=''manual''/confidence=100/enrichment_status=''enriched'', con form precompilato dai valori correnti; ''discard'' azzera i campi AI (source!=manual) mantenendo needs_review, e NON azzera campi già manual (AC2, AC3, AC4).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
       - TASK-04
       - TASK-05
+    ref: TASK-07
   - id: TASK-08
     title: 'Test e2e Dusk: triage completo della coda (scenario Dimostra)'
     description: Nuovo test in tests/Browser (pattern AdminLoginTest/ProductManualBrandOverrideTest) che, autenticato come admin, apre la pagina 'Da revisionare', verifica il contatore, esegue in sequenza Conferma su un prodotto, Correggi su un secondo (form inline con nuova marca/famiglia), Scarta su un terzo (con conferma modale), verificando gli effetti attesi su ciascuno. Override di protected const ARTIFACT_DIR per salvare gli screenshot in docs/test-results/US-023/.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
       - TASK-04
       - TASK-05
+    ref: TASK-08
