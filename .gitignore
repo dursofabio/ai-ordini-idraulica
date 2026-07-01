@@ -13,7 +13,10 @@
 /.vscode
 /.zed
 /auth.json
+/composer.phar
 /node_modules
+/database/dusk.sqlite
+.env.dusk.local
 /public/build
 /public/fonts-manifest.dev.json
 /public/hot

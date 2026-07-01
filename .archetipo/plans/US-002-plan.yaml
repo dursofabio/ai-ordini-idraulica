@@ -62,68 +62,78 @@ tasks:
     title: Installare e configurare Filament 5 (pannello /admin)
     description: Aggiungere filament/filament via Composer ed eseguire filament:install --panels per generare e registrare AdminPanelProvider con path /admin. Verificare l'auto-discovery del provider.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Rendere il modello User idoneo al pannello Filament
     description: 'Implementare FilamentUser su App\Models\User con canAccessPanel(): per l''MVP consentire l''accesso agli utenti autenticati (assunzione documentata, da restringere con i ruoli futuri).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Seeder/comando per utente admin di test
     description: Fornire un modo deterministico per creare un utente amministratore (seeder o factory state) usabile in locale e nei test per il login su /admin.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Installare Laravel Horizon (dashboard /horizon)
     description: Aggiungere laravel/horizon via Composer ed eseguire horizon:install per pubblicare config/horizon.php e gli asset, servendo la dashboard su /horizon.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-04
   - id: TASK-05
     title: Configurare le code import, enrich, embed, default in Horizon
     description: In config/horizon.php definire le quattro code richieste nei supervisor (defaults/environments) sulla connessione redis, allineate a QUEUE_CONNECTION=redis.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Feature test rotte /admin e /horizon
     description: Test HTTP che verificano che GET /admin risponda senza errore 500 (login/redirect) e che GET /horizon risponda 200 in ambiente di test.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: Test configurazione code Horizon
     description: Test che carica config('horizon') e asserisce la presenza delle code import, enrich, embed, default nella configurazione dei supervisor.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-07
   - id: TASK-08
     title: Feature test accesso admin al pannello Filament
     description: Test che autentica un utente admin ed esegue GET /admin verificando status 200, più asserzione che User::canAccessPanel() ritorni true per l'admin.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-03
+    ref: TASK-08
   - id: TASK-09
     title: Setup Laravel Dusk con artefatti visivi
     description: Installare e configurare Laravel Dusk (nessun framework e2e presente), abilitando screenshot per-step e log di console, con output in docs/test-results/US-002/.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-09
   - id: TASK-10
     title: 'E2E Dusk: login admin al backoffice Filament'
     description: Scenario Dusk che apre /admin, compila il form di login Filament con credenziali admin valide, invia e verifica l'atterraggio sulla dashboard autenticata; screenshot salvati in docs/test-results/US-002/.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-09
       - TASK-08
+    ref: TASK-10
