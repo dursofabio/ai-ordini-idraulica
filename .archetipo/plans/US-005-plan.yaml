@@ -1,0 +1,114 @@
+schema: archetipo/plan/v2
+spec_code: US-005
+body: |-
+  # US-005: Tabelle vettoriali, staging e audit — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-001 — Modello Dati
+  **Priorità:** HIGH | **Punti:** 3
+  **Bloccata da:** US-004 (stato REVIEW — precondizione soddisfatta)
+
+  **User Story**
+  Come sviluppatore del team, voglio le tabelle `product_embeddings` (con colonna vector), `staging_articoli`, `import_batches` e `enrichment_logs`, così da poter tracciare ogni import, arricchimento AI e vettore in modo completo e auditabile.
+
+  **Criteri di Accettazione**
+  - [ ] Le tabelle `product_embeddings`, `staging_articoli`, `import_batches`, `enrichment_logs` esistono
+  - [ ] `product_embeddings.embedding` è di tipo `vector(1024)` con indice HNSW `vector_cosine_ops`
+  - [ ] `import_batches.hash` ha un indice per la deduplicazione
+  - [ ] `enrichment_logs` registra `step`, `input`, `output`, `confidence`, `model`, `tokens_in`, `tokens_out`
+
+  ---
+
+  ## Technical Solution
+
+  Estendiamo il modello dati esistente (US-004) con quattro migration e i relativi model Eloquent, mantenendo le convenzioni già in uso: migration timestamp-based con blueprint anonimo, model con attributo `#[Fillable]`, casts tipizzati e `HasFactory`. Il nodo critico è che `vector(1024)` e l'indice HNSW sono feature esclusive di PostgreSQL/pgvector, mentre la suite di test gira su SQLite in-memory (trait `RequiresDatabase`): il tipo colonna vettoriale e l'indice HNSW vanno quindi applicati con `DB::statement` **guardato dal driver `pgsql`** (stesso pattern di `0001_01_01_000003_enable_pgvector_extension.php`), con un fallback SQLite-compatibile per le colonne (`text`/`json`) così che le migration completino ovunque.
+
+  - **product_embeddings**: FK `product_id` (cascadeOnDelete), colonna `content` (text, testo sorgente embeddizzato), `model` (string, es. modello embedding usato), `embedding` di tipo `vector(1024)` su pgsql / `text` su altri driver, `dimensions` (default 1024) e timestamps. Indice HNSW `vector_cosine_ops` creato via `DB::statement('CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)')` solo su pgsql; indice unico su `product_id` per garantire un embedding attivo per prodotto (o `(product_id, model)` per supportare più modelli — si adotta `(product_id, model)`).
+  - **staging_articoli**: tabella di landing grezza dell'import XLSX (feeds US-006). FK nullable `import_batch_id` (constrained, nullOnDelete), colonna `payload` JSON con la riga grezza, `row_number` (unsignedInteger), `codice_articolo` (string, nullable, indicizzato per lookup), `status` (string default `pending`, indicizzato) e `error` (text nullable). Timestamps.
+  - **import_batches**: traccia ogni esecuzione di import. `filename` (string), `hash` (string, **indicizzato** per deduplicazione dei file già importati), `status` (string default `pending`, indicizzato), contatori `total_rows`/`processed_rows`/`error_rows` (unsignedInteger default 0), `started_at`/`finished_at` (timestamp nullable). Timestamps.
+  - **enrichment_logs**: audit di ogni step di arricchimento (deterministico + AI). FK `product_id` (cascadeOnDelete), `step` (string, indicizzato — es. `deterministic`, `ai`, `embedding`), `input` (json), `output` (json), `confidence` (unsignedTinyInteger nullable), `model` (string nullable), `tokens_in`/`tokens_out` (unsignedInteger nullable). Timestamps. Indice `(product_id, step)` per query di audit per prodotto/step.
+  - **Model Eloquent**: `ProductEmbedding`, `StagingArticolo`, `ImportBatch`, `EnrichmentLog` con `#[Fillable]`, casts (`payload`/`input`/`output` → `array`, contatori → `integer`, `started_at`/`finished_at` → `datetime`) e relazioni: `ProductEmbedding belongsTo Product`, `EnrichmentLog belongsTo Product`, `StagingArticolo belongsTo ImportBatch`, `ImportBatch hasMany StagingArticolo`. Aggiunta relazioni inverse su `Product` (`embeddings` hasMany, `enrichmentLogs` hasMany).
+  - **Factory**: una factory per ogni nuovo model, coerenti con quelle di US-004, per abilitare i test. La factory di `ProductEmbedding` genera l'embedding solo in forma serializzabile SQLite-safe nei test (non tocca il tipo vector).
+
+  ---
+
+  ## Test Strategy
+
+  Spec puramente data-layer, nessuna UI: la strategia è basata su feature test in-memory SQLite (trait `RequiresDatabase` + `RefreshDatabase`), come US-003/US-004, con un test PostgreSQL-specifico saltato quando il driver non è `pgsql`. Nessun test e2e è richiesto (nessuna interazione utente).
+
+  - **Schema test**: verifica esistenza delle quattro tabelle e presenza di tutte le colonne attese (`Schema::hasTable` / `Schema::hasColumns`), replicando il pattern di `ProductCatalogSchemaTest`.
+  - **Index test**: verifica che `import_batches.hash` sia indicizzato, che `staging_articoli.status`/`codice_articolo` ed `enrichment_logs.step` siano indicizzati, e che gli indici compositi (`enrichment_logs (product_id, step)`, `product_embeddings (product_id, model)`) esistano tramite `Schema::getIndexes`.
+  - **Behaviour/relations test**: creazione di un `EnrichmentLog` con `input`/`output` JSON e `tokens_in`/`tokens_out`, verificando il round-trip dei cast `array` e i conteggi token; verifica delle relazioni `Product->embeddings`, `Product->enrichmentLogs`, `ImportBatch->stagingArticoli`.
+  - **Default test**: `import_batches.status` e `staging_articoli.status` default a `pending`.
+  - **pgvector test (solo pgsql)**: test che salta con `markTestSkipped` se `DB::connection()->getDriverName() !== 'pgsql'`; su Postgres verifica che la colonna `embedding` sia di tipo `vector` e che esista un indice HNSW su di essa (query a `pg_indexes` / `information_schema`).
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Migration import_batches
+    description: Creare la migration create_import_batches_table con filename, hash (indicizzato per dedup), status (default pending, indicizzato), contatori total/processed/error_rows, started_at/finished_at e timestamps.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Migration staging_articoli
+    description: Creare la migration create_staging_articoli_table con FK nullable import_batch_id (nullOnDelete), payload JSON, row_number, codice_articolo (indicizzato), status (default pending, indicizzato) ed error.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Migration product_embeddings con vector(1024) + HNSW
+    description: Creare la migration con FK product_id (cascade), content, model, colonna embedding vector(1024) su pgsql (fallback text) e indice HNSW vector_cosine_ops guardato dal driver pgsql; indice unico (product_id, model).
+    type: Impl
+    status: TODO
+  - id: TASK-04
+    title: Migration enrichment_logs
+    description: Creare la migration create_enrichment_logs_table con FK product_id (cascade), step (indicizzato), input/output JSON, confidence, model, tokens_in, tokens_out e indice composito (product_id, step).
+    type: Impl
+    status: TODO
+  - id: TASK-05
+    title: Model Eloquent + relazioni
+    description: Creare i model ProductEmbedding, StagingArticolo, ImportBatch, EnrichmentLog con Fillable, casts e relazioni; aggiungere le relazioni inverse embeddings/enrichmentLogs su Product.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+      - TASK-04
+  - id: TASK-06
+    title: Factory per i nuovi model
+    description: Creare le factory per ProductEmbedding, StagingArticolo, ImportBatch, EnrichmentLog coerenti con lo stile US-004 e SQLite-safe per i test.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Test schema, indici e default
+    description: Feature test (RequiresDatabase + RefreshDatabase) che verifica esistenza tabelle/colonne, indice su import_batches.hash, indici su status/step, indici compositi e default pending.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-08
+    title: Test relazioni, cast JSON e audit token
+    description: Feature test che crea un EnrichmentLog con input/output JSON e token, verifica il round-trip dei cast e le relazioni Product->embeddings/enrichmentLogs e ImportBatch->stagingArticoli.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-09
+    title: Test pgvector (solo pgsql)
+    description: Test che salta su driver non-pgsql e su Postgres verifica il tipo colonna vector e l'esistenza dell'indice HNSW su product_embeddings.embedding.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06

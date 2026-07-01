@@ -84,9 +84,9 @@ queue:
     points: 3
     pipeline:
       plan:
-        status: pending
-        summary: null
-        timestamp: null
+        status: success
+        summary: "9 task (4 migrazioni: product_embeddings vector(1024)+HNSW guardato da driver, staging_articoli, import_batches hash, enrichment_logs audit; modelli/factory; test SQLite + test pgvector condizionale); spec -> PLANNED. No UI."
+        timestamp: "2026-07-01T16:35:00"
       implement:
         status: pending
         summary: null
