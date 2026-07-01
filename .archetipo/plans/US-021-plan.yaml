@@ -49,59 +49,67 @@ tasks:
     title: 'ProductResource: tabella con filtri e form di modifica taxonomy'
     description: 'Generare App\Filament\Resources\ProductResource (php artisan make:filament-resource Product --no-interaction), disabilitare create/delete. Tabella: codice_articolo, description_raw, brand.name, family.name, enrichment_status, confidence, con SelectFilter per enrichment_status/brand/family (AC1). Form: Select brand_id/family_id (relationship, searchable, preload) e subfamily_id (opzioni reattive alla famiglia selezionata).'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Guard 'sorgente manuale' su EditProduct
     description: In EditProduct::mutateFormDataBeforeSave, confrontare brand_id/family_id/subfamily_id inviati con i valori correnti del record; per ciascun campo cambiato impostare il *_source corrispondente a 'manual'. Se almeno un campo è cambiato, impostare anche source='manual' e confidence=100 (AC2).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Distinzione visiva dei valori con source='manual'
     description: 'In ProductResource: badge colorato/icona per brand.name e family.name in tabella quando il relativo *_source è ''manual''; helper text dinamico sui Select del form di modifica che mostra la sorgente corrente (AC5).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: 'Test: ProductResource (filtri, guard manuale, distinzione visiva)'
     description: Feature test con Livewire::test su ListProducts (filtri enrichment_status/brand/family) e su EditProduct (salvataggio con brand/family cambiati imposta *_source='manual', source='manual', confidence=100; salvataggio senza modifiche non altera i source esistenti; markup/badge distinto per valori manuali in tabella e form).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: 'ProductBaseResource: tabella e form title/description_ai'
     description: 'Generare App\Filament\Resources\ProductBaseResource, disabilitare create/delete. Tabella: title, brand/family/subfamily, description_ai troncato. Form di modifica: TextInput title, Textarea description_ai, entrambi editabili (AC3).'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-05
   - id: TASK-06
     title: Azione 'Rigenera embedding' su ProductBaseResource
     description: Aggiungere un'Action (header action su EditProductBase e row action in tabella) che dispatcha esplicitamente GenerateProductBaseEmbeddingJob::dispatch($record->id), indipendentemente da eventuali modifiche a description_ai (AC4).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: ProductBaseResource (edit persiste, azione dispatcha job)'
     description: 'Feature test con Livewire::test su EditProductBase: modifica di title/description_ai persiste sul record; con Queue::fake(), l''azione ''Rigenera embedding'' dispatcha GenerateProductBaseEmbeddingJob con il productBaseId corretto sia a description_ai invariato sia modificato.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: 'Test e2e Dusk: correzione manuale marca (scenario Dimostra)'
     description: Nuovo test in tests/Browser (pattern AdminLoginTest) che, autenticato come admin, apre un prodotto, cambia la marca, salva e verifica il badge 'Manuale'. Override di protected const ARTIFACT_DIR per salvare gli screenshot in docs/test-results/US-021/.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
       - TASK-05
       - TASK-06
+    ref: TASK-08

@@ -6,7 +6,7 @@ epic:
   title: Backoffice Filament
 priority: HIGH
 points: 5
-status: PLANNED
+status: REVIEW
 scope: MVP
 body: |-
   #### US-021: Resource prodotti e prodotti-base con override manuale
