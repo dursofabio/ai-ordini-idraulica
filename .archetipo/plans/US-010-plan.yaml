@@ -1,0 +1,127 @@
+schema: archetipo/plan/v2
+spec_code: US-010
+body: |-
+  # US-010: Estrattori attributi tecnici regex (kW, litri, pollici, materiale) — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-003 — Arricchimento Deterministico
+  **Priorità:** HIGH | **Punti:** 3
+  **Bloccata da:** US-009
+
+  **User Story**
+  Come amministratore del catalogo, voglio che gli attributi tecnici (potenza kW, capacità litri, attacchi pollici, dimensioni, materiale) vengano estratti automaticamente dalle descrizioni tramite pattern regex, così da abilitare i filtri range nella ricerca senza richiedere intervento manuale.
+
+  **Criteri di Accettazione**
+  - [ ] L'estrattore kW popola `value_num` e `unit='kW'` per descrizioni tipo `3.5KW` e codici serie tipo `VAI 8-025`
+  - [ ] L'estrattore litri popola `value_num` e `unit='L'` per descrizioni tipo `BOLLITORE 800 LT`
+  - [ ] L'estrattore pollici popola `value_num` e `unit='"'` per descrizioni tipo `RIDUTTORE 1"`
+  - [ ] L'estrattore materiale popola `value_text` per sigle come `RG`, `INOX`, `PVC`, `RAME`
+  - [ ] Gli attributi hanno `source='regex'` e i numerici hanno `value_num` valorizzato per i filtri range
+
+  ---
+
+  ## Technical Solution
+
+  `product_attributes` esiste già dallo schema US-004 (`product_id`, `key`, `value_num`, `value_text`, `unit`, `source`, con gli indici `(key, value_num)` e `(product_id, key)`) e `products.description_clean` è già popolata da `BrandResolver` (US-009): questa spec non introduce nessuna migration, solo un nuovo resolver di dominio che legge `description_clean ?? description_raw` e scrive righe in `product_attributes`. Ho verificato i pattern reali sul file `docs/data/inventario articoli.xlsx` (sharedStrings) per calibrare le regex sui dati veri del catalogo, non su esempi teorici.
+
+  - **`App\Services\Enrichment\AttributeResolver`**: nuova classe accanto a `BrandResolver`, stesso pattern architetturale (nessun job/comando di orchestrazione — l'esecuzione batch su tutti i prodotti resta a una spec futura di EP-008, coerente con la decisione presa in US-009). Espone `resolve(Product $product): int` (numero di attributi scritti):
+    - **Testo sorgente**: `trim($product->description_clean ?? $product->description_raw ?? '')`; se vuoto ritorna `0` senza query.
+    - Esegue in sequenza i 4 estrattori indipendenti (nessuna priorità reciproca, chiavi diverse) e per ogni match chiama un helper privato `writeAttribute()` che fa `ProductAttribute::updateOrCreate(['product_id' => ..., 'key' => ...], [...,'source' => 'regex'])`.
+    - **Guardia priorità fonte** (stesso principio di `BrandResolver::resolve()`): se esiste già una riga `product_attributes` per quella `product_id`+`key` con `source` non nullo e diverso da `'regex'` (es. `'ai'` o `'manual'`, assegnato da una spec futura di EP-004), `writeAttribute()` non la sovrascrive — un passaggio deterministico non deve mai retrocedere un dato più autorevole. Se la riga esistente ha `source='regex'` (o non esiste), viene creata/aggiornata normalmente: questo rende `resolve()` idempotente su ri-esecuzioni dopo un cambio di `description_clean`.
+    - **Estrattore kW → chiave `potenza_kw`, `unit='kW'`**: due pattern tentati in ordine.
+      1. Unità esplicita: `/(\d+(?:[.,]\d+)?)\s*[kK][wW]\b/u` — copre `3.5KW`, `0,13KW`, `35 Kw`, `(120KW)`. La virgola decimale viene normalizzata in punto prima del cast a float.
+      2. Codice di serie (fallback se nessuna unità esplicita trovata): `/\bVAI\s+(\d+(?:[.,]\d+)?)-\d+/iu` — confermato sui dati reali (`VAI 1-025`, `VAI 3-025`, `VAI 6-025`, `VAI 8-025` … tutte varianti Vaillant Aroterm dove il numero dopo `VAI` è la potenza nominale in kW). **Assunzione registrata**: `VAI` è l'unico prefisso di serie confermato nei dati campione; il prefisso è mantenuto in una lista statica dedicata nella classe così che altri prefissi scoperti in futuro (altre serie Vaillant o di altri brand) possano essere aggiunti senza toccare la logica di match.
+    - **Estrattore litri → chiave `capacita_litri`, `unit='L'`**: `/(\d+(?:[.,]\d+)?)\s*LT\b/iu` — copre `BOLLITORE 800 LT`, `50 LT`, `100 LT` (verificato sui dati reali).
+    - **Estrattore pollici → chiave `attacco_pollici`, `unit='"'`**: `/(?:(\d+)\s+)?(\d+\/\d+|\d+)"/u` — copre intero (`1"`), frazione (`3\/4"`, `1\/2"`) e numero misto spazio-separato (`1 1\/4"`), tutti presenti nei dati reali. La frazione viene convertita in decimale (`3/4" → 0.75`, `1 1/4" → 1.25`). **Limite noto registrato come assunzione**: alcuni codici prodotto (es. ventole Vortice `100/4"`, `150/6"`) terminano coincidentalmente con `"` come etichetta dimensionale non riferita ad un attacco filettato; vengono comunque estratti come falsi positivi a basso impatto (fuori range tipico 1/8"-4" per i filtri, accettabile per l'MVP) — raffinamento eventuale demandato a una spec successiva con dati di validazione reali.
+    - **Estrattore materiale → chiave `materiale`, solo `value_text` (nessun `value_num`/`unit`)**: match a dizionario per parola intera, case-insensitive, contro una lista statica `['RG', 'INOX', 'PVC', 'RAME']` (stesso stile della lista alias di `Brand`, ma qui inline nella classe: non esiste una tabella `materials` e introdurne una non è richiesto da nessun criterio di accettazione). A differenza di `BrandResolver`, un match multiplo non è trattato come ambiguo: viene preso il primo token che compare in ordine di posizione nel testo, perché una descrizione può legittimamente citare più materiali (es. corpo + guarnizione) e l'obiettivo qui è catturare il materiale principale per i filtri, non disambiguare un'entità unica come il brand.
+
+  ---
+
+  ## Test Strategy
+
+  Spec di dominio senza UI: feature test in-memory SQLite (`RequiresDatabase` + `RefreshDatabase`), stesso pattern di `BrandResolverTest`. Nessun test e2e è richiesto (nessuna interazione utente). I casi di test usano le stringhe reali trovate in `docs/data/inventario articoli.xlsx` dove disponibili, per evitare regex calibrate solo su esempi sintetici.
+
+  - **Test kW — unità esplicita**: descrizioni con `3.5KW`, `0,13KW` (virgola decimale) e `35 Kw` (spazio, minuscolo) → `value_num` corretto, `unit='kW'`, `key='potenza_kw'`, `source='regex'`.
+  - **Test kW — codice serie VAI**: `UNITA' ESTERNA VAI 8-025 WNO VAILLANT` → `value_num=8`, `unit='kW'`.
+  - **Test kW — nessun match**: descrizione senza unità né codice serie → nessuna riga `product_attributes` con `key='potenza_kw'`.
+  - **Test litri**: `BOLLITORE 800 LT SOLARE...` → `value_num=800`, `unit='L'`, `key='capacita_litri'`.
+  - **Test pollici — intero, frazione, misto**: `RIDUTTORE PRESS.ACQUA 1" C/MANOM.` → `value_num=1`; una descrizione con `3/4"` → `value_num=0.75`; `ADATTATORE 1 1/4" A 28MM RAME` → `value_num=1.25`. Tutti con `unit='"'`, `key='attacco_pollici'`.
+  - **Test materiale**: descrizioni contenenti `INOX`, `PVC`, `RAME`, `RG` come parola intera → `value_text` corrispondente, `key='materiale'`, `value_num`/`unit` nulli.
+  - **Test integrazione `resolve()`**: una descrizione che combina più segnali (es. `CALDAIA 24KW BOLLITORE INOX`) produce in una sola chiamata più righe `product_attributes` (una per chiave) tutte con `source='regex'`.
+  - **Test idempotenza / guardia priorità fonte**: ri-eseguire `resolve()` sullo stesso prodotto non duplica righe (stesso `product_id`+`key` aggiornato via upsert); una riga preesistente con `source='ai'` per una chiave non viene sovrascritta da una ri-esecuzione che troverebbe un match regex diverso per la stessa chiave.
+  - **Test 'Dimostra'**: dato un campione di prodotti con `potenza_kw` estratta, una query `ProductAttribute::where('key', 'potenza_kw')->whereBetween('value_num', [2, 6])` restituisce esattamente i prodotti con potenza nel range, confermando il criterio di accettazione sui filtri range.
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: 'AttributeResolver: scheletro, guardia priorità fonte, estrattore kW'
+    description: 'Creare App\Services\Enrichment\AttributeResolver con resolve(Product $product): int, helper privato writeAttribute() con updateOrCreate su (product_id, key) e guardia che non sovrascrive righe con source non-null diverso da ''regex''. Implementare l''estrattore potenza_kw: pattern unità esplicita (\d+([.,]\d+)?\s*[kK][wW]) con fallback su pattern codice serie VAI (\bVAI\s+(\d+)-\d+), key=''potenza_kw'', unit=''kW'', source=''regex''.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Test estrattore kW
+    description: 'Feature test (RequiresDatabase + RefreshDatabase) per potenza_kw: unità esplicita con punto e virgola decimale, spazio/minuscolo kw, codice serie VAI N-NNN, e nessun match. Verifica value_num, unit=''kW'', key=''potenza_kw'', source=''regex''.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Estrattore litri
+    description: 'Aggiungere a AttributeResolver l''estrattore capacita_litri: pattern (\d+([.,]\d+)?)\s*LT\b case-insensitive, key=''capacita_litri'', unit=''L'', source=''regex''.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: Test estrattore litri
+    description: Feature test per capacita_litri su descrizioni tipo 'BOLLITORE 800 LT' e varianti (es. 50 LT, 100 LT) e caso nessun match. Verifica value_num, unit='L', key='capacita_litri'.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: Estrattore pollici
+    description: 'Aggiungere a AttributeResolver l''estrattore attacco_pollici: pattern che copre intero (1"), frazione (3/4") e numero misto spazio-separato (1 1/4") prima del simbolo ", con conversione della frazione in decimale. key=''attacco_pollici'', unit=''"'', source=''regex''.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-06
+    title: Test estrattore pollici
+    description: 'Feature test per attacco_pollici: intero (1"), frazione semplice (3/4", 1/2"), numero misto (1 1/4") e caso nessun match. Verifica la conversione decimale corretta e unit=''"''.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Estrattore materiale
+    description: 'Aggiungere a AttributeResolver l''estrattore materiale: match a dizionario statico [''RG'',''INOX'',''PVC'',''RAME''] per parola intera case-insensitive, prendendo il primo token per posizione nel testo in caso di match multipli. key=''materiale'', value_text=token canonico, value_num/unit nulli, source=''regex''.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-08
+    title: Test estrattore materiale
+    description: Feature test per materiale su descrizioni contenenti INOX, PVC, RAME, RG come parola intera, caso nessun match, e caso con più materiali citati (verifica selezione del primo per posizione).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-07
+  - id: TASK-09
+    title: Test integrazione, idempotenza e query range
+    description: 'Feature test che copre: resolve() su una descrizione con più segnali combinati scrive tutte le righe attese in una sola chiamata; ri-esecuzione di resolve() sullo stesso prodotto è idempotente (upsert, nessuna riga duplicata) e non sovrascrive una riga preesistente con source diverso da ''regex'' (es. ''ai''); query ProductAttribute::where(''key'',''potenza_kw'')->whereBetween(''value_num'',[2,6]) restituisce i prodotti corretti, come descritto nella sezione ''Dimostra'' della spec.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-04
+      - TASK-06
+      - TASK-08
