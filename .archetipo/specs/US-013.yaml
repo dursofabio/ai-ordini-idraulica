@@ -6,7 +6,7 @@ epic:
   title: Arricchimento AI
 priority: HIGH
 points: 2
-status: TODO
+status: PLANNED
 scope: MVP
 body: |-
   #### US-013: Client Claude HTTP per chiamate Messages e Batch
