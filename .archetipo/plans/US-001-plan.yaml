@@ -1,0 +1,118 @@
+schema: archetipo/plan/v2
+spec_code: US-001
+body: |
+  # US-001: Setup ambiente Sail con PostgreSQL/pgvector e Redis — Piano di Implementazione
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-000 — Fondamenta del Progetto
+  **Priorità:** HIGH | **Punti:** 3
+
+  **User Story**
+  Come sviluppatore del team, voglio un ambiente Docker funzionante con PostgreSQL 16 + pgvector e Redis, così da poter sviluppare e testare tutte le funzionalità del catalogo senza configurazioni manuali.
+
+  **Criteri di Accettazione**
+  - [ ] `sail up` avvia tutti i container (laravel.test, pgsql, redis) senza errori
+  - [ ] `SELECT 1 FROM pg_extension WHERE extname='vector'` restituisce una riga in PostgreSQL
+  - [ ] Redis risponde al PING tramite `sail redis-cli ping`
+  - [ ] Le variabili d'ambiente DB_CONNECTION=pgsql, QUEUE_CONNECTION=redis, CACHE_STORE=redis sono configurate in .env.example
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Questa è la spec fondativa del progetto: crea da zero un'applicazione Laravel con Laravel Sail come ambiente Docker locale, sostituendo l'immagine PostgreSQL standard con una che include l'estensione `pgvector` (necessaria per l'embedding vettoriale delle spec successive EP-005/EP-006) e aggiungendo il servizio Redis per code e cache. Poiché il repository è attualmente greenfield (nessun `composer.json`, nessun `docker-compose.yml`), il primo passo è lo scaffolding del progetto Laravel, poi la personalizzazione dell'infrastruttura Docker.
+
+  > **Nota di allineamento:** Il PRD v1.0 ipotizzava uno stack Node/Python + Pinecone. Il backlog (fonte più recente e autoritativa per l'implementazione) definisce invece uno stack Laravel + PostgreSQL/pgvector + Redis. Questo piano segue il backlog. pgvector sostituisce Pinecone come motore di ricerca vettoriale self-hosted.
+
+  - **Scaffolding Laravel via Sail:** generare un nuovo progetto Laravel (ultima versione stabile LTS) con Laravel Sail preconfigurato per i servizi `pgsql` e `redis`, in modo che `./vendor/bin/sail up` avvii i tre container richiesti (`laravel.test`, `pgsql`, `redis`).
+  - **Immagine PostgreSQL 16 + pgvector:** nel `docker-compose.yml` sostituire l'immagine `pgsql` di default con `pgvector/pgvector:pg16` (che espone PostgreSQL 16 con pgvector precompilato), mantenendo volume persistente, healthcheck e credenziali derivate dalle variabili `.env`.
+  - **Attivazione automatica dell'estensione vector:** creare una migration Laravel `enable_pgvector_extension` che esegue `CREATE EXTENSION IF NOT EXISTS vector;` così l'estensione risulta attiva dopo `sail artisan migrate`, senza intervento manuale (soddisfa il criterio `SELECT 1 FROM pg_extension WHERE extname='vector'`).
+  - **Servizio Redis:** garantire nel `docker-compose.yml` il servizio `redis` con immagine ufficiale, volume persistente e healthcheck (`redis-cli ping`).
+  - **Configurazione ambiente:** impostare in `.env.example` (e `.env`) le variabili `DB_CONNECTION=pgsql`, `DB_HOST=pgsql`, `DB_PORT=5432`, `QUEUE_CONNECTION=redis`, `CACHE_STORE=redis`, `REDIS_HOST=redis`, allineando i default di connessione ai container Sail.
+  - **Documentazione onboarding:** aggiornare il `README.md` con le istruzioni minime di avvio (`sail up`, `sail artisan migrate`, verifica pgvector e Redis) per garantire l'esperienza "zero configurazione manuale" richiesta dalla user story.
+
+  ---
+
+  ## Strategia di Test
+
+  Trattandosi di una spec infrastrutturale senza interfaccia utente, i test si concentrano sulla verifica che l'ambiente Docker sia correttamente configurato e raggiungibile, replicando i criteri di accettazione come controlli automatizzabili. Non è richiesta alcuna strategia e2e (nessuna UI o interazione utente coinvolta).
+
+  - **Test di connettività database:** un test di integrazione Laravel (PHPUnit/Pest) che apre una connessione a PostgreSQL ed esegue `SELECT 1 FROM pg_extension WHERE extname='vector'` verificando che restituisca una riga (estensione attiva).
+  - **Test di connettività Redis:** un test di integrazione che effettua un `Redis::connection()->ping()` e verifica la risposta `PONG`, confermando che il servizio Redis è raggiungibile con la configurazione di default.
+  - **Verifica configurazione ambiente:** un test/assertion che controlla che i valori di config runtime (`config('database.default')` = `pgsql`, `config('queue.default')` = `redis`, `config('cache.default')` = `redis`) corrispondano ai criteri di accettazione, più una verifica manuale che `.env.example` contenga le variabili richieste.
+  - **Smoke manuale documentato:** checklist di verifica manuale (`sail up` senza errori sui tre container, `sail redis-cli ping` → `PONG`) inclusa nel README come procedura di validazione dell'ambiente.
+
+  ---
+
+  _Piano generato tramite ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Scaffolding progetto Laravel con Sail
+    description: Generare da zero un nuovo progetto Laravel con Laravel Sail preconfigurato per i servizi pgsql e redis. Committare la struttura base (composer.json, artisan, docker-compose.yml, .env.example).
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Configurare immagine PostgreSQL 16 + pgvector nel docker-compose
+    description: Sostituire l'immagine pgsql di default con pgvector/pgvector:pg16 nel docker-compose.yml, mantenendo volume persistente, credenziali da .env e healthcheck.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Configurare servizio Redis nel docker-compose
+    description: Assicurare la presenza del servizio redis (immagine ufficiale) con volume persistente e healthcheck redis-cli ping nel docker-compose.yml.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: Impostare variabili d'ambiente in .env.example
+    description: Configurare DB_CONNECTION=pgsql, DB_HOST=pgsql, QUEUE_CONNECTION=redis, CACHE_STORE=redis, REDIS_HOST=redis e relativi default in .env.example e .env.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-03
+  - id: TASK-05
+    title: Migration per abilitare l'estensione pgvector
+    description: Creare una migration che esegue CREATE EXTENSION IF NOT EXISTS vector; così l'estensione risulta attiva dopo sail artisan migrate senza intervento manuale.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-06
+    title: Test di integrazione connettività PostgreSQL + pgvector
+    description: Test (Pest/PHPUnit) che verifica la connessione a PostgreSQL e che SELECT 1 FROM pg_extension WHERE extname='vector' restituisca una riga.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Test di integrazione connettività Redis
+    description: Test che esegue Redis::connection()->ping() e verifica la risposta PONG, confermando la raggiungibilità del servizio Redis.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+      - TASK-04
+  - id: TASK-08
+    title: Test di verifica configurazione ambiente
+    description: Test che asserisce config('database.default')=pgsql, config('queue.default')=redis, config('cache.default')=redis, allineati ai criteri di accettazione.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-09
+    title: Aggiornare README con istruzioni di avvio e checklist di verifica
+    description: Documentare sail up, sail artisan migrate e la checklist di smoke manuale (tre container, pgvector attivo, redis PONG) per l'onboarding a zero configurazione.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+      - TASK-05

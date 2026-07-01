@@ -1,0 +1,94 @@
+autopilot:
+  steps: [plan, implement]
+  filters:
+    epic: null
+    priority: null
+  max_specs: 5
+  exit_condition: null
+  on_error: ask
+  extra_instructions: "Ad ogni step (plan/implement), preparare un commit git adeguato."
+  current_spec_index: 1
+  status: running
+  started_at: "2026-07-01T15:24:00"
+  updated_at: "2026-07-01T15:24:00"
+
+queue:
+  - code: US-001
+    title: "Setup ambiente Sail con PostgreSQL/pgvector e Redis"
+    epic: EP-000
+    priority: HIGH
+    points: 3
+    pipeline:
+      plan:
+        status: success
+        summary: "9 task (6 impl + 3 test) salvati in US-001-plan.yaml; spec -> PLANNED. Nessun mockup (infra, no UI)."
+        timestamp: "2026-07-01T15:26:00"
+      implement:
+        status: pending
+        summary: null
+        timestamp: null
+    result: pending
+
+  - code: US-002
+    title: "Filament 5 e Horizon installati e accessibili"
+    epic: EP-000
+    priority: HIGH
+    points: 2
+    pipeline:
+      plan:
+        status: pending
+        summary: null
+        timestamp: null
+      implement:
+        status: pending
+        summary: null
+        timestamp: null
+    result: pending
+
+  - code: US-003
+    title: "Migrazioni anagrafiche: brands, families, subfamilies"
+    epic: EP-001
+    priority: HIGH
+    points: 2
+    pipeline:
+      plan:
+        status: pending
+        summary: null
+        timestamp: null
+      implement:
+        status: pending
+        summary: null
+        timestamp: null
+    result: pending
+
+  - code: US-004
+    title: "Migrazioni prodotto: product_bases, products, product_attributes"
+    epic: EP-001
+    priority: HIGH
+    points: 3
+    pipeline:
+      plan:
+        status: pending
+        summary: null
+        timestamp: null
+      implement:
+        status: pending
+        summary: null
+        timestamp: null
+    result: pending
+
+  - code: US-005
+    title: "Tabelle vettoriali, staging e audit"
+    epic: EP-001
+    priority: HIGH
+    points: 3
+    pipeline:
+      plan:
+        status: pending
+        summary: null
+        timestamp: null
+      implement:
+        status: pending
+        summary: null
+        timestamp: null
+    result: pending
