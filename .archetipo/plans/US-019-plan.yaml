@@ -43,89 +43,102 @@ tasks:
     title: 'Migration: search_vector tsvector su product_bases + indice GIN'
     description: 'Nuova migration che aggiunge a product_bases la colonna search_vector: su driver pgsql, tsvector GENERATED ALWAYS AS (to_tsvector(''italian'', coalesce(title,'''') || '' '' || coalesce(description_ai,''''))) STORED con indice GIN (search_vector); su altri driver (SQLite test), colonna text nullable senza generazione, stesso pattern del guard $isPgsql usato in create_product_embeddings_table. Verificare/aggiungere indici standard su product_bases.brand_id, family_id, subfamily_id se assenti.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'Test: struttura tsvector, indice GIN e popolamento search_vector'
     description: 'Feature test Postgres-only (stesso pattern di VectorEmbeddingPgvectorTest: skip su driver non-pgsql o Postgres irraggiungibile) che verifica tipo colonna tsvector di product_bases.search_vector, presenza indice GIN sulla colonna, e che creando un ProductBase con title/description_ai valorizzati il campo search_vector generato contenga i lexeme attesi (query to_tsvector diretta).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'config/search.php: pesi fusione, TTL cache query embedding'
     description: Nuovo file di configurazione config/search.php con chiavi weights.vector (default 0.7, env SEARCH_WEIGHT_VECTOR), weights.fts (default 0.3, env SEARCH_WEIGHT_FTS), cache.ttl (default 3600, env SEARCH_QUERY_CACHE_TTL). Aggiungere le variabili corrispondenti a .env.example con i default.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-03
   - id: TASK-04
     title: 'SearchService: cache embedding query e match per codice esatto'
     description: Creare App\Services\Search\SearchService con dipendenza EmbeddingClient iniettata via costruttore. Implementare metodo privato per ottenere l'embedding della query passando da Cache::remember con chiave derivata da modello+query (md5) e TTL da config('search.cache.ttl'). Implementare la ricerca per corrispondenza esatta di codice_articolo (case-insensitive) su Product, che se trovata determina il product_base_id da forzare in cima ai risultati finali.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: 'Test: cache Redis dell''embedding della query'
     description: Feature test che, con Http::fake sulla chiamata dell'EmbeddingClient e cache store reale (array o redis se disponibile) configurato dal test, esegue SearchService::search() due volte con la stessa query e verifica con Http::assertSentCount(1) che la seconda chiamata non rigeneri l'embedding. Verifica anche che query diverse producano chiavi di cache diverse (secondo assertSentCount incrementale).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: 'SearchService: filtri strutturati (marca, famiglia, attributi range) prima del ranking'
     description: Estendere SearchService con un metodo che applica filtri opzionali (brand_id, family_id, subfamily_id, e array di filtri attributo {key, min, max}) alla query di base su ProductBase PRIMA di calcolare i punteggi di ranking. Il filtro per attributo numerico usa whereHas('products.attributes', fn ($q) => $q->where('key', $key)->whereBetween('value_num', [$min, $max])). I filtri marca/famiglia sono semplici where su product_bases.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: filtri strutturati riducono il pool prima del ranking'
     description: Feature test (SQLite, generico) che crea prodotti-base con marche/famiglie diverse e varianti con attributi numerici (es. potenza) diversi, ed esegue SearchService::search() con vari filtri combinati, verificando che il result set contenga solo i prodotti-base attesi indipendentemente dal termine di ricerca testuale/vettoriale.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: 'SearchService: fusione pesata full-text + vettoriale (Postgres) e fallback LIKE'
     description: 'Implementare la query principale: su driver pgsql, join tra product_bases (con search_vector) e product_embeddings (LEFT JOIN per model corrente), calcolo ts_rank(search_vector, plainto_tsquery(''italian'', ?)) come punteggio FTS e (1 - (embedding <=> ?)) come punteggio vettoriale (0 se embedding assente), fusi con formula weights.vector*vector_score + weights.fts*fts_score da config(''search''), ORDER BY punteggio combinato DESC. Su driver non-pgsql, fallback a LIKE su title/description_ai senza fusione vettoriale (nessun tsvector/operatore <=> disponibile). Il match per codice esatto (TASK-04) viene anteposto ai risultati fusi con punteggio massimo forzato.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-05
       - TASK-06
+    ref: TASK-08
   - id: TASK-09
     title: 'Test: fusione pesata vettoriale+FTS e ordinamento per punteggio combinato'
     description: Feature test Postgres-only (pattern VectorEmbeddingPgvectorTest, skip fuori Sail) che inserisce prodotti-base con embedding noti e description_ai/title controllati, mocka l'embedding della query di ricerca (Http::fake), ed esegue SearchService::search() verificando che l'ordine dei risultati rispetti la formula pesata (0.7 vettoriale/0.3 FTS di default); ripete il test con pesi invertiti via config override e verifica che l'ordine cambi coerentemente.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-09
   - id: TASK-10
     title: 'Test: match per codice esatto in testa ai risultati'
     description: Feature test che crea un product_base con una variante di codice_articolo noto e un contenuto semantico volutamente non correlato al termine di ricerca; esegue SearchService::search() con quel codice esatto come query e verifica che il product_base corrispondente sia il primo risultato, anche in presenza di altri prodotti-base con punteggio semantico più alto.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-10
   - id: TASK-11
     title: 'SearchService: raggruppamento con variants_count e power_range'
     description: Arricchire i risultati con variants_count (numero di varianti Product figlie del product_base) e power_range (min/max di value_num per un attributo numerico rappresentativo tra le varianti, quando presente) calcolati con withCount/subselect aggregati (no N+1). Definire la struttura di ritorno di search() (es. paginator di DTO/array con product_base + meta di raggruppamento).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-11
   - id: TASK-12
     title: 'Test: raggruppamento per product_base_id con variants_count e power_range corretti'
     description: Feature test che crea un product_base con piu varianti aventi attributo potenza diverso ed esegue SearchService::search(), verificando che il risultato compaia una sola volta (non duplicato per variante), con variants_count pari al numero di varianti e power_range coerente con i valori min/max effettivi.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-11
+    ref: TASK-12
   - id: TASK-13
     title: 'Test: performance query di ricerca (no N+1, soglia CI) su seed ridotto'
     description: Feature test Postgres-only con seed di alcune centinaia di prodotti-base ed embedding, che esegue SearchService::search() e verifica assenza di N+1 (conteggio query tramite DB::listen entro un limite fisso basso, indipendente dal numero di risultati) e un tempo di esecuzione entro una soglia larga adeguata a CI. Includere nel commento del test una nota esplicita che la soglia p95 < 300ms su 42k prodotti-base va validata in staging/production, non riproducibile in modo affidabile in CI.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
       - TASK-11
+    ref: TASK-13
