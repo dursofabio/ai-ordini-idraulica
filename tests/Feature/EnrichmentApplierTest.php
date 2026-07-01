@@ -1,0 +1,171 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Brand;
+use App\Models\Family;
+use App\Models\Product;
+use App\Models\Subfamily;
+use App\Services\Ai\ClassifiedProduct;
+use App\Services\Ai\TaxonomyCatalog;
+use App\Services\Enrichment\EnrichmentApplier;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Concerns\RequiresDatabase;
+use Tests\TestCase;
+
+/**
+ * US-015 acceptance criteria — confidence-gated enrichment write-back:
+ *  - confidence >= 85: AI values applied, enrichment_status = 'enriched'.
+ *  - confidence 60-84: AI values applied, enrichment_status = 'needs_review'.
+ *  - confidence < 60: no AI value applied, enrichment_status = 'needs_review'.
+ *  - brand_source = 'manual' is never overwritten by the AI.
+ *  - Every application at confidence >= 60 sets source = 'ai' and
+ *    confidence = <received value> on the product.
+ *
+ * Runs against in-memory SQLite via RequiresDatabase.
+ */
+class EnrichmentApplierTest extends TestCase
+{
+    use RefreshDatabase;
+    use RequiresDatabase;
+
+    public function test_high_confidence_result_is_applied_and_marks_product_enriched(): void
+    {
+        $brand = Brand::factory()->create(['name' => 'Grohe']);
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+        $subfamily = Subfamily::factory()->create(['name' => 'Miscelatori', 'family_id' => $family->id]);
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'Grohe',
+            family: 'Rubinetteria',
+            subfamily: 'Miscelatori',
+            productType: 'Miscelatore',
+            enrichedDescription: 'Descrizione arricchita',
+            confidence: 90,
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertSame($brand->id, $fresh->brand_id);
+        $this->assertSame('ai', $fresh->brand_source);
+        $this->assertSame($family->id, $fresh->family_id);
+        $this->assertSame('ai', $fresh->family_source);
+        $this->assertSame($subfamily->id, $fresh->subfamily_id);
+        $this->assertSame('ai', $fresh->subfamily_source);
+        $this->assertSame('enriched', $fresh->enrichment_status);
+        $this->assertSame('ai', $fresh->source);
+        $this->assertSame(90, $fresh->confidence);
+    }
+
+    public function test_medium_confidence_result_is_applied_but_marks_product_needs_review(): void
+    {
+        $brand = Brand::factory()->create(['name' => 'Grohe']);
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'Grohe',
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: 70,
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertSame($brand->id, $fresh->brand_id);
+        $this->assertSame('ai', $fresh->brand_source);
+        $this->assertSame('needs_review', $fresh->enrichment_status);
+        $this->assertSame('ai', $fresh->source);
+        $this->assertSame(70, $fresh->confidence);
+    }
+
+    public function test_low_confidence_result_applies_no_ai_values(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'Grohe',
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: 40,
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertNull($fresh->brand_id);
+        $this->assertNull($fresh->brand_source);
+        $this->assertSame('needs_review', $fresh->enrichment_status);
+        $this->assertNull($fresh->source);
+        $this->assertNull($fresh->confidence);
+    }
+
+    public function test_manual_brand_source_is_never_overwritten_but_other_fields_and_status_still_update(): void
+    {
+        $manualBrand = Brand::factory()->create(['name' => 'Hansgrohe']);
+        $aiBrand = Brand::factory()->create(['name' => 'Grohe']);
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+
+        $product = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'brand_id' => $manualBrand->id,
+            'brand_source' => 'manual',
+        ]);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'Grohe',
+            family: 'Rubinetteria',
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: 90,
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertSame($manualBrand->id, $fresh->brand_id);
+        $this->assertSame('manual', $fresh->brand_source);
+        $this->assertNotSame($aiBrand->id, $fresh->brand_id);
+        $this->assertSame($family->id, $fresh->family_id);
+        $this->assertSame('ai', $fresh->family_source);
+        $this->assertSame('enriched', $fresh->enrichment_status);
+        $this->assertSame('ai', $fresh->source);
+        $this->assertSame(90, $fresh->confidence);
+    }
+
+    public function test_ai_value_not_present_in_taxonomy_is_ignored_without_exception(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'MarcaInesistente',
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: 90,
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertNull($fresh->brand_id);
+        $this->assertNull($fresh->brand_source);
+        $this->assertSame('enriched', $fresh->enrichment_status);
+        $this->assertSame('ai', $fresh->source);
+        $this->assertSame(90, $fresh->confidence);
+    }
+}

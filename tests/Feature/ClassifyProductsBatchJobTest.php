@@ -27,6 +27,15 @@ use Tests\TestCase;
  *    using model_smart, and the final log for that product reports
  *    model_smart.
  *
+ * US-015 acceptance criteria — confidence-gated enrichment write-back,
+ * exercised end-to-end through the job:
+ *  - confidence >= 85 populates brand_id and marks the product 'enriched'
+ *    with source 'ai'.
+ *  - confidence 60-84 populates brand_id but marks the product
+ *    'needs_review'.
+ *  - confidence < 60, even after escalation to the smart model, leaves
+ *    brand_id/family_id null and the product 'needs_review'.
+ *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
 class ClassifyProductsBatchJobTest extends TestCase
@@ -167,6 +176,104 @@ class ClassifyProductsBatchJobTest extends TestCase
         $this->assertNotNull($normalLog);
         $this->assertSame('claude-fast-test', $normalLog->model);
         $this->assertSame(95, $normalLog->confidence);
+    }
+
+    public function test_high_confidence_classification_enriches_the_product(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $products = Product::factory()->count(2)->create(['enrichment_status' => 'pending']);
+
+        Http::fake([
+            '*' => Http::response($this->anthropicBody($products, confidence: 90)),
+        ]);
+
+        (new ClassifyProductsBatchJob($products->pluck('id')->all()))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        foreach ($products as $product) {
+            $fresh = $product->fresh();
+            $this->assertNotNull($fresh->brand_id);
+            $this->assertSame('enriched', $fresh->enrichment_status);
+            $this->assertSame('ai', $fresh->source);
+            $this->assertSame(90, $fresh->confidence);
+        }
+    }
+
+    public function test_medium_confidence_classification_applies_values_but_needs_review(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $products = Product::factory()->count(2)->create(['enrichment_status' => 'pending']);
+
+        Http::fake([
+            '*' => Http::response($this->anthropicBody($products, confidence: 70)),
+        ]);
+
+        (new ClassifyProductsBatchJob($products->pluck('id')->all()))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        foreach ($products as $product) {
+            $fresh = $product->fresh();
+            $this->assertNotNull($fresh->brand_id);
+            $this->assertSame('needs_review', $fresh->enrichment_status);
+            $this->assertSame('ai', $fresh->source);
+            $this->assertSame(70, $fresh->confidence);
+        }
+    }
+
+    public function test_low_confidence_classification_after_escalation_applies_no_values(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $batchBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [$this->resultFor($product, confidence: 30)],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 100, 'output_tokens' => 40],
+        ];
+
+        $escalationBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [$this->resultFor($product, confidence: 45)],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 30, 'output_tokens' => 10],
+        ];
+
+        Http::fake([
+            '*' => Http::sequence()
+                ->push($batchBody)
+                ->push($escalationBody),
+        ]);
+
+        (new ClassifyProductsBatchJob([$product->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertSentCount(2);
+
+        $fresh = $product->fresh();
+        $this->assertNull($fresh->brand_id);
+        $this->assertNull($fresh->family_id);
+        $this->assertSame('needs_review', $fresh->enrichment_status);
+        $this->assertNull($fresh->source);
+        $this->assertNull($fresh->confidence);
     }
 
     /**

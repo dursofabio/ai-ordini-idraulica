@@ -11,6 +11,7 @@ use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\ClaudeClient;
 use App\Services\Ai\TaxonomyCatalog;
 use App\Services\Ai\ValidatedClassification;
+use App\Services\Enrichment\EnrichmentApplier;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -33,9 +34,9 @@ use Illuminate\Support\Collection as SupportCollection;
  * result with confidence < {@see self::LOW_CONFIDENCE_THRESHOLD} is
  * re-classified individually with model_smart before logging. Each product
  * gets exactly one `enrichment_logs` row (step `ai_classification`) with the
- * batch's token usage divided evenly across its products. Writing
- * brand_id/family_id back onto the product is out of scope (US-015); this
- * job only produces the audit trail.
+ * batch's token usage divided evenly across its products. After logging,
+ * {@see EnrichmentApplier} writes the classification result back onto the
+ * product according to its confidence band (US-015).
  */
 class ClassifyProductsBatchJob implements ShouldQueue
 {
@@ -108,7 +109,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
 
         $this->escalateLowConfidenceResults($client, $promptBuilder, $validator, $products, $taxonomy, $classification);
 
-        $this->logResults($products, $classification, $modelFast, $tokensIn, $tokensOut);
+        $this->logResults($products, $classification, $taxonomy, $modelFast, $tokensIn, $tokensOut);
     }
 
     /**
@@ -203,6 +204,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
     private function logResults(
         EloquentCollection $products,
         ValidatedClassification $classification,
+        TaxonomyCatalog $taxonomy,
         string $modelFast,
         int $batchTokensIn,
         int $batchTokensOut,
@@ -211,6 +213,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         $shareIn = intdiv($batchTokensIn, $count);
         $shareOut = intdiv($batchTokensOut, $count);
         $now = Carbon::now();
+        $applier = new EnrichmentApplier;
 
         $rows = [];
 
@@ -235,6 +238,8 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
+
+            $applier->apply($product, $result, $taxonomy);
         }
 
         if ($rows !== []) {

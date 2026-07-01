@@ -60,10 +60,7 @@ class TaxonomyCatalog
         $subfamilies = $this->subfamilies();
 
         if ($familyName !== null) {
-            $family = $this->families()->first(
-                fn (Family $candidate): bool => $this->sameToken($candidate->name, $familyName)
-                    || $this->sameToken($candidate->slug, $familyName)
-            );
+            $family = $this->find($this->families(), $familyName);
 
             if ($family === null) {
                 return false;
@@ -73,6 +70,46 @@ class TaxonomyCatalog
         }
 
         return $this->matches($subfamilies, $name);
+    }
+
+    /**
+     * Find the existing brand matching the given name or slug,
+     * case-insensitively.
+     */
+    public function findBrand(string $name): ?Brand
+    {
+        return $this->find($this->brands(), $name);
+    }
+
+    /**
+     * Find the existing family matching the given name or slug,
+     * case-insensitively.
+     */
+    public function findFamily(string $name): ?Family
+    {
+        return $this->find($this->families(), $name);
+    }
+
+    /**
+     * Find the existing subfamily matching the given name or slug,
+     * case-insensitively. When `$familyName` is provided, the lookup is
+     * additionally scoped to subfamilies belonging to that family.
+     */
+    public function findSubfamily(string $name, ?string $familyName = null): ?Subfamily
+    {
+        $subfamilies = $this->subfamilies();
+
+        if ($familyName !== null) {
+            $family = $this->find($this->families(), $familyName);
+
+            if ($family === null) {
+                return null;
+            }
+
+            $subfamilies = $subfamilies->where('family_id', $family->id);
+        }
+
+        return $this->find($subfamilies, $name);
     }
 
     /**
@@ -126,7 +163,18 @@ class TaxonomyCatalog
      */
     private function matches(Collection $items, string $name): bool
     {
-        return $items->contains(
+        return $this->find($items, $name) !== null;
+    }
+
+    /**
+     * @template TModel of Brand|Family|Subfamily
+     *
+     * @param  Collection<int, TModel>  $items
+     * @return TModel|null
+     */
+    private function find(Collection $items, string $name): Brand|Family|Subfamily|null
+    {
+        return $items->first(
             fn (Brand|Family|Subfamily $item): bool => $this->sameToken($item->name, $name)
                 || $this->sameToken($item->slug, $name)
         );

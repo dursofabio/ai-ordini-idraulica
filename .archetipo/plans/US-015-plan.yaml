@@ -67,46 +67,53 @@ tasks:
     title: 'TaxonomyCatalog: metodi di lookup nome→modello (findBrand/findFamily/findSubfamily)'
     description: 'Estendere App\Services\Ai\TaxonomyCatalog con findBrand(string $name): ?Brand, findFamily(string $name): ?Family, findSubfamily(string $name, ?string $familyName = null): ?Subfamily, riusando le collezioni già memoizzate (brands()/families()/subfamilies()) e la stessa comparazione case-insensitive su name/slug di isValidBrand/isValidFamily/isValidSubfamily.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'Test: TaxonomyCatalog lookup nome→modello'
     description: Feature test che verifica che findBrand/findFamily/findSubfamily ritornino il modello corretto per name/slug case-insensitive, null se non trovato, e che findSubfamily rispetti lo scoping per famiglia quando $familyName è fornito.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'EnrichmentApplier: applicazione valori AI con regole di confidenza e guardia manuale'
     description: 'Creare App\Services\Enrichment\EnrichmentApplier con apply(Product $product, ClassifiedProduct $result, TaxonomyCatalog $taxonomy): void. Costanti LOW_CONFIDENCE_THRESHOLD=60 e HIGH_CONFIDENCE_THRESHOLD=85. confidence<60: solo enrichment_status=''needs_review'', nessun valore AI applicato. confidence 60-84: applica valori AI risolti via TaxonomyCatalog, enrichment_status=''needs_review''. confidence>=85: applica valori AI, enrichment_status=''enriched''. Per ciascun campo (brand/family/subfamily) non sovrascrivere se il rispettivo *_source è già ''manual''. Quando confidence>=60, impostare sempre source=''ai'' e confidence=<valore ricevuto> a livello prodotto, indipendentemente dalle guardie sui singoli campi. Valori AI non risolvibili in tassonomia vengono ignorati senza eccezioni.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: 'Test: EnrichmentApplier soglie di confidenza (>=85, 60-84, <60)'
     description: 'Feature test con RefreshDatabase/RequiresDatabase: confidence=90 applica brand_id/family_id/subfamily_id risolti ed enrichment_status=''enriched''/source=''ai''/confidence=90; confidence=70 applica gli stessi valori ma enrichment_status=''needs_review''; confidence=40 non applica alcun valore AI (brand_id/family_id restano invariati), enrichment_status=''needs_review'', e source/confidence a livello prodotto non vengono scritti.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: 'Test: EnrichmentApplier guardia brand_source=''manual'' e valore fuori tassonomia'
     description: Feature test che verifica che un prodotto con brand_source='manual' preesistente non venga mai sovrascritto da un risultato AI con confidence=90 (brand_id/brand_source restano invariati, ma family_id/subfamily_id proposti e non manuali vengono comunque applicati, ed enrichment_status/source/confidence a livello prodotto vengono comunque aggiornati); e che un valore AI (es. brand) non presente in tassonomia venga ignorato senza eccezioni.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: Innesto EnrichmentApplier in ClassifyProductsBatchJob::logResults()
     description: Estendere ClassifyProductsBatchJob::logResults() per invocare EnrichmentApplier::apply($product, $result, $taxonomy) per ogni prodotto del lotto subito dopo aver costruito la riga di log corrispondente, riusando lo stesso ciclo foreach esistente. Il path markNeedsReview() (doppio fallimento JSON) resta invariato.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: ClassifyProductsBatchJob applica i valori AI al prodotto secondo le soglie di confidenza'
     description: 'Estendere/aggiungere test di integrazione su ClassifyProductsBatchJob (Http::fake()) che verificano end-to-end: confidence>=85 su un lotto valido produce brand_id popolato, enrichment_status=''enriched'', source=''ai'' sul prodotto; confidence 60-84 applica i valori ma enrichment_status=''needs_review''; confidence<60 (anche dopo eventuale escalation al modello smart) non applica brand_id/family_id e mantiene enrichment_status=''needs_review''.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07

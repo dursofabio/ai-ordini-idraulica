@@ -114,4 +114,85 @@ class TaxonomyCatalogTest extends TestCase
 
         $this->assertFalse($catalog->isValidSubfamily('Valvole'));
     }
+
+    public function test_find_brand_returns_matching_model_by_name_or_slug_case_insensitively(): void
+    {
+        $brand = Brand::factory()->create(['name' => 'Grohe', 'slug' => 'grohe-it']);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertTrue($catalog->findBrand('GROHE')->is($brand));
+        $this->assertTrue($catalog->findBrand('grohe-it')->is($brand));
+    }
+
+    public function test_find_brand_returns_null_when_not_found(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertNull($catalog->findBrand('Hansgrohe'));
+    }
+
+    public function test_find_family_returns_matching_model_by_name_or_slug_case_insensitively(): void
+    {
+        $family = Family::factory()->create(['name' => 'Rubinetteria', 'slug' => 'rubinetteria']);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertTrue($catalog->findFamily('RUBINETTERIA')->is($family));
+        $this->assertTrue($catalog->findFamily('rubinetteria')->is($family));
+    }
+
+    public function test_find_family_returns_null_when_not_found(): void
+    {
+        Family::factory()->create(['name' => 'Rubinetteria']);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertNull($catalog->findFamily('Riscaldamento'));
+    }
+
+    public function test_find_subfamily_returns_matching_model_case_insensitively(): void
+    {
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+        $subfamily = Subfamily::factory()->create(['name' => 'Miscelatori', 'slug' => 'miscelatori', 'family_id' => $family->id]);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertTrue($catalog->findSubfamily('MISCELATORI')->is($subfamily));
+    }
+
+    public function test_find_subfamily_scoped_to_family_ignores_matches_from_other_families(): void
+    {
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+        $otherFamily = Family::factory()->create(['name' => 'Riscaldamento']);
+        $subfamily = Subfamily::factory()->create(['name' => 'Miscelatori', 'family_id' => $family->id]);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertTrue($catalog->findSubfamily('Miscelatori', 'Rubinetteria')->is($subfamily));
+        $this->assertNull($catalog->findSubfamily('Miscelatori', 'Riscaldamento'));
+        $this->assertNotNull($otherFamily->id);
+    }
+
+    public function test_find_subfamily_returns_null_when_family_name_does_not_exist(): void
+    {
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+        Subfamily::factory()->create(['name' => 'Miscelatori', 'family_id' => $family->id]);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertNull($catalog->findSubfamily('Miscelatori', 'NonEsistente'));
+    }
+
+    public function test_find_subfamily_returns_null_when_not_found(): void
+    {
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+        Subfamily::factory()->create(['name' => 'Miscelatori', 'family_id' => $family->id]);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertNull($catalog->findSubfamily('Valvole'));
+    }
 }
