@@ -36,9 +36,9 @@ queue:
     points: 2
     pipeline:
       plan:
-        status: pending
-        summary: null
-        timestamp: null
+        status: success
+        summary: "10 task (5 impl + 5 test, incl. Dusk e2e login admin); spec -> PLANNED. Nessun mockup (UI dai pacchetti Filament/Horizon)."
+        timestamp: "2026-07-01T15:45:00"
       implement:
         status: pending
         summary: null

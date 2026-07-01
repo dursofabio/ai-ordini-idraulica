@@ -1,0 +1,129 @@
+schema: archetipo/plan/v2
+spec_code: US-002
+body: |-
+  # US-002: Filament 5 e Horizon installati e accessibili — Piano di Implementazione
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-000 — Fondamenta del Progetto
+  **Priorità:** HIGH | **Punti:** 2
+
+  **User Story**
+  Come sviluppatore del team, voglio Filament 5 e Laravel Horizon installati e accessibili via browser, così da avere il backoffice di amministrazione e il monitoring delle code pronti per i prossimi incrementi.
+
+  **Criteri di Accettazione**
+  - [ ] GET /admin risponde con la pagina di login di Filament senza errori 500
+  - [ ] GET /horizon risponde con la dashboard di Horizon
+  - [ ] Le code `import`, `enrich`, `embed`, `default` sono definite nella configurazione di Horizon
+  - [ ] Un utente admin può autenticarsi al backoffice Filament
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Questa spec aggiunge due pacchetti backoffice/monitoring al progetto Laravel già scaffoldato in US-001 (Laravel 13.8, PHP 8.3, stack pgsql/redis): **Filament 5** come pannello di amministrazione servito su `/admin` e **Laravel Horizon** come dashboard di monitoring delle code Redis servita su `/horizon`. Entrambi forniscono UI pre-costruite dai rispettivi pacchetti, quindi non è richiesta alcuna progettazione di interfaccia custom (nessun mockup). Il lavoro consiste nell'installazione, pubblicazione delle risorse, configurazione delle code Horizon e nel rendere il modello `User` idoneo all'accesso al pannello Filament.
+
+  - **Installazione Filament 5:** aggiungere `filament/filament` via Composer ed eseguire `php artisan filament:install --panels`, che genera un `AdminPanelProvider` con path `/admin` e lo registra. Poiché Horizon dipende da Redis e Filament dal driver di sessione/DB, l'ambiente di US-001 (pgsql + redis) è già compatibile.
+  - **Accesso admin al pannello:** implementare `FilamentUser` sul modello `App\Models\User` con `canAccessPanel(Panel $panel): bool` così che un utente possa autenticarsi al backoffice. In assenza di un sistema ruoli (introdotto in spec successive), l'MVP consente l'accesso a tutti gli utenti autenticati (o, in alternativa più prudente, filtrando per dominio email) — decisione documentata come assunzione, da restringere quando arriveranno i ruoli.
+  - **Seeder utente admin:** prevedere un modo deterministico per ottenere un utente amministratore di test/onboarding (seeder o comando artisan) così da poter effettuare il login su `/admin` sia in locale sia nei test e2e.
+  - **Installazione Laravel Horizon:** aggiungere `laravel/horizon` via Composer, eseguire `php artisan horizon:install` (pubblica `config/horizon.php` e gli asset), servendo la dashboard su `/horizon`. In ambiente locale l'accesso alla dashboard è consentito dal gate di default (`viewHorizon`) che in `local` è aperto; in produzione andrà ristretto (fuori scope MVP, ma annotato).
+  - **Configurazione code Horizon:** in `config/horizon.php` definire le quattro code richieste `import`, `enrich`, `embed`, `default` all'interno dei supervisor (sezioni `defaults`/`environments`), allineando anche la connessione Redis (`QUEUE_CONNECTION=redis` già impostato in US-001). Queste code corrispondono alle pipeline di import/arricchimento/embedding delle epiche successive.
+  - **Registrazione provider e rotte:** verificare che `AdminPanelProvider` e `HorizonServiceProvider` siano registrati (auto-discovery Laravel) e che le rotte `/admin` e `/horizon` rispondano senza errori 500.
+
+  ---
+
+  ## Strategia di Test
+
+  La maggior parte dei criteri di accettazione riguarda dashboard fornite da pacchetti terzi (Filament, Horizon) già coperti dai loro test interni; il nostro focus è verificare la corretta integrazione e configurazione nel progetto tramite feature test HTTP, più uno scenario e2e per l'unico flusso di reale interazione utente (login admin).
+
+  - **Feature test rotta /admin:** una richiesta HTTP GET a `/admin` (utente guest) deve restituire una risposta valida (redirect alla pagina di login o pagina di login 200), non un errore 500.
+  - **Feature test rotta /horizon:** una richiesta HTTP GET a `/horizon` in ambiente di test deve restituire status 200 (dashboard raggiungibile, gate `viewHorizon` aperto in test/local).
+  - **Test di configurazione code Horizon:** un test che carica `config('horizon')` e asserisce che le code `import`, `enrich`, `embed`, `default` siano presenti nella configurazione dei supervisor.
+  - **Feature test accesso pannello:** un test che autentica un utente admin (via factory/seeder) ed esegue GET `/admin` verificando l'accesso autorizzato (status 200), più un test che verifica `User::canAccessPanel()` ritorni true per l'admin.
+
+  ### Test E2E — Simulazione Utente
+
+  **Framework:** Laravel Dusk (browser testing nativo di Laravel; nessun framework e2e è attualmente installato, quindi è previsto un task di setup). Artefatti visivi: screenshot ad ogni step chiave e su fallimento, salvati in `docs/test-results/US-002/`; log di console browser abilitati. (Nota: Dusk non registra video nativamente; gli screenshot per-step fungono da artefatto visivo del run.)
+
+  | Scenario | Descrizione flusso utente |
+  |---|---|
+  | Login admin al backoffice Filament | L'admin apre `/admin`, viene reindirizzato alla pagina di login Filament, inserisce email e password validi, invia il form e atterra sulla dashboard Filament autenticato. Screenshot salvati in docs/test-results/US-002/. |
+
+  ---
+
+  _Piano generato tramite ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Installare e configurare Filament 5 (pannello /admin)
+    description: Aggiungere filament/filament via Composer ed eseguire filament:install --panels per generare e registrare AdminPanelProvider con path /admin. Verificare l'auto-discovery del provider.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Rendere il modello User idoneo al pannello Filament
+    description: 'Implementare FilamentUser su App\Models\User con canAccessPanel(): per l''MVP consentire l''accesso agli utenti autenticati (assunzione documentata, da restringere con i ruoli futuri).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Seeder/comando per utente admin di test
+    description: Fornire un modo deterministico per creare un utente amministratore (seeder o factory state) usabile in locale e nei test per il login su /admin.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Installare Laravel Horizon (dashboard /horizon)
+    description: Aggiungere laravel/horizon via Composer ed eseguire horizon:install per pubblicare config/horizon.php e gli asset, servendo la dashboard su /horizon.
+    type: Impl
+    status: TODO
+  - id: TASK-05
+    title: Configurare le code import, enrich, embed, default in Horizon
+    description: In config/horizon.php definire le quattro code richieste nei supervisor (defaults/environments) sulla connessione redis, allineate a QUEUE_CONNECTION=redis.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Feature test rotte /admin e /horizon
+    description: Test HTTP che verificano che GET /admin risponda senza errore 500 (login/redirect) e che GET /horizon risponda 200 in ambiente di test.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-04
+  - id: TASK-07
+    title: Test configurazione code Horizon
+    description: Test che carica config('horizon') e asserisce la presenza delle code import, enrich, embed, default nella configurazione dei supervisor.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-08
+    title: Feature test accesso admin al pannello Filament
+    description: Test che autentica un utente admin ed esegue GET /admin verificando status 200, più asserzione che User::canAccessPanel() ritorni true per l'admin.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-03
+  - id: TASK-09
+    title: Setup Laravel Dusk con artefatti visivi
+    description: Installare e configurare Laravel Dusk (nessun framework e2e presente), abilitando screenshot per-step e log di console, con output in docs/test-results/US-002/.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-10
+    title: 'E2E Dusk: login admin al backoffice Filament'
+    description: Scenario Dusk che apre /admin, compila il form di login Filament con credenziali admin valide, invia e verifica l'atterraggio sulla dashboard autenticata; screenshot salvati in docs/test-results/US-002/.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-09
+      - TASK-08

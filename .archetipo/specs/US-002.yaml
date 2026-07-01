@@ -6,7 +6,7 @@ epic:
   title: Fondamenta del Progetto
 priority: HIGH
 points: 2
-status: TODO
+status: PLANNED
 blocked_by:
   - US-001
 scope: MVP
