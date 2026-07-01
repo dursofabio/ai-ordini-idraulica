@@ -1,0 +1,115 @@
+schema: archetipo/plan/v2
+spec_code: US-023
+body: |
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  Lo schema dati e la pipeline di enrichment esistono già (US-015/US-021): `products.enrichment_status` assume i valori `pending`/`needs_review`/`enriched` (vedi `create_products_table`, `EnrichmentApplier`, filtro già presente in `ProductsTable`). Non esiste però nessuna vista dedicata alla coda di revisione: `ProductResource` (US-021) è un CRUD generico su tutti i prodotti, senza scoping su `needs_review`, senza ordinamento per confidenza e senza azioni rapide conferma/correggi/scarta. Questa spec introduce una pagina Filament dedicata, non un'altra Resource, perché il caso d'uso è un worklist con azioni di triage (non editing CRUD libero) e riusa i modelli/relazioni già esistenti (`Product`, `Brand`, `Family`, `Subfamily`) senza alcuna migration.
+
+  **Nota terminologica sull'AC2/AC3 (assunzione registrata)**
+  Gli AC della spec parlano di `enrichment_status='done'`, valore che non esiste nello schema attuale (`pending`/`needs_review`/`enriched`, già usato da `EnrichmentApplier` e dai filtri di `ProductsTable`). Per coerenza con lo schema e con lo scenario 'Dimostra' ("il record sparisce dalla coda"), si assume che 'done' nell'AC sia la dicitura informale dello stato che rimuove il prodotto dalla coda `needs_review`: le azioni 'Conferma' e 'Correggi' impostano `enrichment_status='enriched'` (non un nuovo valore enum). Non viene introdotto alcun valore `'done'` né modificata la migration.
+
+  **Decisioni chiave**
+
+  1. **Nuova pagina custom Filament** `App\Filament\Pages\ReviewQueue` (generata con `php artisan make:filament-page ReviewQueue --no-interaction`), non una Resource: implementa `Filament\Tables\Contracts\HasTable` e usa il trait `Filament\Tables\Concerns\InteractsWithTable`, seguendo il pattern standard Filament v5 per pagine con tabella autonoma dal ciclo di vita CRUD delle Resource. Navigazione: icona coerente con le altre risorse del catalogo (`Heroicon::OutlinedRectangleStack`/altra distinta), label 'Da revisionare'.
+
+  2. **Query della tabella (AC1, AC5)**: `Product::query()->where('enrichment_status', 'needs_review')->orderBy('confidence', 'asc')` (i `confidence` NULL, cioè i casi sotto la soglia bassa mai valorizzati da `EnrichmentApplier`, vengono ordinati per primi via `orderByRaw('confidence IS NULL DESC, confidence ASC')` così da presentare prima i casi più incerti). Colonne: `description_raw` (descrizione originale), `brand.name` (proposta AI marca), `family.name` (proposta AI famiglia), `confidence` (badge colorato per fascia, coerente con le soglie di `EnrichmentApplier`: <60 danger, 60-84 warning, >=85 success).
+
+  3. **Contatore in testa alla pagina (AC5)**: `$table->heading()`/`->description()` con closure che richiama `Product::where('enrichment_status', 'needs_review')->count()` ad ogni render, mostrato come "N articoli da revisionare". Scelta preferita a un widget `StatsOverview` dedicato per evitare l'overhead di una classe widget separata quando basta un conteggio testuale in intestazione, coerente con la semplicità delle altre pagine del progetto.
+
+  4. **Azione 'Conferma' (AC2)**: `Action::make('confirm')` come `recordAction`, colore success, icona check. `->action(fn (Product $record) => $record->update(['enrichment_status' => 'enriched']))`. I valori AI (`brand_id`/`family_id`/`subfamily_id`, `*_source='ai'`) sono già scritti sul record da `EnrichmentApplier` per la fascia media di confidenza (quella che genera `needs_review`); 'Conferma' li promuove semplicemente cambiando lo stato, senza toccare i `*_source` (restano `ai`, corretto: sono stati validati da un umano ma restano valori originati dall'AI, distinzione già usata da `ProductResource`/US-021 per il badge 'origine'). Non richiede conferma modale (azione a basso rischio, reversibile riaprendo il prodotto da `ProductResource`).
+
+  5. **Azione 'Correggi' (AC3)**: `Action::make('correct')` come `recordAction`, colore primary, icona matita, con `->schema([Select::make('brand_id')->relationship('brand','name')->searchable()->preload(), Select::make('family_id')->relationship('family','name')->searchable()->preload()->live(), Select::make('subfamily_id')->options(fn (Get $get) => Subfamily::where('family_id', $get('family_id'))->pluck('name','id'))])` (stesso pattern reattivo di `ProductForm`, US-021) e `->fillForm(fn (Product $record) => ['brand_id' => $record->brand_id, 'family_id' => $record->family_id, 'subfamily_id' => $record->subfamily_id])`. `->action(function (Product $record, array $data): void { ... })` imposta i campi inviati, `brand_source='manual'`/`family_source='manual'`/`subfamily_source='manual'` per ciascun campo effettivamente valorizzato, `source='manual'`, `confidence=100`, `enrichment_status='enriched'`, poi `$record->save()`. Nessuna pagina di edit separata: form inline nel modal dell'azione, come richiesto dal criterio "si apre un form inline".
+
+  6. **Azione 'Scarta' (AC4)**: `Action::make('discard')` come `recordAction`, colore danger, icona cestino, `->requiresConfirmation()` (azione distruttiva sui valori AI, serve conferma esplicita coerente con il pattern già usato nella documentazione Filament per azioni distruttive). `->action(fn (Product $record) => $record->update(['brand_id' => null, 'family_id' => null, 'subfamily_id' => null, 'brand_source' => null, 'family_source' => null, 'subfamily_source' => null, 'source' => null, 'confidence' => null, 'enrichment_status' => 'needs_review']))`: cancella la proposta AI e mantiene esplicitamente `needs_review`, esattamente come richiesto dall'AC4 letterale. Campi già marcati `*_source='manual'` da una correzione precedente NON vengono azzerati (guard identico a quello di `EditProduct::mutateFormDataBeforeSave`, US-021): si azzerano solo i campi il cui `*_source` corrente è `'ai'` o nullo, mai `'manual'`.
+
+  7. **Nota su ri-elaborazione futura (fuori scope, assunzione registrata)**: `ClassificationBatchDispatcher` (US-015) seleziona solo prodotti con `enrichment_status='pending'`, quindi un prodotto scartato che resta `needs_review` non rientra automaticamente in un futuro batch di classificazione AI. L'AC4 richiede esplicitamente di mantenere `needs_review` (non `pending`), quindi il comportamento implementato segue la lettera della spec; la ri-elaborazione automatica di questi record non è nello scope di US-023 e viene lasciata come gap noto per una spec futura (es. un comando/azione esplicita 'rimetti in coda AI' che passi lo stato a `pending`).
+
+  8. **Aggiornamento reattivo della tabella dopo ogni azione**: tutte e tre le azioni chiudono con una `Notification::make()->success()->send()` (pattern già usato in `ProductBasesTable::regenerateEmbeddingAction`) e Filament ricarica automaticamente la tabella dopo un'azione riuscita; poiché la query è filtrata su `needs_review`, un record che diventa `enriched` (Conferma/Correggi) sparisce naturalmente dai risultati alla ricarica, soddisfacendo lo scenario 'Dimostra' senza logica aggiuntiva.
+
+  9. **Nessuna migration**: tutte le colonne necessarie esistono già (verificato su `create_products_table`). Nessun nuovo modello.
+
+  **Alternative scartate**: estendere `ProductResource`/`ListProducts` con un filtro precostituito su `needs_review` (scartata: mescolerebbe la responsabilità CRUD generica della Resource con azioni di triage specifiche, e l'AC richiede un ordinamento fisso per confidenza crescente in contrasto con l'ordinamento libero atteso in un indice CRUD); Resource dedicata `ReviewQueueResource` invece di una Page (scartata: non serve creazione/cancellazione/pagina di modifica standalone, la pagina singola con tabella e azioni modali è sufficiente e più semplice, seguendo la stessa logica con cui l'AC richiede un flusso rapido senza aprire ogni record); nuovo valore enum `'done'` per `enrichment_status` (scartata: romperebbe la coerenza con `EnrichmentApplier` e con i filtri esistenti in `ProductsTable`, che già trattano `'enriched'` come stato terminale positivo).
+
+  ## Strategia di Test
+
+  - Feature test (`Livewire::test`) su `ReviewQueue`: la tabella mostra solo prodotti con `enrichment_status='needs_review'` e li ordina per `confidence` crescente (NULL prima), verificando `assertCanSeeTableRecords`/ordine con `assertCanSeeTableRecords([...], inOrder: true)` (AC1).
+  - Feature test: colonne visibili mostrano `description_raw`, `brand.name`, `family.name`, `confidence` per un record di test (AC1).
+  - Feature test: il conteggio in intestazione (`heading`/`description`) riflette il numero corretto di prodotti `needs_review` e si aggiorna quando un prodotto esce dalla coda (AC5).
+  - Feature test sull'azione 'Conferma': `callTableAction('confirm', $product)` imposta `enrichment_status='enriched'` sul record ricaricato, senza alterare `brand_id`/`family_id`/`*_source` (AC2); dopo l'azione il record non è più visibile nella tabella (`assertCanNotSeeTableRecords`).
+  - Feature test sull'azione 'Correggi': `callTableAction('correct', $product, data: ['brand_id' => ..., 'family_id' => ..., 'subfamily_id' => ...])` salva i valori inseriti, imposta `*_source='manual'` sui campi modificati, `source='manual'`, `confidence=100`, `enrichment_status='enriched'` (AC3); verificare che il modal sia precompilato con i valori correnti del record (`fillForm`).
+  - Feature test sull'azione 'Scarta': `callTableAction('discard', $product)` azzera `brand_id`/`family_id`/`subfamily_id` e i relativi `*_source` quando erano `'ai'`, mantiene `enrichment_status='needs_review'` (AC4); test complementare che un campo già `*_source='manual'` non viene azzerato dallo scarto.
+  - Feature test di regressione: un prodotto con `enrichment_status='pending'` o `'enriched'` non compare mai nella coda, anche con `confidence` basso/alto (garantisce lo scoping corretto della query).
+
+  ### E2E Test — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già presente nel progetto, `tests/Browser`, pattern di riferimento `AdminLoginTest`/`ProductManualBrandOverrideTest` da US-002/US-021)
+  **Registrazione screenshot:** abilitata per ogni step significativo (Dusk non supporta registrazione video nativa in questo progetto; si segue lo stesso pattern a screenshot-per-step già adottato in US-021), salvati in `docs/test-results/US-023/` tramite override di `protected const ARTIFACT_DIR` in `DuskTestCase`.
+
+  | Scenario | Descrizione del flusso utente |
+  |---|---|
+  | Triage completo della coda | L'admin autenticato apre `/admin`, naviga alla pagina 'Da revisionare', verifica il contatore in testa; su un primo prodotto clicca 'Conferma' e verifica che sparisca dalla lista; su un secondo prodotto clicca 'Correggi', inserisce una marca/famiglia diversa nel form inline, salva e verifica che il prodotto sparisca dalla coda; su un terzo prodotto clicca 'Scarta', conferma l'azione nel modal e verifica che il prodotto resti in coda ma senza più la proposta AI precedente. |
+
+  _Nessuna nuova infrastruttura e2e da installare: Dusk è già configurato (`tests/DuskTestCase.php`, ChromeDriver)._
+tasks:
+  - id: TASK-01
+    title: Pagina custom ReviewQueue con tabella scoperta su needs_review
+    description: 'Generare App\Filament\Pages\ReviewQueue (php artisan make:filament-page ReviewQueue --no-interaction), implementare HasTable + InteractsWithTable. Query: Product::where(''enrichment_status'',''needs_review'') ordinata per confidence crescente (NULL prima). Colonne: description_raw, brand.name, family.name, confidence (badge colorato per fascia). Registrare la pagina in navigazione con label ''Da revisionare'' (AC1).'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Contatore totale in intestazione pagina
+    description: Configurare $table->heading()/->description() con closure che calcola Product::where('enrichment_status','needs_review')->count() ad ogni render, mostrato come testo 'N articoli da revisionare' in testa alla pagina (AC5).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Azione 'Conferma'
+    description: Aggiungere recordAction Action::make('confirm') (colore success, icona check) che esegue $record->update(['enrichment_status' => 'enriched']) senza toccare brand_id/family_id/subfamily_id/*_source, seguita da Notification::make()->success()->send() (AC2).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: Azione 'Correggi' con form inline
+    description: Aggiungere recordAction Action::make('correct') con ->schema([Select brand_id, Select family_id (live), Select subfamily_id reattivo sulla famiglia]) e ->fillForm() precompilato dai valori correnti del record (pattern ProductForm, US-021). L'action salva i campi inviati, imposta *_source='manual' per i campi modificati, source='manual', confidence=100, enrichment_status='enriched' (AC3).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-05
+    title: Azione 'Scarta' con conferma
+    description: Aggiungere recordAction Action::make('discard') (colore danger, icona cestino, ->requiresConfirmation()) che azzera brand_id/family_id/subfamily_id e i relativi *_source solo quando non sono 'manual', azzera source/confidence, e imposta esplicitamente enrichment_status='needs_review' (AC4).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-06
+    title: 'Test: query, ordinamento, colonne e contatore della coda'
+    description: 'Feature test con Livewire::test su ReviewQueue: solo prodotti needs_review sono visibili, ordinati per confidence crescente (NULL prima); colonne description_raw/brand.name/family.name/confidence mostrano i valori attesi; contatore in intestazione riflette il conteggio corretto e si aggiorna dopo un''azione (AC1, AC5). Test di regressione: prodotti pending/enriched non compaiono mai in coda.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+  - id: TASK-07
+    title: 'Test: azioni Conferma, Correggi, Scarta'
+    description: 'Feature test con callTableAction su ReviewQueue per ciascuna azione: ''confirm'' imposta enrichment_status=''enriched'' e rimuove il record dalla coda senza alterare brand_id/family_id/*_source; ''correct'' salva i valori inviati, imposta *_source=''manual''/source=''manual''/confidence=100/enrichment_status=''enriched'', con form precompilato dai valori correnti; ''discard'' azzera i campi AI (source!=manual) mantenendo needs_review, e NON azzera campi già manual (AC2, AC3, AC4).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+      - TASK-04
+      - TASK-05
+  - id: TASK-08
+    title: 'Test e2e Dusk: triage completo della coda (scenario Dimostra)'
+    description: Nuovo test in tests/Browser (pattern AdminLoginTest/ProductManualBrandOverrideTest) che, autenticato come admin, apre la pagina 'Da revisionare', verifica il contatore, esegue in sequenza Conferma su un prodotto, Correggi su un secondo (form inline con nuova marca/famiglia), Scarta su un terzo (con conferma modale), verificando gli effetti attesi su ciascuno. Override di protected const ARTIFACT_DIR per salvare gli screenshot in docs/test-results/US-023/.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+      - TASK-04
+      - TASK-05
