@@ -58,66 +58,76 @@ tasks:
     title: Configurazione services.anthropic e .env.example
     description: Aggiungere il blocco 'anthropic' a config/services.php con api_key, model, version, base_url, timeout, retry_times, retry_delay_ms letti da env(). Documentare le stesse variabili (vuote) in .env.example.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: ClaudeResponse DTO per content e usage token
     description: Creare App\Services\Ai\ClaudeResponse (readonly, costruttore promosso) con content, tokensIn, tokensOut, raw e factory statica fromHttpResponse(Illuminate\Http\Client\Response) che estrae content e usage.input_tokens/output_tokens dal body JSON Anthropic.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-02
   - id: TASK-03
     title: 'ClaudeClient: pendingRequest() con header, timeout e retry'
     description: Creare App\Services\Ai\ClaudeClient con un metodo privato pendingRequest() che configura Http::withHeaders(['x-api-key', 'anthropic-version', 'content-type']), baseUrl, timeout(config('services.anthropic.timeout')) e retry(retry_times, retry_delay_ms) leggendo tutto da config('services.anthropic.*'). Nessuna chiave hardcodata.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: 'Test: header e configurazione della richiesta'
     description: Feature test con Http::fake() che verifica che una chiamata messages() invii gli header x-api-key e anthropic-version corretti (valori letti da config), tramite Http::assertSent.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: ClaudeClient::messages() con parsing risposta valida
     description: 'Implementare il metodo pubblico messages(array $payload): ClaudeResponse che esegue POST su /v1/messages tramite pendingRequest() e restituisce ClaudeResponse::fromHttpResponse(...).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: 'Test: parsing risposta valida (content e token usage)'
     description: Feature test con Http::fake() che stub una risposta valida Anthropic (content + usage.input_tokens/output_tokens) e verifica che messages() restituisca un ClaudeResponse con i campi correttamente popolati.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Gestione errori 4xx/5xx e retry configurabile
     description: Assicurare che pendingRequest()/messages() propaghi Illuminate\Http\Client\RequestException dopo i tentativi configurati su risposte di errore HTTP, senza swallowing silenzioso.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-07
   - id: TASK-08
     title: 'Test: errore HTTP 4xx/5xx e conteggio retry'
     description: Feature test con Http::fake() a sequenza di risposte di errore (es. 500 poi 500) che verifica il lancio di RequestException e che il numero di richieste inviate rispetti retry_times configurato (Http::assertSentCount). Aggiungere caso analogo per un 4xx (es. 401).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-08
   - id: TASK-09
     title: ClaudeClient::batch() per Batch API
     description: 'Implementare il metodo pubblico batch(array $payload): ClaudeResponse che esegue POST su /v1/messages/batches riusando pendingRequest(), garantendo stessi header/timeout/retry di messages().'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-09
   - id: TASK-10
     title: 'Test: chiamata Batch API'
     description: Feature test con Http::fake() che verifica che batch() invii la richiesta a /v1/messages/batches con gli stessi header configurati e che il payload venga inoltrato correttamente.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-09
+    ref: TASK-10

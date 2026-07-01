@@ -35,4 +35,14 @@ return [
         ],
     ],
 
+    'anthropic' => [
+        'api_key' => env('ANTHROPIC_API_KEY'),
+        'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-5'),
+        'version' => env('ANTHROPIC_VERSION', '2023-06-01'),
+        'base_url' => env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
+        'timeout' => env('ANTHROPIC_TIMEOUT', 120),
+        'retry_times' => env('ANTHROPIC_RETRY_TIMES', 2),
+        'retry_delay_ms' => env('ANTHROPIC_RETRY_DELAY_MS', 2000),
+    ],
+
 ];
