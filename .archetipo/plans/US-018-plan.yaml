@@ -1,0 +1,97 @@
+schema: archetipo/plan/v2
+spec_code: US-018
+body: |
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  US-017 ha già introdotto `App\Services\Ai\EmbeddingClient` (riutilizzabile così com'è) e un primo tentativo di job/tabella embedding, ma a livello di `Product` (variante) sulla coda `embeddings`. US-018 richiede però che l'embedding sia calcolato per **prodotto-base** (`ProductBase`), a partire da un campo `description_ai` che oggi non esiste, salvato tramite `updateOrCreate` in `product_embeddings`, sulla coda dedicata `embed` (già riservata in `config/horizon.php`), con rigenerazione automatica al cambio di `description_ai` e un comando `catalog:embed --missing`. US-019 (ricerca ibrida) conferma che il raggruppamento e il ranking vettoriale devono avvenire per `product_base_id`, quindi il pivot da `Product` a `ProductBase` è corretto e necessario, non opzionale.
+
+  **Decisioni chiave**
+  1. **`description_ai` su `product_bases`**: nuova colonna testuale nullable che rappresenta il testo semantico canonico del prodotto-base (es. titolo + marca + famiglia/sottofamiglia + eventuale descrizione arricchita). Viene popolata/aggiornata da un metodo dedicato `ProductBase::composeDescriptionAi()` chiamato quando cambiano i campi sorgente (title, brand, family, subfamily) — per MVP la generazione è una concatenazione deterministica dei campi disponibili sul prodotto-base, senza chiamare l'AI in questa spec (resta nello scope di EP-004/US-014-016 arricchire i valori sorgente).
+  2. **`product_embeddings` ripuntata su `product_base_id`**: si modifica la migration/tabella esistente (introdotta in US-017, non ancora in produzione) per riferirsi a `product_base_id` invece di `product_id`, con vincolo `unique(['product_base_id', 'model'])`. Trattandosi di codice già in `main` ma di una feature ancora TODO end-to-end (nessun consumer in produzione), si corregge la migration esistente invece di aggiungerne una nuova, per evitare di lasciare in giro una colonna `product_id` dead. Si aggiorna in coerenza `ProductEmbedding` (fillable, relazione `belongsTo(ProductBase::class)`) e la factory.
+  3. **Nuovo `GenerateProductBaseEmbeddingJob`** (ShouldQueue, `onQueue('embed')`): riceve `productBaseId`, legge `description_ai`, chiama `EmbeddingClient::embed()`, fa `updateOrCreate` su `ProductEmbedding` chiave `(product_base_id, model)`. Se `description_ai` è vuoto, il job si conclude senza chiamare l'API (skip esplicito, loggato a `info`). Errori del provider vengono catturati e loggati (`Log::error`) senza propagare l'eccezione, cosi da non bloccare gli altri job del batch (requisito esplicito del criterio di accettazione); il job usa `$tries = 3` con backoff per resilienza a fallimenti transitori, ma un fallimento definitivo viene loggato e non rilancia.
+     - Il job `GenerateProductEmbeddingJob` di US-017 (variant-level, coda `embeddings`) viene rimosso insieme al suo test, perché sostituito interamente da questo job base-level; non esistono ancora consumer/dispatch in produzione da migrare.
+  4. **Rigenerazione automatica**: `ProductBaseObserver::saved()` (nuovo, registrato in `AppServiceProvider::boot()` così come non esistono altri observer nell'app) verifica se `description_ai` è `dirty` e, in tal caso, dispatcha `GenerateProductBaseEmbeddingJob::dispatch($productBase->id)`.
+  5. **Comando `catalog:embed --missing`**: nuovo `App\Console\Commands\CatalogEmbedCommand` (stessa convenzione di `CatalogImportCommand`). Con `--missing` seleziona i `ProductBase` privi di riga in `product_embeddings` per il modello configurato (`whereDoesntHave` o `leftJoin`) e dispatcha `GenerateProductBaseEmbeddingJob` per ciascuno sulla coda `embed`. Senza `--missing` (comportamento di default/futuro `--all`), riprocessa tutti i prodotti-base con `description_ai` valorizzato — per questa spec è sufficiente implementare `--missing` come da criterio di accettazione, con firma del comando che accetta il flag.
+
+  **Query di similarità coseno**: nessun nuovo servizio di ricerca in questa spec (è oggetto di US-019); il criterio di accettazione "una query di similarità coseno restituisce risultati ordinati correttamente" viene verificato con un test di integrazione diretto sulla tabella pgvector (`ORDER BY embedding <=> ?`), a conferma che indice HNSW e colonna vector funzionino, senza costruire un SearchService.
+
+  ## Strategia di Test
+
+  - Migration: verifica struttura tabella `product_embeddings` (colonna `product_base_id`, vincolo unique) tramite feature test con `RequiresDatabase` (pgvector) esistente come pattern in `VectorEmbeddingPgvectorTest`.
+  - `GenerateProductBaseEmbeddingJob`: test su dispatch in coda `embed`; test su `updateOrCreate` da risposta HTTP mockata; test su rigenerazione che aggiorna (non duplica) la riga esistente; test su gestione errore provider che logga e non rilancia l'eccezione, lasciando che il batch continui.
+  - Rigenerazione automatica: test che, aggiornando `description_ai` su un `ProductBase` esistente, il job viene dispatchato (`Queue::fake()` + `Queue::assertPushed`); test che salvare senza modificare `description_ai` NON dispatcha il job.
+  - Comando `catalog:embed --missing`: feature test che crea prodotti-base con e senza embedding esistente e verifica che solo i mancanti vengano accodati.
+  - Query di similarità: test di integrazione pgvector (richiede connessione Postgres reale, stesso `RequiresDatabase` trait) che inserisce embedding noti e verifica l'ordinamento per `<=>` (cosine distance).
+  - Nessuna componente UI: non è richiesta strategia e2e per questa spec (job/comando backend).
+tasks:
+  - id: TASK-01
+    title: 'Migration: product_bases.description_ai e ripuntamento product_embeddings su product_base_id'
+    description: Nuova migration che aggiunge la colonna text nullable description_ai a product_bases. Modificare la migration esistente 2026_07_01_161753_create_product_embeddings_table.php sostituendo la foreign key product_id (su products) con product_base_id (su product_bases, cascadeOnDelete) e adeguando il vincolo unique a ['product_base_id','model'].
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: 'ProductBase: description_ai fillable, composeDescriptionAi() e relazione embeddings'
+    description: 'Aggiungere description_ai all''attributo Fillable di ProductBase, un metodo composeDescriptionAi(): string che concatena in modo deterministico title, brand->name, family->name, subfamily->name (ignorando i null), e una relazione hasOne(ProductEmbedding::class). Aggiornare ProductBaseFactory se necessario per popolare description_ai nei test.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: 'ProductEmbedding: repoint su product_base_id'
+    description: Aggiornare il Fillable di ProductEmbedding (product_base_id al posto di product_id), la relazione belongsTo(ProductBase::class, 'product_base_id'), e ProductEmbeddingFactory per creare un ProductBase invece di un Product.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: 'Test: struttura tabella product_embeddings e query di similarità coseno'
+    description: Aggiornare/estendere VectorEmbeddingPgvectorTest per verificare la colonna product_base_id, il vincolo unique(product_base_id, model), e una query ORDER BY embedding <=> ? su righe di test con vettori noti che restituisce l'ordine atteso per distanza coseno.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-03
+  - id: TASK-05
+    title: GenerateProductBaseEmbeddingJob su coda embed
+    description: Creare App\Jobs\GenerateProductBaseEmbeddingJob (ShouldQueue, onQueue('embed'), $tries = 3) che riceve productBaseId, carica il ProductBase, se description_ai è vuoto termina senza chiamare il client (log info), altrimenti chiama EmbeddingClient::embed() e fa updateOrCreate su ProductEmbedding (product_base_id + model, content, dimensions, embedding). Cattura le eccezioni del client con try/catch, logga a error con contesto (product_base_id, messaggio) e non rilancia, cosi da non interrompere gli altri job del batch. Rimuovere App\Jobs\GenerateProductEmbeddingJob (US-017, variant-level, coda embeddings, superato da questo job).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-03
+  - id: TASK-06
+    title: 'Test: GenerateProductBaseEmbeddingJob dispatch, persistenza, skip e gestione errori'
+    description: 'Sostituire GenerateProductEmbeddingJobTest con GenerateProductBaseEmbeddingJobTest: test dispatch sulla coda ''embed'' (Queue::fake); test che una risposta HTTP valida crea/aggiorna la riga ProductEmbedding corretta con updateOrCreate (nessun duplicato su riesecuzione); test che un ProductBase con description_ai vuoto non effettua chiamate HTTP (Http::fake + assertNothingSent); test che un errore del provider (Http::fake risposta 500) viene loggato e non propaga l''eccezione fuori da handle().'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: 'ProductBaseObserver: rigenerazione automatica su cambio description_ai'
+    description: Creare App\Observers\ProductBaseObserver con metodo saved(ProductBase $productBase) che, se $productBase->wasChanged('description_ai') e il valore non e vuoto, dispatcha GenerateProductBaseEmbeddingJob::dispatch($productBase->id). Registrare l'observer in AppServiceProvider::boot() con ProductBase::observe(ProductBaseObserver::class).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-08
+    title: 'Test: rigenerazione automatica su cambio description_ai'
+    description: 'Feature test ProductBaseObserverTest (o incluso nel test del job) con Queue::fake() che verifica: aggiornare description_ai su un ProductBase esistente dispatcha GenerateProductBaseEmbeddingJob con l''id corretto; salvare il modello senza modificare description_ai NON dispatcha alcun job; creare un ProductBase con description_ai gia valorizzato dispatcha il job (saved su create).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-07
+  - id: TASK-09
+    title: Comando catalog:embed --missing
+    description: 'Creare App\Console\Commands\CatalogEmbedCommand con signature ''catalog:embed {--missing : Genera solo per i prodotti-base privi di embedding}''. Con --missing, selezionare i ProductBase con description_ai non nullo che non hanno una riga in product_embeddings per config(''services.embedding.model'') (whereDoesntHave(''embedding'') o equivalente) e dispatchare GenerateProductBaseEmbeddingJob::dispatch per ciascuno; stampare a console il conteggio accodato.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-10
+    title: 'Test: comando catalog:embed --missing accoda solo i prodotti-base mancanti'
+    description: 'Feature test CatalogEmbedCommandTest con Queue::fake(): crea ProductBase con embedding esistente (non deve essere accodato), ProductBase con description_ai valorizzato ma senza embedding (deve essere accodato), e ProductBase con description_ai vuoto (non deve essere accodato). Esegue php artisan catalog:embed --missing e verifica con Queue::assertPushed il numero e gli id corretti.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-09
