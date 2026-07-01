@@ -91,7 +91,7 @@ class AttributeResolverTest extends TestCase
     public function test_does_not_extract_kw_when_no_unit_or_series_code_present(): void
     {
         $product = Product::factory()->create([
-            'description_raw' => 'TUBO MULTISTRATO 16MM',
+            'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
         $written = (new AttributeResolver)->resolve($product);
@@ -133,7 +133,7 @@ class AttributeResolverTest extends TestCase
     public function test_does_not_extract_litri_when_no_lt_unit_present(): void
     {
         $product = Product::factory()->create([
-            'description_raw' => 'TUBO MULTISTRATO 16MM',
+            'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
         $written = (new AttributeResolver)->resolve($product);
@@ -189,7 +189,7 @@ class AttributeResolverTest extends TestCase
     public function test_does_not_extract_pollici_when_no_inch_symbol_present(): void
     {
         $product = Product::factory()->create([
-            'description_raw' => 'TUBO MULTISTRATO 16MM',
+            'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
         $written = (new AttributeResolver)->resolve($product);
@@ -201,7 +201,7 @@ class AttributeResolverTest extends TestCase
     public function test_extracts_materiale_inox(): void
     {
         $product = Product::factory()->create([
-            'description_raw' => 'CASSETTA ESTERNA DN 45 MM 610*370*210 INOX',
+            'description_raw' => 'CASSETTA ESTERNA 610*370*210 INOX',
         ]);
 
         $written = (new AttributeResolver)->resolve($product);
@@ -260,7 +260,7 @@ class AttributeResolverTest extends TestCase
     public function test_does_not_extract_materiale_when_no_known_code_present(): void
     {
         $product = Product::factory()->create([
-            'description_raw' => 'TUBO MULTISTRATO 16MM',
+            'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
         $written = (new AttributeResolver)->resolve($product);
@@ -337,5 +337,204 @@ class AttributeResolverTest extends TestCase
         $this->assertContains($inRange->id, $matches);
         $this->assertContains($alsoInRange->id, $matches);
         $this->assertNotContains($outOfRange->id, $matches);
+    }
+
+    public function test_extracts_diametro_nominale_from_dn_pattern(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'FILTRO GAS MTN DN80 UNI8042 2BAR C/PR.PRESS. -TECNOGAS-',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'diametro_nominale')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(80, $attribute->value_num);
+        $this->assertSame('DN', $attribute->unit);
+        $this->assertSame('regex', $attribute->source);
+    }
+
+    public function test_extracts_diametro_nominale_with_space(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'FLEX ESTENS.GAS DN 15*400 F/M C/GUAINA BIANCA+OR',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'diametro_nominale')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(15, $attribute->value_num);
+        $this->assertSame('DN', $attribute->unit);
+    }
+
+    public function test_extracts_diametro_and_pressione_nominale_in_a_single_call(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'GIUNTO COMPENSATORE AWF DN25 PN16 TECNOGAS',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $dn = $product->attributes()->where('key', 'diametro_nominale')->first();
+        $pn = $product->attributes()->where('key', 'pressione_nominale')->first();
+        $this->assertNotNull($dn);
+        $this->assertNotNull($pn);
+        $this->assertEquals(25, $dn->value_num);
+        $this->assertSame('DN', $dn->unit);
+        $this->assertEquals(16, $pn->value_num);
+        $this->assertSame('PN', $pn->unit);
+        $this->assertSame('regex', $dn->source);
+        $this->assertSame('regex', $pn->source);
+    }
+
+    public function test_extracts_colore_ral_as_value_text(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'TERMOARREDO TEKNO 1200*500 ELETTRICO BIANCO RAL9010 IDROEXPERT',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'colore_ral')->first();
+        $this->assertNotNull($attribute);
+        $this->assertSame('RAL9010', $attribute->value_text);
+        $this->assertNull($attribute->value_num);
+        $this->assertNull($attribute->unit);
+        $this->assertSame('regex', $attribute->source);
+    }
+
+    public function test_extracts_pressione_bar_from_bar_unit(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'VALVOLA DI SICUREZZA CENTRAL.VT TARAT.18BAR 1/4',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'pressione_bar')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(18, $attribute->value_num);
+        $this->assertSame('bar', $attribute->unit);
+        $this->assertSame('regex', $attribute->source);
+    }
+
+    public function test_extracts_pressione_bar_normalising_millibar(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'MANOMETRO RAD.0/100 MBAR D.80MM 3/8 -TECNOGAS-',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'pressione_bar')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(0.1, $attribute->value_num);
+        $this->assertSame('bar', $attribute->unit);
+    }
+
+    public function test_extracts_tensione_volt_from_plausible_voltage(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'BOBINA PER TRASFORMAZ.ELETTR. IN ADPE 230V RM/NC',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'tensione_volt')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(230, $attribute->value_num);
+        $this->assertSame('V', $attribute->unit);
+        $this->assertSame('regex', $attribute->source);
+    }
+
+    public function test_does_not_extract_tensione_volt_from_fan_speed_token(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'CASSA VENTILANTE AUTOPORTANTI VORT QBK COMFORT 10/10 4M 1V EP VORTICE',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $this->assertNull($product->attributes()->where('key', 'tensione_volt')->first());
+    }
+
+    public function test_extracts_potenza_watt_from_explicit_unit(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'RESISTENZA FLANGIATA CURVA 1200W',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $attribute = $product->attributes()->where('key', 'potenza_watt')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(1200, $attribute->value_num);
+        $this->assertSame('W', $attribute->unit);
+        $this->assertSame('regex', $attribute->source);
+    }
+
+    public function test_does_not_extract_potenza_watt_from_model_version_suffix(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'MODULO ACQUA CALDA SANIT. VPM20/25/2 W',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $this->assertNull($product->attributes()->where('key', 'potenza_watt')->first());
+    }
+
+    public function test_does_not_extract_potenza_watt_from_kw_description(): void
+    {
+        $product = Product::factory()->create([
+            'description_raw' => 'CALDAIA A CONDENSAZIONE 24KW -VAILLANT-',
+        ]);
+
+        (new AttributeResolver)->resolve($product);
+
+        $this->assertNull($product->attributes()->where('key', 'potenza_watt')->first());
+        $this->assertEquals(24, $product->attributes()->where('key', 'potenza_kw')->first()->value_num);
+    }
+
+    public function test_extracts_extended_material_codes_as_whole_word(): void
+    {
+        $acciaio = Product::factory()->create(['description_raw' => 'TUBO ACCIAIO NERO 3/4 SENZA SALDATURA']);
+        $ottone = Product::factory()->create(['description_raw' => 'RACCORDO OTTONE FILETTATO M/F']);
+        $alluminio = Product::factory()->create(['description_raw' => 'RADIATORE ALLUMINIO 5 ELEMENTI']);
+        $ghisa = Product::factory()->create(['description_raw' => 'CALDAIA GHISA 4 ELEMENTI']);
+        $resolver = new AttributeResolver;
+        $resolver->resolve($acciaio);
+        $resolver->resolve($ottone);
+        $resolver->resolve($alluminio);
+        $resolver->resolve($ghisa);
+
+        $this->assertSame('ACCIAIO', $acciaio->attributes()->where('key', 'materiale')->first()->value_text);
+        $this->assertSame('OTTONE', $ottone->attributes()->where('key', 'materiale')->first()->value_text);
+        $this->assertSame('ALLUMINIO', $alluminio->attributes()->where('key', 'materiale')->first()->value_text);
+        $this->assertSame('GHISA', $ghisa->attributes()->where('key', 'materiale')->first()->value_text);
+    }
+
+    public function test_diametro_and_pressione_nominale_range_queries_return_matching_products(): void
+    {
+        $products = [
+            'FILTRO GAS MTN DN80 UNI8042 -TECNOGAS-',
+            'GIUNTO COMPENSATORE AWF DN25 PN16 TECNOGAS',
+            'FLEX ESTENS.GAS DN 15*400 F/M',
+        ];
+        $resolver = new AttributeResolver;
+        foreach ($products as $description) {
+            $resolver->resolve(Product::factory()->create(['description_raw' => $description]));
+        }
+
+        $diametroInRange = ProductAttribute::where('key', 'diametro_nominale')
+            ->whereBetween('value_num', [15, 50])
+            ->count();
+        $pressione = ProductAttribute::where('key', 'pressione_nominale')
+            ->where('value_num', 16)
+            ->count();
+
+        $this->assertSame(2, $diametroInRange);
+        $this->assertSame(1, $pressione);
     }
 }

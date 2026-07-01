@@ -1,0 +1,129 @@
+schema: archetipo/plan/v2
+spec_code: US-028
+body: |-
+  # US-028: Estrattori deterministici aggiuntivi: DN, PN, bar, tensione, watt, colore RAL + materiale esteso — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-003 — Arricchimento Deterministico
+  **Priorità:** MEDIUM | **Punti:** 3
+  **Bloccata da:** US-010 (DONE)
+
+  **User Story**
+  Come amministratore del catalogo, voglio che dalle descrizioni vengano estratti in modo deterministico ulteriori attributi tecnici (diametro nominale DN, pressione nominale PN, pressione in bar, tensione, potenza in watt, colore RAL) e che il riconoscimento del materiale sia ampliato, così da aumentare la copertura dei filtri di ricerca senza intervento manuale né costo AI.
+
+  **Criteri di Accettazione**
+  - [ ] `diametro_nominale` (`unit='DN'`) e `pressione_nominale` (`unit='PN'`) popolano `value_num` da pattern tipo `DN80`/`DN 15` e `PN10`/`PN16`
+  - [ ] `colore_ral` popola `value_text` (es. `RAL9010`) e `pressione_bar` popola `value_num` in bar normalizzando `MBAR`/`MB` (÷1000)
+  - [ ] `tensione_volt` estrae solo voltaggi plausibili (guardia contro `1V`=velocità) e `potenza_watt` scarta i suffissi di versione modello (es. `/2 W`)
+  - [ ] Il dizionario `materiale` riconosce anche `ACCIAIO`, `ALLUMINIO`, `OTTONE`, `GHISA`, `BRONZO`, `MULTISTRATO`, `ABS`, `PEX` come parola intera
+  - [ ] Tutti i nuovi attributi hanno `source='regex'` e rispettano la guardia di priorità fonte esistente (non sovrascrivono `ai`/`manual`); nessuna migration introdotta
+
+  ---
+
+  ## Technical Solution
+
+  Estensione pura di `App\Services\Enrichment\AttributeResolver` (US-010): nessuna migration (`product_attributes` ha già `value_num`/`value_text`/`unit`/`source`), nessuna nuova classe. Si aggiungono sei metodi privati `extractXxx(string $text): ?array` registrati nel loop di `extract()`, e si allunga la costante `MATERIALS`. La persistenza continua a passare da `writeAttribute()`, che garantisce già idempotenza (`updateOrCreate` su `product_id`+`key`) e guardia di priorità fonte (non sovrascrive righe con `source` non-null diverso da `regex`). Le regex sono calibrate sui 42.614 articoli reali di `docs/data/inventario articoli.xlsx` (occorrenze verificate).
+
+  - **`diametro_nominale` → `unit='DN'`**: `/\bDN\s*(\d+)/i` (copre `DN80`, `DN 15`, `DN15-20-25` → primo valore). ~1.427 occorrenze.
+  - **`pressione_nominale` → `unit='PN'`**: `/\bPN\s*(\d+)/i` (copre `PN10`, `PN16`). ~716 occorrenze.
+  - **`colore_ral` → solo `value_text`**: `/\bRAL\s*(\d{3,4})/i`, valore canonico `RAL####` (uppercase, senza spazi). ~3.351 occorrenze. Nessun `value_num`/`unit`.
+  - **`pressione_bar` → `unit='bar'`**: `/(\d+(?:[.,]\d+)?)\s*(MBAR|MB|BAR)\b/i` — l'alternanza prova `MBAR`/`MB` prima di `BAR`; se l'unità matchata è `MBAR`/`MB` il valore è normalizzato in bar (÷1000, es. `100 MBAR` → 0.1). La virgola decimale è normalizzata in punto (riuso di `toFloat()`). Su `0/100 MBAR` prende il valore adiacente all'unità (accettabile per l'MVP).
+  - **`tensione_volt` → `unit='V'`** (media confidenza, con guardia): whitelist di voltaggi plausibili `/\b(12|24|48|110|220|230|380|400)\s*V(?:DC|AC|~)?\b/i`. **Motivazione della guardia**: nei ventilatori `1V` significa "1 velocità" e `V.S` è "valvola sicurezza"; senza whitelist si avrebbero ~1.073 match grezzi contro ~561 puliti. Su `12-24VDC` la whitelist seleziona `24`.
+  - **`potenza_watt` → `unit='W'`** (media confidenza, con guardia): `/\b(\d{2,4})\s*W\b/i` con requisito minimo di 2 cifre. **Motivazione**: `/2 W` in `VPM20/25/2 W` è un suffisso di versione modello (1 cifra → scartato); i match veri (`1200W`, `500W`) restano. La `W` di `kW` non collide perché tra le cifre e la `W` c'è sempre la `K` (es. `24KW` → `24` seguito da `K`, non matcha).
+  - **`materiale` (estensione dizionario)**: aggiungere alla costante `MATERIALS` esistente (`RG`, `INOX`, `PVC`, `RAME`) i codici `ACCIAIO`, `ALLUMINIO`, `OTTONE`, `GHISA`, `BRONZO`, `MULTISTRATO`, `ABS`, `PEX`. Invariati il match whole-word case-insensitive con boundary Unicode `(?<![\p{L}\p{N}])...(?![\p{L}\p{N}])` e la selezione del primo token per posizione.
+
+  **Regressioni note da gestire (rischio principale)**: due gruppi di test US-010 in `tests/Feature/AttributeResolverTest.php` usano stringhe che i nuovi estrattori ora intercettano — vanno neutralizzate le **fixture** (non gli assert, che restano corretti):
+  1. `test_extracts_materiale_inox` usa `CASSETTA ESTERNA DN 45 MM 610*370*210 INOX` e asserisce `written === 1`; con `diametro_nominale` diventerebbe 2. Rimuovere `DN 45 MM` dalla fixture (mantenendo `INOX`) per preservare l'intento del test.
+  2. I quattro `test_does_not_extract_*` (kw, litri, pollici, materiale) usano `TUBO MULTISTRATO 16MM` come stringa senza-match e asseriscono `written === 0`; con `MULTISTRATO` ora materiale diventerebbe 1. Sostituire con una fixture realmente neutra e priva di numeri (es. `STAFFA DI FISSAGGIO UNIVERSALE`).
+
+  ---
+
+  ## Test Strategy
+
+  Feature test in-memory SQLite (`RequiresDatabase` + `RefreshDatabase`), stesso pattern di `AttributeResolverTest`, con stringhe reali del catalogo. Ogni nuovo estrattore ha un caso happy path e, dove previsto dalla spec, un falso-positivo controllato. Chiusura con regression sull'intera classe di test già esistente.
+
+  - **DN / PN**: `FILTRO GAS MTN DN80 UNI8042` → `diametro_nominale=80` (`unit='DN'`); `GIUNTO COMPENSATORE AWF DN25 PN16` → in una sola `resolve()` sia `diametro_nominale=25` sia `pressione_nominale=16`, entrambi `source='regex'` (caso "Dimostra").
+  - **colore_ral**: `TERMOARREDO TEKNO 1200*500 ELETTRICO BIANCO RAL9010` → `value_text='RAL9010'`, `value_num`/`unit` nulli.
+  - **pressione_bar**: `VALVOLA DI SICUREZZA CENTRAL.VT TARAT.18BAR 1/4` → `18` bar; `MANOMETRO RAD.0/100 MBAR D.80MM 3/8` → `0.1` bar (normalizzazione mbar).
+  - **tensione_volt**: `BOBINA ... 230V RM/NC` → `230`; falso-positivo controllato `CASSA VENTILANTE ... 4M 1V EP VORTICE` → nessun attributo `tensione_volt` (guardia whitelist).
+  - **potenza_watt**: `RESISTENZA FLANGIATA CURVA 1200W` → `1200`; falso-positivo controllato `MODULO ACQUA CALDA SANIT. VPM20/25/2 W` → nessun attributo `potenza_watt`.
+  - **materiale esteso**: descrizioni con `ACCIAIO`, `OTTONE`, `ALLUMINIO`, `GHISA` come parola intera → `value_text` corrispondente; conferma della selezione del primo token per posizione con più materiali citati.
+  - **Regression fixture US-010**: aggiornare le fixture indicate nella Technical Solution e verificare che tutti i test US-010 preesistenti restino verdi.
+  - **Query range ("Dimostra")**: `ProductAttribute::where('key','diametro_nominale')->whereBetween('value_num',[15,50])` e la stessa su `pressione_nominale` restituiscono esattamente i prodotti nel range.
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Estrattori diametro_nominale (DN) e pressione_nominale (PN)
+    description: Aggiungere a AttributeResolver i metodi extractDiametroNominale (/\bDN\s*(\d+)/i, unit='DN') ed extractPressioneNominale (/\bPN\s*(\d+)/i, unit='PN'), registrandoli nel loop extract(). value_num valorizzato, source='regex' via writeAttribute().
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test estrattori DN e PN
+    description: Feature test per diametro_nominale e pressione_nominale su stringhe reali (DN80, DN 15, PN10/PN16) e sul caso combinato 'GIUNTO COMPENSATORE AWF DN25 PN16' che scrive entrambi in una sola resolve(). Verifica value_num, unit e source='regex'.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Estrattori colore_ral e pressione_bar
+    description: Aggiungere extractColoreRal (/\bRAL\s*(\d{3,4})/i, value_text canonico 'RAL####') ed extractPressioneBar (/(\d+([.,]\d+)?)\s*(MBAR|MB|BAR)\b/i, unit='bar', normalizzazione mbar/mb -> bar dividendo per 1000, riuso di toFloat per la virgola). Registrarli in extract().
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: Test colore_ral e pressione_bar
+    description: 'Feature test: RAL9010 -> value_text=''RAL9010'' (value_num/unit nulli); ''18BAR'' -> 18 bar; ''0/100 MBAR'' -> 0.1 bar (normalizzazione). Verifica unit=''bar'' e source=''regex''.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Estrattori tensione_volt e potenza_watt con guardie
+    description: Aggiungere extractTensioneVolt con whitelist voltaggi /\b(12|24|48|110|220|230|380|400)\s*V(?:DC|AC|~)?\b/i (unit='V') ed extractPotenzaWatt /\b(\d{2,4})\s*W\b/i con minimo 2 cifre (unit='W'). Verificare che la W di kW non venga intercettata. Registrarli in extract().
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-05
+  - id: TASK-06
+    title: Test tensione_volt e potenza_watt (happy + falsi positivi)
+    description: 'Feature test: ''230V'' -> 230 e falso-positivo ''...4M 1V EP'' -> nessun tensione_volt; ''1200W'' -> 1200 e falso-positivo ''VPM20/25/2 W'' -> nessun potenza_watt. Verifica che una descrizione con kW non produca potenza_watt spuria.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: Estensione dizionario materiale + fix fixture US-010 in regressione
+    description: 'Estendere la costante MATERIALS con ACCIAIO, ALLUMINIO, OTTONE, GHISA, BRONZO, MULTISTRATO, ABS, PEX. Aggiornare le fixture US-010 ora intercettate dai nuovi estrattori: rimuovere ''DN 45 MM'' da test_extracts_materiale_inox e sostituire ''TUBO MULTISTRATO 16MM'' con una stringa neutra priva di numeri nei quattro test_does_not_extract_*.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-05
+    ref: TASK-07
+  - id: TASK-08
+    title: Test materiale esteso, regressione completa e query range
+    description: 'Feature test per i nuovi materiali (ACCIAIO/OTTONE/ALLUMINIO/GHISA) come parola intera e primo-token-per-posizione. Eseguire l''intera AttributeResolverTest verificando che i test US-010 restino verdi. Test ''Dimostra'': query range su diametro_nominale [15,50] e pressione_nominale restituiscono i prodotti corretti.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-04
+      - TASK-06
+      - TASK-07
+    ref: TASK-08

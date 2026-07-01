@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-028
+title: 'Estrattori deterministici aggiuntivi: DN, PN, bar, tensione, watt, colore RAL + materiale esteso'
+epic:
+  code: EP-003
+  title: Arricchimento Deterministico
+priority: MEDIUM
+points: 3
+status: REVIEW
+body: |-
+  #### US-028: Estrattori deterministici aggiuntivi: DN, PN, bar, tensione, watt, colore RAL + materiale esteso
+
+  **Epica:** EP-003 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-010
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che dalle descrizioni vengano estratti in modo deterministico ulteriori attributi tecnici (diametro nominale DN, pressione nominale PN, pressione in bar, tensione, potenza in watt, colore RAL) e che il riconoscimento del materiale sia ampliato,
+  così da aumentare la copertura dei filtri di ricerca senza intervento manuale né costo AI.
+
+  **Dimostra**
+  Dopo un import, `ProductAttribute::where('key','diametro_nominale')->whereBetween('value_num',[15,50])->count()` e la stessa query su `pressione_nominale` restituiscono insiemi coerenti di prodotti; una descrizione come `GIUNTO COMPENSATORE AWF DN25 PN16` produce in una sola chiamata a `resolve()` sia `diametro_nominale=25` sia `pressione_nominale=16`, entrambi con `source='regex'`.
+
+  **Criteri di Accettazione**
+  - [ ] `diametro_nominale` (`unit='DN'`) e `pressione_nominale` (`unit='PN'`) popolano `value_num` da pattern tipo `DN80`/`DN 15` e `PN10`/`PN16`
+  - [ ] `colore_ral` popola `value_text` (es. `RAL9010`) e `pressione_bar` popola `value_num` in bar normalizzando `MBAR`/`MB` (÷1000)
+  - [ ] `tensione_volt` estrae solo voltaggi plausibili (guardia contro `1V`=velocità) e `potenza_watt` scarta i suffissi di versione modello (es. `/2 W`)
+  - [ ] Il dizionario `materiale` riconosce anche `ACCIAIO`, `ALLUMINIO`, `OTTONE`, `GHISA`, `BRONZO`, `MULTISTRATO`, `ABS`, `PEX` come parola intera
+  - [ ] Tutti i nuovi attributi hanno `source='regex'` e rispettano la guardia di priorità fonte esistente (non sovrascrivono `ai`/`manual`); nessuna migration introdotta

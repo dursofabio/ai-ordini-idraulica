@@ -27,7 +27,16 @@ class AttributeResolver
      *
      * @var array<int, string>
      */
-    private const MATERIALS = ['RG', 'INOX', 'PVC', 'RAME'];
+    private const MATERIALS = ['RG', 'INOX', 'PVC', 'RAME', 'ACCIAIO', 'ALLUMINIO', 'OTTONE', 'GHISA', 'BRONZO', 'MULTISTRATO', 'ABS', 'PEX'];
+
+    /**
+     * Plausible mains/appliance voltages, used to guard the voltage extractor
+     * against non-voltage tokens such as `1V` (fan speed) or `V.S` (safety
+     * valve) found in the real catalog.
+     *
+     * @var array<int, string>
+     */
+    private const PLAUSIBLE_VOLTAGES = ['12', '24', '48', '110', '220', '230', '380', '400'];
 
     /**
      * Attempt to extract and persist technical attributes for the given
@@ -70,6 +79,30 @@ class AttributeResolver
 
         if (($pollici = $this->extractAttaccoPollici($text)) !== null) {
             $attributes['attacco_pollici'] = $pollici;
+        }
+
+        if (($diametroNominale = $this->extractDiametroNominale($text)) !== null) {
+            $attributes['diametro_nominale'] = $diametroNominale;
+        }
+
+        if (($pressioneNominale = $this->extractPressioneNominale($text)) !== null) {
+            $attributes['pressione_nominale'] = $pressioneNominale;
+        }
+
+        if (($pressioneBar = $this->extractPressioneBar($text)) !== null) {
+            $attributes['pressione_bar'] = $pressioneBar;
+        }
+
+        if (($tensioneVolt = $this->extractTensioneVolt($text)) !== null) {
+            $attributes['tensione_volt'] = $tensioneVolt;
+        }
+
+        if (($potenzaWatt = $this->extractPotenzaWatt($text)) !== null) {
+            $attributes['potenza_watt'] = $potenzaWatt;
+        }
+
+        if (($coloreRal = $this->extractColoreRal($text)) !== null) {
+            $attributes['colore_ral'] = $coloreRal;
         }
 
         if (($materiale = $this->extractMateriale($text)) !== null) {
@@ -155,6 +188,107 @@ class AttributeResolver
         }
 
         return ['value_num' => $value, 'unit' => '"'];
+    }
+
+    /**
+     * Nominal diameter (e.g. `DN80`, `DN 15`, `DN15-20-25` → first value),
+     * a plumbing standard used for fittings and valves.
+     *
+     * @return array{value_num: float, unit: string}|null
+     */
+    private function extractDiametroNominale(string $text): ?array
+    {
+        if (! preg_match('/\bDN\s*(\d+)/iu', $text, $matches)) {
+            return null;
+        }
+
+        return ['value_num' => (float) $matches[1], 'unit' => 'DN'];
+    }
+
+    /**
+     * Nominal pressure (e.g. `PN10`, `PN16`), the pressure rating of flanged
+     * fittings and joints.
+     *
+     * @return array{value_num: float, unit: string}|null
+     */
+    private function extractPressioneNominale(string $text): ?array
+    {
+        if (! preg_match('/\bPN\s*(\d+)/iu', $text, $matches)) {
+            return null;
+        }
+
+        return ['value_num' => (float) $matches[1], 'unit' => 'PN'];
+    }
+
+    /**
+     * Pressure rating in bar (e.g. `18BAR`, `1,5 BAR`), normalising millibar
+     * units (`MBAR`/`MB`, e.g. `100 MBAR` → 0.1 bar). The `MBAR`/`MB`
+     * alternatives are tried before `BAR` so the unit is classified correctly.
+     *
+     * @return array{value_num: float, unit: string}|null
+     */
+    private function extractPressioneBar(string $text): ?array
+    {
+        if (! preg_match('/(\d+(?:[.,]\d+)?)\s*(MBAR|MB|BAR)\b/iu', $text, $matches)) {
+            return null;
+        }
+
+        $value = $this->toFloat($matches[1]);
+
+        if (strtoupper($matches[2]) !== 'BAR') {
+            $value /= 1000;
+        }
+
+        return ['value_num' => $value, 'unit' => 'bar'];
+    }
+
+    /**
+     * Mains/appliance voltage, restricted to a whitelist of plausible values
+     * so tokens like `1V` (fan speed) are not misread as volts. Handles the
+     * optional `DC`/`AC`/`~` suffix (e.g. `230V`, `24VDC`).
+     *
+     * @return array{value_num: float, unit: string}|null
+     */
+    private function extractTensioneVolt(string $text): ?array
+    {
+        $voltages = implode('|', self::PLAUSIBLE_VOLTAGES);
+
+        if (! preg_match('/\b('.$voltages.')\s*V(?:DC|AC|~)?\b/iu', $text, $matches)) {
+            return null;
+        }
+
+        return ['value_num' => (float) $matches[1], 'unit' => 'V'];
+    }
+
+    /**
+     * Power in watts (e.g. `1200W`, `500W`), requiring at least two digits so
+     * model-version suffixes such as `/2 W` are ignored. The `W` of `kW`
+     * never matches because the intervening `K` breaks the digit→`W` sequence.
+     *
+     * @return array{value_num: float, unit: string}|null
+     */
+    private function extractPotenzaWatt(string $text): ?array
+    {
+        if (! preg_match('/\b(\d{2,4})\s*W\b/iu', $text, $matches)) {
+            return null;
+        }
+
+        return ['value_num' => (float) $matches[1], 'unit' => 'W'];
+    }
+
+    /**
+     * RAL colour code (e.g. `RAL9010`), normalised to the canonical
+     * `RAL####` form. Only `value_text` is populated.
+     *
+     * @return array{value_text: string}|null
+     */
+    private function extractColoreRal(string $text): ?array
+    {
+        if (! preg_match('/\bRAL\s*(\d{3,4})/iu', $text, $matches)) {
+            return null;
+        }
+
+        return ['value_text' => 'RAL'.$matches[1]];
     }
 
     /**
