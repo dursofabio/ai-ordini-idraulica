@@ -6,7 +6,7 @@ epic:
   title: Embedding Vettoriale
 priority: HIGH
 points: 2
-status: TODO
+status: PLANNED
 scope: MVP
 body: |-
   #### US-017: Client embedding Voyage AI configurabile
