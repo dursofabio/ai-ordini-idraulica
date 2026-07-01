@@ -38,7 +38,7 @@ class SearchService
      * vector and full-text scores, grouped one row per product-base, and
      * enriched with `variants_count` and `power_range` grouping metadata.
      *
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min: float, max: float}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
      * @return Collection<int, SearchResult>
      */
     public function search(string $query, array $filters = []): Collection
@@ -156,11 +156,13 @@ class SearchService
     }
 
     /**
-     * Apply optional structured filters (brand, family, subfamily, numeric
-     * attribute ranges) to the base product-base query, before ranking.
+     * Apply optional structured filters (brand, family, subfamily, attribute
+     * constraints) to the base product-base query, before ranking. Each
+     * attribute filter matches product-bases with at least one variant
+     * satisfying the constraint.
      *
      * @param  Builder<ProductBase>  $builder
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min: float, max: float}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
      * @return Builder<ProductBase>
      */
     private function applyFilters(Builder $builder, array $filters): Builder
@@ -180,13 +182,40 @@ class SearchService
         foreach ($filters['attributes'] ?? [] as $attributeFilter) {
             $builder->whereHas(
                 'products.attributes',
-                fn (Builder $q) => $q
-                    ->where('key', $attributeFilter['key'])
-                    ->whereBetween('value_num', [$attributeFilter['min'], $attributeFilter['max']]),
+                fn (Builder $q) => $this->applyAttributeConstraint($q, $attributeFilter),
             );
         }
 
         return $builder;
+    }
+
+    /**
+     * Constrain a product-attribute subquery to a single attribute filter,
+     * on any attribute key: a numeric range on `value_num` (`min`/`max`,
+     * either side may be omitted for an open-ended range) or an exact
+     * case-insensitive match on `value_text` (`value`).
+     *
+     * @param  Builder<ProductAttribute>  $query
+     * @param  array{key: string, min?: float, max?: float, value?: string}  $attributeFilter
+     * @return Builder<ProductAttribute>
+     */
+    private function applyAttributeConstraint(Builder $query, array $attributeFilter): Builder
+    {
+        $query->where('key', $attributeFilter['key']);
+
+        if (isset($attributeFilter['value'])) {
+            return $query->whereRaw('LOWER(value_text) = ?', [mb_strtolower($attributeFilter['value'])]);
+        }
+
+        if (isset($attributeFilter['min'])) {
+            $query->where('value_num', '>=', $attributeFilter['min']);
+        }
+
+        if (isset($attributeFilter['max'])) {
+            $query->where('value_num', '<=', $attributeFilter['max']);
+        }
+
+        return $query;
     }
 
     /**

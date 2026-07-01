@@ -102,6 +102,118 @@ class SearchServiceFiltersTest extends TestCase
         $this->assertSame($inRange->id, $results->first()->productBase->id);
     }
 
+    public function test_text_attribute_filter_matches_value_case_insensitively(): void
+    {
+        $inox = ProductBase::factory()->create();
+        $inoxProduct = Product::factory()->create(['product_base_id' => $inox->id]);
+        ProductAttribute::factory()->create([
+            'product_id' => $inoxProduct->id,
+            'key' => 'materiale',
+            'value_num' => null,
+            'value_text' => 'INOX',
+        ]);
+
+        $pvc = ProductBase::factory()->create();
+        $pvcProduct = Product::factory()->create(['product_base_id' => $pvc->id]);
+        ProductAttribute::factory()->create([
+            'product_id' => $pvcProduct->id,
+            'key' => 'materiale',
+            'value_num' => null,
+            'value_text' => 'PVC',
+        ]);
+
+        $results = app(SearchService::class)
+            ->search('bollitore', [
+                'attributes' => [
+                    ['key' => 'materiale', 'value' => 'inox'],
+                ],
+            ]);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($inox->id, $results->first()->productBase->id);
+    }
+
+    public function test_open_ended_attribute_range_filters_with_only_min_or_only_max(): void
+    {
+        $small = ProductBase::factory()->create();
+        $smallProduct = Product::factory()->create(['product_base_id' => $small->id]);
+        ProductAttribute::factory()->create([
+            'product_id' => $smallProduct->id,
+            'key' => 'capacita_litri',
+            'value_num' => 80,
+        ]);
+
+        $large = ProductBase::factory()->create();
+        $largeProduct = Product::factory()->create(['product_base_id' => $large->id]);
+        ProductAttribute::factory()->create([
+            'product_id' => $largeProduct->id,
+            'key' => 'capacita_litri',
+            'value_num' => 300,
+        ]);
+
+        $minOnly = app(SearchService::class)
+            ->search('bollitore', [
+                'attributes' => [
+                    ['key' => 'capacita_litri', 'min' => 100],
+                ],
+            ]);
+
+        $this->assertCount(1, $minOnly);
+        $this->assertSame($large->id, $minOnly->first()->productBase->id);
+
+        $maxOnly = app(SearchService::class)
+            ->search('bollitore', [
+                'attributes' => [
+                    ['key' => 'capacita_litri', 'max' => 100],
+                ],
+            ]);
+
+        $this->assertCount(1, $maxOnly);
+        $this->assertSame($small->id, $maxOnly->first()->productBase->id);
+    }
+
+    public function test_text_and_numeric_attribute_filters_combine(): void
+    {
+        $matching = ProductBase::factory()->create();
+        $matchingProduct = Product::factory()->create(['product_base_id' => $matching->id]);
+        ProductAttribute::factory()->create([
+            'product_id' => $matchingProduct->id,
+            'key' => 'materiale',
+            'value_num' => null,
+            'value_text' => 'INOX',
+        ]);
+        ProductAttribute::factory()->create([
+            'product_id' => $matchingProduct->id,
+            'key' => 'capacita_litri',
+            'value_num' => 200,
+        ]);
+
+        $wrongCapacity = ProductBase::factory()->create();
+        $wrongCapacityProduct = Product::factory()->create(['product_base_id' => $wrongCapacity->id]);
+        ProductAttribute::factory()->create([
+            'product_id' => $wrongCapacityProduct->id,
+            'key' => 'materiale',
+            'value_num' => null,
+            'value_text' => 'INOX',
+        ]);
+        ProductAttribute::factory()->create([
+            'product_id' => $wrongCapacityProduct->id,
+            'key' => 'capacita_litri',
+            'value_num' => 80,
+        ]);
+
+        $results = app(SearchService::class)
+            ->search('bollitore', [
+                'attributes' => [
+                    ['key' => 'materiale', 'value' => 'INOX'],
+                    ['key' => 'capacita_litri', 'min' => 100, 'max' => 500],
+                ],
+            ]);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($matching->id, $results->first()->productBase->id);
+    }
+
     public function test_combined_filters_narrow_the_pool_regardless_of_search_term(): void
     {
         $brand = Brand::factory()->create();
