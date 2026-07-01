@@ -1,0 +1,118 @@
+schema: archetipo/plan/v2
+spec_code: US-024
+body: |-
+  ## Soluzione Tecnica
+
+  ### Approccio
+
+  US-024 aggiunge un punto di ingresso backoffice per l'import catalogo XLSX, oggi disponibile solo via `catalog:import` da riga di comando (US-007/US-008). Non si tocca la pipeline di import esistente (`ImportBatchService`, `ImportXlsxJob`, `PromoteStagingToProductsJob`, deduplicazione per hash): si aggiunge solo lo strato di presentazione Filament che (1) carica il file, (2) avvia lo stesso job chain già collaudato, (3) rende visibile l'avanzamento, (4) notifica il riepilogo a fine import.
+
+  ### Componenti
+
+  **1. Pagina Filament `App\Filament\Pages\ImportCatalog`**
+
+  - Pattern identico a `ReviewQueue` (US-023): `Page` + `HasActions`/`HasSchemas`/`HasTable`, `InteractsWithActions`/`InteractsWithSchemas`/`InteractsWithTable`.
+  - Navigazione: icona coerente con EP-007 (es. `Heroicon::OutlinedArrowUpTray`), label "Importa Catalogo".
+  - Header action `upload` con uno `schema` contenente un `Filament\Forms\Components\FileUpload` (`acceptedFileTypes(['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])`, estensione `.xlsx`, disco `local`, directory `imports/`, `preserveFilenames()` disattivato per evitare collisioni). Nessun requisito di dimensione esplicito in AC: si applica un limite prudenziale (es. 20MB, coerente con il file di test da 42k righe) documentato nel codice.
+  - Tabella pagina: lista `ImportBatch` (`orderByDesc('created_at')`), colonne `filename`, `status` (badge colorato per stato), `total_rows`, `processed_rows`, `rows_new`, `rows_updated`, `skipped_rows`, `finished_at`. `->poll('5s')` sulla `Table` per AC2 (avanzamento visibile senza intervento manuale, riuso pattern nativo Filament invece di websocket/broadcasting).
+
+  **2. Azione di upload — handler**
+
+  - Nel callback `action()` dell'azione: risolve il path reale del file caricato tramite lo storage disk (`Storage::disk('local')->path($data['file'])`), poi invoca `ImportBatchService::startImport($path)` e incoda `Bus::chain([new ImportXlsxJob($batch, $path), new PromoteStagingToProductsJob($batch)])->dispatch()` — stessa sequenza già usata da `CatalogImportCommand`, nessuna duplicazione di logica di business.
+  - Gestione errori (AC4): `DuplicateImportException` → `Notification::make()->warning()` con messaggio esistente dell'eccezione, nessun nuovo batch; `InvalidArgumentException` (file non leggibile) e qualunque estensione non xlsx (bloccata già lato client da `FileUpload`, validata anche lato server) → `Notification::make()->danger()` con messaggio chiaro, nessuna eccezione non gestita risale alla request.
+  - Un file XLSX corrotto che supera l'estensione ma fallisce alla lettura viene intercettato da `ImportXlsxJob::failed()` (già esistente, transita il batch a `Failed`): la pagina lo mostra tramite la colonna `status` in polling; si aggiunge inoltre una notifica di fallimento (vedi punto 3) così l'errore è comunicato anche se l'admin ha lasciato la pagina.
+
+  **3. Notifica di completamento/fallimento (AC3, AC4)**
+
+  - Riuso dei job esistenti: in coda a `PromoteStagingToProductsJob::handle()` (dopo `markCompleted`) si invia `Notification::make()->success()->title(...)->body("Totali: {total}, nuovi: {rows_new}, aggiornati: {rows_updated}, saltati: {skipped_rows}")->sendToDatabase(...)` a tutti gli utenti con `canAccessPanel()` true (query su `User` filtrata via `FilamentUser` contract, coerente con l'auth esistente — niente nuova colonna `user_id` su `import_batches`, che manterrebbe lo schema minimale visto che il batch non è oggi legato a un utente).
+  - In `ImportXlsxJob::failed()` e nel ramo di fallimento di `PromoteStagingToProductsJob`, stessa notifica ma `->danger()` con messaggio d'errore, per coprire AC4 anche per errori che emergono dopo l'upload (es. file corrotto rilevato solo in lettura streaming).
+  - Le notifiche database sono già supportate dal panel Filament (bell icon) — nessuna nuova infrastruttura.
+
+  ### Alternative valutate
+
+  - **WebSocket/broadcasting per progresso live**: scartato, `->poll()` è sufficiente per l'AC ("progresso visibile") e non richiede infrastruttura aggiuntiva (Reverb/Pusher non presenti nel progetto).
+  - **Upload diretto a job sincrono**: scartato, romperebbe il pattern esistente di coda `import` con timeout lunghi già collaudato da US-007/US-008 e bloccherebbe la request HTTP per un file da 42k righe.
+
+  ## Strategia di Test
+
+  **Unit/Feature (PHPUnit)**
+
+  - Test Livewire/Filament sull'azione di upload: file XLSX valido → crea `ImportBatch`, incoda il chain (`Bus::fake()` + `Bus::assertChained`), stato iniziale coerente.
+  - Test file duplicato (hash già completato) → nessun nuovo batch, notifica warning.
+  - Test file non xlsx / path non leggibile → notifica danger, nessuna eccezione propagata (assert no exception thrown, response ok).
+  - Test tabella pagina: batch multipli mostrati con colonne corrette, ordinamento per data.
+  - Test notifica di completamento: eseguendo il chain in sync (come `CatalogImportDispatchTest`), verificare che una `DatabaseNotification` con riepilogo corretto sia creata per gli utenti panel-eligible.
+  - Test notifica di fallimento: batch che fallisce in `ImportXlsxJob` (es. mock reader che lancia eccezione) → stato `Failed` + notifica danger.
+
+  **End-to-End (Laravel Dusk — framework già presente nel progetto, vedi `tests/Browser/ReviewQueueTriageTest.php` per convenzione)**
+
+  - Scenario utente completo in `tests/Browser/ImportCatalogUploadTest.php`: l'admin fa login, apre "Importa Catalogo", carica un file XLSX valido di test, osserva la tabella batch passare per gli stati (uploaded → importing → enriching → completed) via polling, vede i conteggi finali nella riga e la notifica di riepilogo nel campanello.
+  - Scenario file non valido: upload di un file con estensione non xlsx (o xlsx corrotto) → messaggio di errore chiaro visibile, nessuna schermata bianca/eccezione.
+  - Dusk non registra video in questo progetto (nessun plugin di video recording installato): l'artefatto visivo è la sequenza di screenshot per-step, salvata in `docs/test-results/US-024/` tramite `Browser::$storeScreenshotsAt` — stessa convenzione di `ReviewQueueTriageTest` (`ARTIFACT_DIR` sovrascritta nella sottoclasse). I log console sono salvati nella stessa directory.
+  - Setup: nessuna nuova installazione richiesta, Dusk è già configurato (`tests/DuskTestCase.php`, ChromeDriver su 9515, ambiente Sail-aware).
+tasks:
+  - id: TASK-01
+    title: Creare la pagina Filament ImportCatalog con navigazione
+    description: 'Nuova classe App\Filament\Pages\ImportCatalog (pattern ReviewQueue): Page + HasActions/HasSchemas/HasTable, navigationIcon/navigationLabel/title "Importa Catalogo", view dedicata filament.pages.import-catalog. Nessuna logica di business ancora, solo scaffold e registrazione nel panel.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Implementare l'azione di upload XLSX con validazione
+    description: 'Header Action ''upload'' con schema FileUpload (accept .xlsx, disco local, directory imports/, limite dimensione). Handler: risolve il path reale, chiama ImportBatchService::startImport(), dispatcha Bus::chain([ImportXlsxJob, PromoteStagingToProductsJob]). Gestisce DuplicateImportException (notifica warning, nessun batch) e InvalidArgumentException/file non valido (notifica danger, nessuna eccezione non gestita).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Test feature per l'azione di upload (successo, duplicato, file non valido)
+    description: 'Test PHPUnit sull''azione Filament: upload XLSX valido crea batch e incoda il chain (Bus::fake + assertChained); upload di file già importato (hash duplicato) non crea batch e mostra notifica warning; upload file non xlsx o illeggibile mostra notifica danger senza eccezioni propagate.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Tabella batch con polling per il progresso
+    description: 'Metodo table() sulla pagina ImportCatalog: query ImportBatch orderByDesc(''created_at''), colonne filename/status (badge)/total_rows/processed_rows/rows_new/rows_updated/skipped_rows/finished_at, ->poll(''5s'') per aggiornamento automatico dello stato senza refresh manuale (AC2).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-05
+    title: Test feature per la tabella batch
+    description: 'Test PHPUnit: batch multipli con stati/conteggi diversi sono mostrati nella tabella con le colonne attese e l''ordinamento corretto per data di creazione.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Notifica database di riepilogo a completamento import
+    description: In coda a PromoteStagingToProductsJob::handle() (dopo markCompleted), inviare Notification::make()->success() con riepilogo (totali/nuovi/aggiornati/saltati) via sendToDatabase() a tutti gli utenti con canAccessPanel() true (AC3).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-07
+    title: Notifica database di errore su import fallito
+    description: In ImportXlsxJob::failed() e nel ramo di fallimento di PromoteStagingToProductsJob, inviare una notifica database ->danger() con messaggio d'errore chiaro quando il batch transita a Failed, così l'errore è visibile anche se l'admin ha lasciato la pagina (AC4).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-08
+    title: Test feature per le notifiche di completamento e fallimento
+    description: 'Test PHPUnit: eseguendo il chain in sync (come CatalogImportDispatchTest), verificare che una DatabaseNotification con riepilogo corretto sia creata a completamento; test con reader che lancia eccezione durante ImportXlsxJob verifica stato Failed + notifica danger.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+      - TASK-07
+  - id: TASK-09
+    title: 'Test e2e Dusk: upload, avanzamento e riepilogo'
+    description: 'tests/Browser/ImportCatalogUploadTest.php (pattern ReviewQueueTriageTest): login admin, apertura ''Importa Catalogo'', upload file XLSX di test, osservazione degli stati del batch via polling fino a completed, verifica dei conteggi finali e della notifica di riepilogo. Scenario aggiuntivo per file non valido con messaggio di errore chiaro. Screenshot e console log per-step salvati in docs/test-results/US-024/ (ARTIFACT_DIR sovrascritta nella sottoclasse, nessun video: Dusk non lo supporta in questo progetto).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-04
+      - TASK-06
+      - TASK-07
