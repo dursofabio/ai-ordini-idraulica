@@ -6,7 +6,7 @@ epic:
   title: Importazione XLSX
 priority: HIGH
 points: 2
-status: TODO
+status: PLANNED
 scope: MVP
 body: |-
   #### US-006: Creazione batch import con deduplicazione hash

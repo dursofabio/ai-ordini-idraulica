@@ -1,0 +1,94 @@
+schema: archetipo/plan/v2
+spec_code: US-006
+body: |-
+  # US-006: Creazione batch import con deduplicazione hash — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-002 — Importazione XLSX
+  **Priorità:** HIGH | **Punti:** 2
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo, voglio poter avviare un'importazione da file XLSX con rilevamento automatico dei duplicati, così da non reimportare inutilmente file già elaborati e avere un log completo di ogni operazione.
+
+  **Criteri di Accettazione**
+  - [ ] L'avvio di un import crea un record `import_batches` con filename, hash MD5 e status `uploaded`
+  - [ ] Un secondo import dello stesso file (hash identico a un batch completato) restituisce un avviso e non crea un nuovo batch
+  - [ ] Lo status del batch avanza correttamente: `uploaded` → `importing` → `enriching` → `completed`/`failed`
+  - [ ] Il comando `catalog:import` accetta il path del file come argomento
+
+  ---
+
+  ## Technical Solution
+
+  La tabella `import_batches` e il model `ImportBatch` esistono già da US-005 (colonna `hash` indicizzata, contatori, `started_at`/`finished_at`): questa spec aggiunge solo il **livello di orchestrazione** sopra quello schema, senza nuove migration. Lo scope è limitato alla creazione del batch, alla deduplicazione per hash, al ciclo di stato e al comando `catalog:import`; la lettura effettiva delle 42.000+ righe dell'XLSX in `staging_articoli` è demandata a US-007 (che dipende da questa spec). Di conseguenza il comando qui crea il batch in stato `uploaded` e lascia l'avanzamento fino a `completed` ai job di import di US-007 — in questa spec le transizioni di stato sono esposte come API e coperte dai test.
+
+  - **Enum `App\Enums\ImportBatchStatus`**: enum string-backed (`uploaded`, `importing`, `enriching`, `completed`, `failed`) che definisce gli stati canonici e le transizioni ammesse tramite un metodo `canTransitionTo(self $next): bool`. Grafo: `uploaded → importing → enriching → completed`, con `failed` raggiungibile da `importing`/`enriching`. Idiomatico per PHP 8.3 e casta direttamente sul model.
+  - **Model `ImportBatch`**: aggiunta del cast `'status' => ImportBatchStatus::class`. Nessun'altra modifica di schema.
+  - **Service `App\Services\ImportBatchService`**: centralizza la logica di dominio.
+    - `startImport(string $path): ImportBatch` — valida che il file esista/sia leggibile (altrimenti eccezione), calcola l'hash con `md5_file($path)` (coerente con l'AC «hash MD5»), esegue la **deduplicazione**: se esiste già un batch con lo stesso hash in stato `completed` lancia una `DuplicateImportException` (o restituisce un esito dedicato) senza creare un nuovo record; altrimenti crea il batch con `filename` = basename del path, `hash`, `status = uploaded`, `started_at = now()`.
+    - Metodi di transizione: `markImporting`, `markEnriching`, `markCompleted`, `markFailed` (o un unico `transitionTo(ImportBatch $b, ImportBatchStatus $next)`) che validano la transizione tramite l'enum e lanciano `InvalidStatusTransitionException` sui salti non ammessi; `markCompleted`/`markFailed` valorizzano `finished_at`.
+  - **Regola di dedup**: il blocco scatta **solo** contro batch `completed` (file già elaborato con successo). Un batch precedente in stato `failed` non blocca: lo stesso file deve poter essere reimportato dopo un fallimento. Questa distinzione è esplicita nei test.
+  - **Comando `catalog:import`**: Artisan command `App\Console\Commands\CatalogImportCommand` con signature `catalog:import {path : Percorso del file XLSX da importare}`. Delega a `ImportBatchService::startImport()`: su successo stampa l'id del batch creato e lo stato `uploaded` (exit 0); su duplicato intercetta l'eccezione e stampa un **avviso** senza creare il batch (exit 0, warning); su file mancante stampa errore (exit diverso da 0). Registrato via `routes/console.php`/attributo `AsCommand` secondo la convenzione Laravel 13 del progetto.
+
+  ---
+
+  ## Test Strategy
+
+  Spec backend/CLI senza UI: la strategia è basata su feature test in-memory SQLite (trait `RequiresDatabase` + `RefreshDatabase`), coerente con US-003/US-004/US-005. I file di input per il calcolo dell'hash sono creati come file temporanei reali (contenuto noto) così da poter asserire l'MD5 atteso. Nessun test e2e è richiesto (nessuna interazione utente).
+
+  - **Test hash & creazione**: `startImport()` su un file con contenuto noto crea un `import_batches` con `filename` corretto, `hash` = `md5_file()` atteso e `status = uploaded`; `started_at` valorizzato.
+  - **Test deduplicazione**: un secondo `startImport()` sullo stesso contenuto quando esiste già un batch `completed` con quello hash non crea un nuovo record e segnala il duplicato (eccezione/esito dedicato); mentre se il batch precedente è `failed`, il reimport è consentito e crea un nuovo batch.
+  - **Test ciclo di stato**: le transizioni `uploaded → importing → enriching → completed` e `→ failed` sono ammesse e valorizzano `finished_at` sugli stati terminali; le transizioni illegali (es. `uploaded → completed`, o da uno stato terminale) lanciano `InvalidStatusTransitionException`.
+  - **Test comando `catalog:import`**: `artisan('catalog:import', ['path' => ...])` con file valido crea il batch ed esce con successo mostrando id/stato; una seconda invocazione con hash già `completed` mostra l'avviso e non crea un secondo batch; un path inesistente termina con errore.
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Enum ImportBatchStatus + cast sul model
+    description: 'Creare App\Enums\ImportBatchStatus (string-backed: uploaded/importing/enriching/completed/failed) con canTransitionTo() che codifica il grafo delle transizioni ammesse; aggiungere il cast ''status'' => ImportBatchStatus::class su ImportBatch.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: 'ImportBatchService: startImport + dedup + transizioni'
+    description: Creare App\Services\ImportBatchService con startImport(path) che valida il file, calcola md5_file, deduplica contro batch completed (altrimenti crea il batch in status uploaded con started_at) e i metodi di transizione di stato validati tramite l'enum. Definire DuplicateImportException e InvalidStatusTransitionException.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Comando Artisan catalog:import
+    description: Creare CatalogImportCommand con signature 'catalog:import {path}' che delega a ImportBatchService::startImport, stampa id/stato del batch su successo, un avviso sul duplicato senza creare record ed errore su file mancante.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Test hash, creazione e deduplicazione
+    description: Feature test (RequiresDatabase + RefreshDatabase) che verifica creazione batch con hash MD5 corretto e status uploaded, il blocco del duplicato verso un batch completed e la riammissione del reimport dopo un batch failed.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-05
+    title: Test ciclo di stato
+    description: Feature test che verifica le transizioni ammesse uploaded→importing→enriching→completed/failed (con finished_at sugli stati terminali) e il rifiuto delle transizioni illegali con InvalidStatusTransitionException.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-06
+    title: Test comando catalog:import
+    description: Feature test che invoca artisan('catalog:import') con file valido (creazione + successo), con hash già completed (avviso, nessun nuovo batch) e con path inesistente (errore).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
