@@ -1,0 +1,105 @@
+schema: archetipo/plan/v2
+spec_code: US-008
+body: |-
+  # US-008: Upsert idempotente da staging a products — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-002 — Importazione XLSX
+  **Priorità:** HIGH | **Punti:** 3
+  **Bloccata da:** US-007 (stato REVIEW — precondizione soddisfatta)
+
+  **User Story**
+  Come amministratore del catalogo, voglio che il contenuto dello staging venga promosso a products in modo idempotente, così da reimportare il file senza duplicati e riarricchire solo gli articoli la cui descrizione è cambiata.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, eseguire due import consecutivi dello stesso file lascia il conteggio di `products` invariato; modificare la descrizione di un articolo nel file e reimportarlo reimposta il suo `enrichment_status` a `pending`; aggiornare solo costo o giacenza non altera lo stato di arricchimento.
+
+  **Criteri di Accettazione**
+  - [ ] Record nuovo → INSERT con `enrichment_status='pending'` e `is_active` calcolato
+  - [ ] Record esistente con `description_raw` cambiata → UPDATE + reset `enrichment_status='pending'`
+  - [ ] Record esistente invariato nel testo → UPDATE solo costo/giacenza, nessun reset dello stato
+  - [ ] `is_active=false` se `costo=0 AND giacenza<=0`
+  - [ ] Il conteggio `rows_new` e `rows_updated` in `import_batches` è corretto al termine
+
+  ---
+
+  ## Technical Solution
+
+  US-007 ha portato le righe grezze in `staging_articoli` e transiziona il batch `importing → enriching`, ma nessuno step promuove ancora quelle righe a `products`. Questa spec chiude il ciclo con un **secondo job in coda**, `App\Jobs\PromoteStagingToProductsJob`, che legge lo staging del batch a chunk e fa l'upsert su `products` chiave-per-chiave su `codice_articolo` (già `unique`), poi transiziona `enriching → completed`. L'idempotenza è il vincolo guida: reimportare lo stesso file non deve alterare il conteggio di `products`, e il reset di `enrichment_status` deve scattare solo quando il testo descrittivo è realmente cambiato — non quando cambiano solo costo/giacenza.
+
+  - **Perché un job separato e non l'estensione di `ImportXlsxJob`**: `ImportXlsxJob` (US-007) ha una responsabilità già chiusa (lettura+mappatura) e i suoi test attuali fissano il comportamento fino a `enriching`. Aggiungere la promozione come secondo job mantiene la singola responsabilità di ciascun job e riusa lo stesso pattern di chunking/contatori/`failed()` già validato in US-007, senza toccare `ImportXlsxJob`.
+  - **Confronto per il reset dello stato**: per ogni chunk di `staging_articoli` (chunk da 1.000, stesso `CHUNK_SIZE` di `ImportXlsxJob`), si recuperano in una singola query i `products` esistenti con `codice_articolo` in quel chunk (`whereIn` + `keyBy`). Le righe si dividono poi in due gruppi upsert: (1) **nuove o con `description_raw` cambiata** (confronto trim tra `staging.descrizione` e `products.description_raw` esistente) → upsert che scrive anche `description_raw` e forza `enrichment_status='pending'`; (2) **esistenti con testo invariato** → upsert che aggiorna solo `costo`/`giacenza`/`is_active`, senza toccare `description_raw` né `enrichment_status`. Due `DB::table('products')->upsert(...)` per chunk (uno per gruppo, se il gruppo non è vuoto) invece di un `upsert()` unico: la clausola `ON DUPLICATE KEY UPDATE`/`ON CONFLICT` è la stessa per tutte le righe passate in una chiamata, quindi non può condizionare riga-per-riga se resettare lo stato o no — la separazione in due gruppi è l'unico modo per ottenere l'AC #2 vs #3 con un'operazione bulk (niente query singola per riga sulle 42k+ righe).
+  - **Calcolo `is_active`**: `is_active = !(costo <= 0 AND giacenza <= 0)`, con `costo`/`giacenza` nulli trattati come `0` (colonne nullable su `staging_articoli`). Applicato in entrambi i gruppi upsert, coerente con l'AC "is_active=false se costo=0 AND giacenza<=0".
+  - **Timestamp ed esclusione dei cast Eloquent**: come in `ImportXlsxJob::handle()`, l'upsert passa per il query builder (bulk, non per singolo modello), quindi `created_at`/`updated_at` vanno impostati esplicitamente nell'array di ogni riga.
+  - **Contatori**: `rows_new` (righe non trovate tra i `products` esistenti nel chunk) e `rows_updated` (righe trovate) si accumulano per tutta l'esecuzione del job e si scrivono su `import_batches` a fine job — nuove colonne, assenti oggi sullo schema. Migration che aggiunge `rows_new`/`rows_updated` (`unsignedInteger` default `0`, dopo `skipped_rows`) su `import_batches`, con aggiornamento di `#[Fillable]`/cast su `ImportBatch` e della factory.
+  - **Transizione di stato**: a fine job, `$service->markCompleted($batch)` (`enriching → completed`, transizione già valida nell'enum `ImportBatchStatus`); su eccezione, `failed()` richiama `markFailed` seguendo lo stesso schema di `ImportXlsxJob`.
+  - **Wiring**: `CatalogImportCommand` oggi dispatcha solo `ImportXlsxJob::dispatch($batch, $path)`. Si sostituisce con `Bus::chain([new ImportXlsxJob($batch, $path), new PromoteStagingToProductsJob($batch)])->dispatch()`, così la promozione parte automaticamente al termine della lettura, sulla stessa coda `import` (`PromoteStagingToProductsJob` chiama `$this->onQueue('import')` nel costruttore, come `ImportXlsxJob`).
+  - **Fuori scope (rimandato a spec successive)**: questa spec non tocca `descrizione_marca`, `brand_id`, `family_id`, `subfamily_id` né alcuna logica di matching/arricchimento semantico — solo i campi coperti dagli AC (`codice_articolo`, `description_raw`, `costo`, `giacenza`, `is_active`, `enrichment_status`). L'arricchimento vero e proprio dei prodotti con `enrichment_status='pending'` è materia di una spec futura dell'epica.
+
+  ---
+
+  ## Test Strategy
+
+  Spec backend/coda senza UI: feature test in-memory SQLite (`RequiresDatabase` + `RefreshDatabase`), stesso pattern di US-006/US-007. Nessun test e2e è richiesto (nessuna interazione utente).
+
+  - **Test regressione schema**: aggiornare `VectorStagingAuditSchemaTest::test_import_batches_table_has_expected_columns` per includere `rows_new`/`rows_updated`.
+  - **Test insert nuovo record**: staging con `codice_articolo` non presente in `products` → dopo il job, `products` ha la riga con `enrichment_status='pending'` e `is_active` calcolato correttamente da costo/giacenza.
+  - **Test update con descrizione cambiata**: `products` preesistente con `enrichment_status` non-pending (es. `'enriched'`) e `description_raw` diverso da `staging.descrizione` → dopo il job, `description_raw` aggiornato e `enrichment_status` resettato a `'pending'`.
+  - **Test update con descrizione invariata**: `products` preesistente con `enrichment_status='enriched'` e `description_raw` identico a `staging.descrizione`, ma `costo`/`giacenza` diversi → dopo il job, `costo`/`giacenza`/`is_active` aggiornati e `enrichment_status` resta `'enriched'` (nessun reset).
+  - **Test `is_active`**: matrice costo/giacenza (`costo=0` e `giacenza<=0` → `false`; qualsiasi altra combinazione → `true`), sia per insert che per update.
+  - **Test conteggi**: batch con mix di righe nuove/aggiornate → `import_batches.rows_new`/`rows_updated` corretti al termine.
+  - **Test chunking multi-blocco**: fixture staging con > 1.000 righe (es. 2.500) per verificare che il loop a chunk copre tutte le righe senza perderne, analogo al test di chunking di US-007.
+  - **Test idempotenza end-to-end**: eseguire il job due volte sullo stesso set di righe di staging → il conteggio di `products` non cambia tra la prima e la seconda esecuzione, e la seconda esecuzione riporta `rows_new=0`.
+  - **Test ciclo di stato**: il job porta il batch `enriching → completed` su successo e `→ failed` su errore.
+  - **Regressione comando `catalog:import`**: aggiornare `CatalogImportDispatchTest` per il chain (`Bus::fake()` + assert sul chain contenente `PromoteStagingToProductsJob`) e per l'esecuzione end-to-end in sync (dopo il comando, sia `staging_articoli` che `products` sono popolati).
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Migration + model rows_new/rows_updated su import_batches
+    description: Migration che aggiunge import_batches.rows_new e rows_updated (unsignedInteger default 0, dopo skipped_rows). Aggiornare ImportBatch (#[Fillable], cast integer) e ImportBatchFactory (default 0).
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Regressione schema import_batches
+    description: Aggiornare VectorStagingAuditSchemaTest::test_import_batches_table_has_expected_columns per includere rows_new e rows_updated tra le colonne attese.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: 'PromoteStagingToProductsJob: upsert idempotente staging→products'
+    description: Creare App\Jobs\PromoteStagingToProductsJob (coda import, tries 1, timeout ampio) che legge staging_articoli del batch a chunk(1000), recupera i products esistenti per codice_articolo nel chunk, separa le righe in due gruppi upsert (nuove/descrizione cambiata → scrive description_raw e forza enrichment_status='pending'; descrizione invariata → aggiorna solo costo/giacenza/is_active), calcola is_active da costo/giacenza (null trattati come 0), accumula rows_new/rows_updated, aggiorna import_batches a fine job e transiziona enriching→completed (o →failed su errore, mirror di ImportXlsxJob::failed()).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: 'Test PromoteStagingToProductsJob: insert/update/reset/is_active/conteggi/chunking/idempotenza/stati'
+    description: 'Feature test (RequiresDatabase) che copre: insert nuovo record con enrichment_status pending; update con descrizione cambiata → reset a pending; update con descrizione invariata → nessun reset, solo costo/giacenza/is_active; matrice is_active da costo/giacenza; conteggi rows_new/rows_updated corretti; chunking multi-blocco (>1000 righe); doppia esecuzione idempotente (products invariato, rows_new=0 la seconda volta); transizione enriching→completed e →failed su errore.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: 'Wiring CatalogImportCommand: chain ImportXlsxJob → PromoteStagingToProductsJob'
+    description: Sostituire ImportXlsxJob::dispatch($batch, $path) in CatalogImportCommand con Bus::chain([new ImportXlsxJob($batch, $path), new PromoteStagingToProductsJob($batch)])->dispatch(), mantenendo la coda import e la gestione duplicato/file mancante già presente.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-06
+    title: 'Regressione comando catalog:import: chain e popolamento products end-to-end'
+    description: 'Aggiornare CatalogImportDispatchTest: asserire (Bus::fake) che il chain dispatchato includa PromoteStagingToProductsJob, e nel test end-to-end in sync verificare che dopo il comando anche products risulti popolata coerentemente con staging_articoli.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
