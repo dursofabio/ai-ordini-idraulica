@@ -25,7 +25,7 @@ class ClassificationResponseValidator
      */
     public function validate(ClaudeResponse $response, Collection $expectedCodiciArticolo, TaxonomyCatalog $taxonomy): ValidatedClassification
     {
-        $decoded = json_decode($response->content, associative: true);
+        $decoded = json_decode($this->stripMarkdownFences($response->content), associative: true);
 
         if (! is_array($decoded)) {
             throw new InvalidClassificationResponseException('La risposta AI non è un JSON valido.');
@@ -99,6 +99,25 @@ class ClassificationResponseValidator
             enrichedDescription: $this->nullableString($item['enriched_description'] ?? null),
             confidence: is_numeric($confidence) ? (int) $confidence : null,
         );
+    }
+
+    /**
+     * Strips a leading/trailing ```` ```json ... ``` ```` (or plain ``` ```)
+     * fence some models wrap the JSON in despite the prompt asking for raw
+     * JSON only, so json_decode() below doesn't choke on the fence markers.
+     */
+    private function stripMarkdownFences(string $content): string
+    {
+        $trimmed = trim($content);
+
+        if (! str_starts_with($trimmed, '```')) {
+            return $trimmed;
+        }
+
+        $trimmed = preg_replace('/^```[a-zA-Z]*\s*/', '', $trimmed) ?? $trimmed;
+        $trimmed = preg_replace('/\s*```$/', '', $trimmed) ?? $trimmed;
+
+        return trim($trimmed);
     }
 
     private function nullableString(mixed $value): ?string

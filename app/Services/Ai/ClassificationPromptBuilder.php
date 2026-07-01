@@ -28,7 +28,7 @@ class ClassificationPromptBuilder
      * generously for batches up to 50 products, each producing a compact
      * JSON object.
      */
-    private const MAX_TOKENS = 4096;
+    private const MAX_TOKENS = 8192;
 
     /**
      * Build the Messages API payload for classifying the given batch of

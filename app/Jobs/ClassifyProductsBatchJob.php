@@ -54,6 +54,13 @@ class ClassifyProductsBatchJob implements ShouldQueue
     public int $tries = 1;
 
     /**
+     * The batch call plus one escalation call per low-confidence product
+     * (up to 50 in a batch) can chain many sequential Anthropic requests;
+     * the default 60s worker timeout is too short for that worst case.
+     */
+    public int $timeout = 600;
+
+    /**
      * codice_articolo => [model, tokensIn, tokensOut] for products that were
      * escalated to the smart model, so logResults() can attribute the
      * correct model/tokens instead of the batch's fast-model figures.
@@ -76,7 +83,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
     public function __construct(
         public array $productIds,
     ) {
-        $this->onQueue('enrichment');
+        $this->onQueue('enrich');
     }
 
     public function handle(

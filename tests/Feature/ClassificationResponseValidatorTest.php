@@ -58,6 +58,36 @@ class ClassificationResponseValidatorTest extends TestCase
         $this->assertSame(90, $result->confidence);
     }
 
+    public function test_accepts_a_response_wrapped_in_a_markdown_json_fence(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $decoded = [
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => 'Grohe',
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 80,
+                ],
+            ],
+        ];
+
+        $response = new ClaudeResponse(
+            content: "```json\n".json_encode($decoded, JSON_UNESCAPED_UNICODE)."\n```",
+            tokensIn: 100,
+            tokensOut: 50,
+            raw: [],
+        );
+
+        $validated = (new ClassificationResponseValidator)->validate($response, collect(['ABC-001']), new TaxonomyCatalog);
+
+        $this->assertSame('Grohe', $validated->for('ABC-001')?->brand);
+    }
+
     public function test_rejects_syntactically_invalid_json(): void
     {
         $response = new ClaudeResponse(content: 'not json {{{', tokensIn: 10, tokensOut: 5, raw: []);
