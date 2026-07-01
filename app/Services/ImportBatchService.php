@@ -6,6 +6,9 @@ use App\Enums\ImportBatchStatus;
 use App\Exceptions\DuplicateImportException;
 use App\Exceptions\InvalidStatusTransitionException;
 use App\Models\ImportBatch;
+use App\Models\User;
+use Filament\Facades\Filament;
+use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
 
 /**
@@ -95,5 +98,20 @@ class ImportBatchService
         $batch->save();
 
         return $batch;
+    }
+
+    /**
+     * Users allowed to access the admin panel, used as the recipient list for
+     * import completion/failure database notifications (AC3/AC4) so the
+     * outcome is visible via the panel bell icon regardless of who is
+     * currently logged in.
+     *
+     * @return Collection<int, User>
+     */
+    public function panelRecipients(): Collection
+    {
+        $panel = Filament::getPanel('admin');
+
+        return User::all()->filter(fn (User $user): bool => $user->canAccessPanel($panel));
     }
 }

@@ -7,6 +7,7 @@ use App\Models\ImportBatch;
 use App\Models\Product;
 use App\Models\StagingArticolo;
 use App\Services\ImportBatchService;
+use Filament\Notifications\Notification;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -153,18 +154,34 @@ class PromoteStagingToProductsJob implements ShouldQueue
         ])->save();
 
         $service->markCompleted($this->batch);
+
+        Notification::make()
+            ->title('Import completato')
+            ->body("Totali: {$this->batch->total_rows}, nuovi: {$this->batch->rows_new}, aggiornati: {$this->batch->rows_updated}, saltati: {$this->batch->skipped_rows}.")
+            ->success()
+            ->sendToDatabase($service->panelRecipients());
     }
 
     /**
      * Mark the batch failed when the upsert blows up, if the lifecycle allows it.
+     *
+     * AC4: also notifies panel-eligible users so the failure is visible even
+     * if the admin has left the import page.
      */
     public function failed(?Throwable $exception): void
     {
         $batch = $this->batch->fresh() ?? $this->batch;
+        $service = app(ImportBatchService::class);
 
         if ($batch->status->canTransitionTo(ImportBatchStatus::Failed)) {
-            app(ImportBatchService::class)->markFailed($batch);
+            $service->markFailed($batch);
         }
+
+        Notification::make()
+            ->title('Import fallito')
+            ->body("Errore durante la promozione del batch #{$batch->id} ({$batch->filename}): {$exception?->getMessage()}")
+            ->danger()
+            ->sendToDatabase($service->panelRecipients());
     }
 
     /**
