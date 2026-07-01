@@ -52,9 +52,9 @@ queue:
     points: 2
     pipeline:
       plan:
-        status: pending
-        summary: null
-        timestamp: null
+        status: success
+        summary: "7 task (3 migrazioni brands/families/subfamilies, modelli Eloquent con cast JSON aliases e relazione nullable, factory, 2 feature test SQLite); spec -> PLANNED. No UI."
+        timestamp: "2026-07-01T16:18:00"
       implement:
         status: pending
         summary: null

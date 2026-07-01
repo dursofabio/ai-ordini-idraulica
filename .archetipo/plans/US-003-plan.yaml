@@ -1,0 +1,98 @@
+schema: archetipo/plan/v2
+spec_code: US-003
+body: |
+  # US-003: Migrazioni anagrafiche: brands, families, subfamilies — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-001 — Modello Dati
+  **Priorità:** HIGH | **Punti:** 2
+
+  **User Story**
+  Come sviluppatore del team, voglio le migrazioni per brands, families e subfamilies con i relativi modelli Eloquent, così da poter normalizzare le anagrafiche del catalogo e associare i prodotti a entità condivise e riutilizzabili.
+
+  **Criteri di Accettazione**
+  - Le tabelle `brands`, `families`, `subfamilies` esistono con tutti i campi dello schema (id, name, slug, aliases, timestamps)
+  - `Brand` espone il campo `aliases` come cast JSON
+  - `Subfamily` appartiene a `Family` tramite `family_id` nullable
+  - I factory generano dati validi per i test unitari e di feature
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Si introducono tre tabelle anagrafiche normalizzate con i relativi modelli Eloquent, seguendo le convenzioni Laravel 13 già presenti nel progetto (migrazioni con classi anonime, attributi PHP `#[Fillable]`, metodo `casts()`, factory tipizzate). Le anagrafiche fungono da entità condivise a cui i prodotti (US-004+) verranno associati via foreign key; qui si crea solo il modello dati riutilizzabile.
+
+  - **Schema tabelle:** ogni tabella ha `id` (bigint auto-increment), `name` (string), `slug` (string, unique), `aliases` (json nullable), `timestamps`. `subfamilies` aggiunge `family_id` (foreignId nullable, con `constrained()->nullOnDelete()` verso `families`). Lo slug è indicizzato unique per lookup deterministici in fase di enrichment/import.
+  - **Modelli Eloquent:** `Brand`, `Family`, `Subfamily` in `app/Models/`. Ognuno dichiara `#[Fillable([...])]`, `use HasFactory`, e cast di `aliases` a `array` (JSON) tramite il metodo `casts()`, coerente con lo stile del modello `User` esistente.
+  - **Relazioni:** `Subfamily belongsTo Family` (`family_id` nullable); `Family hasMany Subfamily`. Le relazioni verso `Product` sono rimandate a US-004 per non introdurre dipendenze inverse premature.
+  - **Compatibilità test SQLite:** lo schema usa tipi portabili (`json` è supportato da SQLite come TEXT) così i test possono girare in-memory via il trait `RequiresDatabase` già presente, senza richiedere PostgreSQL.
+  - **Factory:** `BrandFactory`, `FamilyFactory`, `SubfamilyFactory` generano `name` realistici, `slug` derivato con `Str::slug()` + suffisso unico, `aliases` array plausibile; `SubfamilyFactory` crea una `Family` associata di default.
+
+  ---
+
+  ## Strategia di Test
+
+  Essendo una spec di puro modello dati senza interfaccia utente, la copertura è affidata a test unitari/feature Eloquent eseguiti su SQLite in-memory tramite il trait `RequiresDatabase` e `RefreshDatabase`, coerentemente con l'infrastruttura di test esistente. Nessun test e2e è richiesto (nessuna UI o interazione utente in questa spec).
+
+  - **Migrazioni/schema:** verificare che dopo `migrate` le tre tabelle esistano con tutte le colonne attese (`id`, `name`, `slug`, `aliases`, `family_id` su subfamilies, timestamps).
+  - **Cast JSON:** creare un `Brand` con `aliases` come array, ricaricarlo dal DB e verificare che venga restituito come array (round-trip del cast JSON).
+  - **Relazione Family/Subfamily:** creare una `Family` con una `Subfamily` associata, verificare `subfamily->family` e `family->subfamilies`; verificare che `family_id` accetti `null`.
+  - **Factory:** verificare che ogni factory produca modelli persistibili e validi (unicità dello slug, dati non nulli).
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Migrazione tabella brands
+    description: Creare la migrazione per la tabella `brands` con id, name, slug (unique), aliases (json nullable) e timestamps.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Migrazione tabella families
+    description: Creare la migrazione per la tabella `families` con id, name, slug (unique), aliases (json nullable) e timestamps.
+    type: Impl
+    status: TODO
+  - id: TASK-03
+    title: Migrazione tabella subfamilies
+    description: Creare la migrazione per `subfamilies` con id, name, slug (unique), aliases (json nullable), family_id (foreignId nullable constrained->nullOnDelete verso families) e timestamps.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Modelli Eloquent Brand, Family, Subfamily
+    description: 'Creare i tre modelli in app/Models con #[Fillable], HasFactory, cast di aliases ad array, e relazioni Family hasMany Subfamily / Subfamily belongsTo Family.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+  - id: TASK-05
+    title: Factory per Brand, Family, Subfamily
+    description: Creare BrandFactory, FamilyFactory, SubfamilyFactory con name, slug unico, aliases plausibili; SubfamilyFactory associa una Family di default.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Test schema e cast JSON dei brand
+    description: Test feature che verifica esistenza colonne delle tre tabelle e il round-trip del cast JSON di aliases sul modello Brand, su SQLite in-memory.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-07
+    title: Test relazione Family/Subfamily e factory
+    description: Test che verifica la relazione belongsTo/hasMany con family_id nullable e che i factory producano modelli validi e persistibili.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
