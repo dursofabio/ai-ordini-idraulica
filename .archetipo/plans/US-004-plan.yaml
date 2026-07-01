@@ -1,0 +1,103 @@
+schema: archetipo/plan/v2
+spec_code: US-004
+body: |-
+  # US-004: Migrazioni prodotto: product_bases, products, product_attributes — Piano di Implementazione
+
+  **Generato da:** Team di Planning ARchetipo
+  **Data:** 2026-07-01
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-001 — Modello Dati
+  **Priorità:** HIGH | **Punti:** 3
+
+  **User Story**
+  Come sviluppatore del team, voglio le migrazioni per product_bases, products e product_attributes con i modelli Eloquent, così da avere la struttura dati centrale su cui poggia tutta la pipeline di arricchimento e la ricerca.
+
+  **Criteri di Accettazione**
+  - Le tabelle `product_bases`, `products`, `product_attributes` esistono con tutti i campi dello schema
+  - `products.codice_articolo` ha un indice unique
+  - `products.enrichment_status` ha un indice e il default `pending`
+  - `product_attributes` ha gli indici compositi su `(key, value_num)` e `(product_id, key)`
+  - I modelli Eloquent hanno le relazioni corrette: productBase, brand, family, subfamily, attributes
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Si introduce il nucleo del modello dati del catalogo su tre livelli — `product_bases` (raggruppamento di varianti), `products` (variante con chiave naturale) e `product_attributes` (attributi tecnici in stile EAV) — con i relativi modelli Eloquent, seguendo le convenzioni Laravel 13 già consolidate nel progetto (migrazioni con classi anonime, attributi PHP `#[Fillable]`, metodo `casts()`, factory tipizzate, tipi portabili per i test SQLite). Lo schema di dettaglio non è enumerato per esteso nel corpo della spec: i campi sono stati derivati dagli AC e dalle spec a valle che leggono/scrivono queste tabelle (US-007/US-008 import e upsert, US-010 attributi regex, US-011 clustering, US-012 propagazione, US-015 arricchimento AI, US-018 embedding, US-025 dashboard).
+
+  - **Tabella `product_bases`:** `id`, `title` (string nullable, titolo leggibile generato in US-011), `grouping_key` (string, unique — hash normalizzato di marca+tipo+serie, riutilizzato per idempotenza in US-011), `brand_id`/`family_id`/`subfamily_id` (foreignId nullable `constrained()->nullOnDelete()` verso le anagrafiche di US-003, per la classificazione propagata a livello di base), `timestamps`. È la prima delle tre a essere creata perché `products` vi punta.
+  - **Tabella `products`:** `id`; `codice_articolo` (string, **unique** — chiave naturale dal file); `description_raw` (text, descrizione grezza usata come chiave di re-arricchimento in US-008); `descrizione_marca` (string nullable, colonna mappata dall'XLSX in US-007); `costo` (decimal 12,2 default 0) e `giacenza` (decimal/integer default 0) usati per calcolare `is_active`; `is_active` (boolean default true — false se `costo=0 AND giacenza<=0`, US-008); `enrichment_status` (string, **default `pending`**, **indicizzato** — valori: `pending`, `enriched`, `needs_review`, `done`); `product_base_id` (foreignId nullable `constrained()->nullOnDelete()`); `brand_id`/`family_id`/`subfamily_id` (foreignId nullable `constrained()->nullOnDelete()`); campi di tracciamento origine `brand_source`/`family_source`/`subfamily_source` (string nullable — valori `file`/`ai`/`manual`/`propagated`, US-012/US-015), `source` (string nullable — origine dell'ultimo arricchimento, es. `regex`/`ai`/`manual`) e `confidence` (unsignedTinyInteger nullable, 0-100, US-015); `grouping_key` (string nullable indicizzato, popolato in US-011 prima di collegare il product_base); `timestamps`.
+  - **Tabella `product_attributes`:** `id`, `product_id` (foreignId `constrained()->cascadeOnDelete()` verso `products`), `key` (string — es. `potenza_kw`, `capacita_litri`, `materiale`), `value_num` (decimal 12,3 nullable — per i filtri range numerici), `value_text` (string nullable — per attributi testuali tipo materiale), `unit` (string nullable — es. `kW`, `L`, `"`), `source` (string nullable — es. `regex`, `ai`), `timestamps`. Due **indici compositi**: `(key, value_num)` per le query range cross-prodotto (US-010) e `(product_id, key)` per il lookup degli attributi di un prodotto.
+  - **Modelli Eloquent:** `ProductBase`, `Product`, `ProductAttribute` in `app/Models/`, ognuno con `#[Fillable([...])]`, `use HasFactory`, `casts()` per i campi tipizzati (`is_active`=>bool, `costo`/`giacenza`/`value_num`=>decimal, `confidence`=>integer). Relazioni: `Product belongsTo ProductBase/Brand/Family/Subfamily` e `Product hasMany ProductAttribute` (accessor `attributes()` — attenzione al conflitto col metodo `attributes` di Eloquent: si espone come `productAttributes()` oppure si sovrascrive con cautela; il piano usa `attributes()` come richiesto dall'AC, verificando l'assenza di regressioni sull'attribute bag); `ProductBase hasMany Product`; `ProductAttribute belongsTo Product`.
+  - **Compatibilità test SQLite:** tutti i tipi scelti (string, text, decimal, boolean, foreignId, indici compositi) sono portabili su SQLite, così i test girano in-memory tramite il trait `RequiresDatabase` già presente, senza richiedere PostgreSQL.
+  - **Ordine di dipendenza migrazioni:** `product_bases` → `products` → `product_attributes`; le anagrafiche `brands`/`families`/`subfamilies` (US-003) esistono già e precedono queste per timestamp.
+
+  ---
+
+  ## Strategia di Test
+
+  Spec di puro modello dati senza interfaccia utente: la copertura è affidata a test feature Eloquent eseguiti su SQLite in-memory tramite il trait `RequiresDatabase` e `RefreshDatabase`, coerentemente con l'infrastruttura di test esistente (cfr. `CatalogTaxonomySchemaTest`/`CatalogTaxonomyRelationsTest` di US-003). Nessun test e2e è richiesto (nessuna UI o interazione utente in questa spec).
+
+  - **Schema e indici:** verificare che dopo `migrate` le tre tabelle esistano con tutte le colonne attese; verificare l'indice unique su `products.codice_articolo`, il default `pending` e l'indice su `enrichment_status`, e gli indici compositi `(key, value_num)` e `(product_id, key)` su `product_attributes`.
+  - **Chiave naturale e default:** creare un `Product` con `codice_articolo` e verificare che `enrichment_status` defaulti a `pending`; verificare che un secondo `Product` con lo stesso `codice_articolo` violi il vincolo unique.
+  - **Relazioni:** creare un `ProductBase` con `Product` associati e attributi, verificare `product->productBase`, `product->brand/family/subfamily`, `product->attributes` e `productBase->products` con FK nullable che accettano `null`.
+  - **Query attributi range:** creare `product_attributes` con `key='potenza_kw'` e vari `value_num`, eseguire una query `key='potenza_kw' AND value_num BETWEEN 2 AND 6` e verificare che restituisca solo i prodotti nel range (prova diretta dell'AC "Dimostra").
+  - **Factory:** verificare che `ProductBaseFactory`, `ProductFactory`, `ProductAttributeFactory` producano modelli persistibili e validi (unicità di `codice_articolo`/`grouping_key`, associazioni coerenti).
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-01_
+tasks:
+  - id: TASK-01
+    title: Migrazione tabella product_bases
+    description: Creare la migrazione per `product_bases` con id, title (nullable), grouping_key (string unique), brand_id/family_id/subfamily_id (foreignId nullable constrained->nullOnDelete verso le anagrafiche US-003) e timestamps.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Migrazione tabella products
+    description: Creare la migrazione per `products` con codice_articolo (unique), description_raw, descrizione_marca, costo, giacenza, is_active, enrichment_status (default 'pending', indice), product_base_id e brand/family/subfamily_id (foreignId nullable nullOnDelete), brand_source/family_source/subfamily_source, source, confidence, grouping_key (indice), timestamps.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Migrazione tabella product_attributes
+    description: Creare la migrazione per `product_attributes` con product_id (foreignId cascadeOnDelete), key, value_num, value_text, unit, source, timestamps e gli indici compositi (key, value_num) e (product_id, key).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Modelli Eloquent ProductBase, Product, ProductAttribute
+    description: 'Creare i tre modelli in app/Models con #[Fillable], HasFactory, casts appropriati e relazioni: Product belongsTo ProductBase/Brand/Family/Subfamily e hasMany ProductAttribute (attributes); ProductBase hasMany Product; ProductAttribute belongsTo Product.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+  - id: TASK-05
+    title: Factory per ProductBase, Product, ProductAttribute
+    description: Creare ProductBaseFactory, ProductFactory, ProductAttributeFactory con dati validi (codice_articolo e grouping_key unici, associazioni coerenti verso base e anagrafiche).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Test schema, indici e default
+    description: Test feature su SQLite in-memory che verifica esistenza colonne delle tre tabelle, unique su codice_articolo, default 'pending' e indice su enrichment_status, indici compositi su product_attributes.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-07
+    title: Test relazioni, query range attributi e factory
+    description: Test che verifica le relazioni ProductBase/Product/attributi con FK nullable, la query key='potenza_kw' AND value_num BETWEEN 2 AND 6, e che i factory producano modelli validi e persistibili.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05

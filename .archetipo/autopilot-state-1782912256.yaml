@@ -68,9 +68,9 @@ queue:
     points: 3
     pipeline:
       plan:
-        status: pending
-        summary: null
-        timestamp: null
+        status: success
+        summary: "7 task (migrazioni product_bases/products/product_attributes, modelli con relazioni productBase/brand/family/subfamily/attributes, factory, 2 test); spec -> PLANNED. No UI."
+        timestamp: "2026-07-01T16:26:00"
       implement:
         status: pending
         summary: null
