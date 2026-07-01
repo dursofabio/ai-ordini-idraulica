@@ -6,7 +6,7 @@ epic:
   title: Arricchimento AI
 priority: HIGH
 points: 3
-status: TODO
+status: PLANNED
 blocked_by:
   - US-014
 scope: MVP
