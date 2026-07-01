@@ -65,63 +65,72 @@ tasks:
     title: 'AttributeResolver: scheletro, guardia priorità fonte, estrattore kW'
     description: 'Creare App\Services\Enrichment\AttributeResolver con resolve(Product $product): int, helper privato writeAttribute() con updateOrCreate su (product_id, key) e guardia che non sovrascrive righe con source non-null diverso da ''regex''. Implementare l''estrattore potenza_kw: pattern unità esplicita (\d+([.,]\d+)?\s*[kK][wW]) con fallback su pattern codice serie VAI (\bVAI\s+(\d+)-\d+), key=''potenza_kw'', unit=''kW'', source=''regex''.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Test estrattore kW
     description: 'Feature test (RequiresDatabase + RefreshDatabase) per potenza_kw: unità esplicita con punto e virgola decimale, spazio/minuscolo kw, codice serie VAI N-NNN, e nessun match. Verifica value_num, unit=''kW'', key=''potenza_kw'', source=''regex''.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Estrattore litri
     description: 'Aggiungere a AttributeResolver l''estrattore capacita_litri: pattern (\d+([.,]\d+)?)\s*LT\b case-insensitive, key=''capacita_litri'', unit=''L'', source=''regex''.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Test estrattore litri
     description: Feature test per capacita_litri su descrizioni tipo 'BOLLITORE 800 LT' e varianti (es. 50 LT, 100 LT) e caso nessun match. Verifica value_num, unit='L', key='capacita_litri'.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Estrattore pollici
     description: 'Aggiungere a AttributeResolver l''estrattore attacco_pollici: pattern che copre intero (1"), frazione (3/4") e numero misto spazio-separato (1 1/4") prima del simbolo ", con conversione della frazione in decimale. key=''attacco_pollici'', unit=''"'', source=''regex''.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-05
   - id: TASK-06
     title: Test estrattore pollici
     description: 'Feature test per attacco_pollici: intero (1"), frazione semplice (3/4", 1/2"), numero misto (1 1/4") e caso nessun match. Verifica la conversione decimale corretta e unit=''"''.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Estrattore materiale
     description: 'Aggiungere a AttributeResolver l''estrattore materiale: match a dizionario statico [''RG'',''INOX'',''PVC'',''RAME''] per parola intera case-insensitive, prendendo il primo token per posizione nel testo in caso di match multipli. key=''materiale'', value_text=token canonico, value_num/unit nulli, source=''regex''.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-07
   - id: TASK-08
     title: Test estrattore materiale
     description: Feature test per materiale su descrizioni contenenti INOX, PVC, RAME, RG come parola intera, caso nessun match, e caso con più materiali citati (verifica selezione del primo per posizione).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-08
   - id: TASK-09
     title: Test integrazione, idempotenza e query range
     description: 'Feature test che copre: resolve() su una descrizione con più segnali combinati scrive tutte le righe attese in una sola chiamata; ri-esecuzione di resolve() sullo stesso prodotto è idempotente (upsert, nessuna riga duplicata) e non sovrascrive una riga preesistente con source diverso da ''regex'' (es. ''ai''); query ProductAttribute::where(''key'',''potenza_kw'')->whereBetween(''value_num'',[2,6]) restituisce i prodotti corretti, come descritto nella sezione ''Dimostra'' della spec.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-04
       - TASK-06
       - TASK-08
+    ref: TASK-09
