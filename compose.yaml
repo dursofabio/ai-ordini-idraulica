@@ -24,6 +24,15 @@ services:
         depends_on:
             - pgsql
             - redis
+            - ollama
+    ollama:
+        image: 'ollama/ollama:latest'
+        ports:
+            - '${FORWARD_OLLAMA_PORT:-11434}:11434'
+        volumes:
+            - 'sail-ollama:/root/.ollama'
+        networks:
+            - sail
     pgsql:
         image: 'pgvector/pgvector:pg16'
         ports:
@@ -71,4 +80,6 @@ volumes:
     sail-pgsql:
         driver: local
     sail-redis:
+        driver: local
+    sail-ollama:
         driver: local
