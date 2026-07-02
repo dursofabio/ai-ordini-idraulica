@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-029
+title: Risorsa Filament per il dettaglio dei batch di import
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: HIGH
+points: 3
+status: TODO
+body: |-
+  #### US-029: Risorsa Filament per il dettaglio dei batch di import
+
+  **Epica:** EP-007 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio una sezione del backoffice che elenchi i batch di import con il loro esito,
+  così da capire cosa è successo in ciascuna importazione senza dover consultare il database o i log da riga di comando.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un amministratore apre la sezione "Import" nel backoffice, vede l'elenco dei batch con file, stato, righe totali/nuove/aggiornate/in errore e durata, e aprendo un batch ne vede il dettaglio completo (inclusi eventuali errori riassuntivi).
+
+  **Criteri di Accettazione**
+  - [ ] Una nuova voce di navigazione mostra l'elenco degli `import_batches` ordinato dal più recente, con colonne: nome file, stato (badge colorato in base a `ImportBatchStatus`), righe totali, nuove, aggiornate, in errore, scartate, data avvio/fine
+  - [ ] La lista è filtrabile per stato e ordinabile per data
+  - [ ] Aprendo un batch si accede a una pagina di dettaglio con tutti i contatori e i timestamp del batch
+  - [ ] Se `error_rows > 0`, il dettaglio evidenzia il conteggio errori con enfasi visiva (es. badge "danger")
+  - [ ] La sezione è di sola lettura (nessuna azione di modifica/eliminazione sul batch)

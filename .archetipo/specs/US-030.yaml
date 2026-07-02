@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-030
+title: Vista di dettaglio prodotto con storico enrichment e stato embedding
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: HIGH
+points: 3
+status: TODO
+body: |-
+  #### US-030: Vista di dettaglio prodotto con storico enrichment e stato embedding
+
+  **Epica:** EP-007 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio aprire un prodotto e vedere lo storico di come è stato arricchito e se il suo prodotto-base ha un embedding generato,
+  così da capire perché un prodotto ha un certo brand/famiglia/confidenza senza dover ispezionare `enrichment_logs` a mano.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un amministratore apre un prodotto dalla lista e vede una pagina di dettaglio con la cronologia degli step di arricchimento (deterministico e AI, con confidenza, modello e token quando presenti) e lo stato dell'embedding del prodotto-base collegato (generato/mancante, modello, data).
+
+  **Criteri di Accettazione**
+  - [ ] Dalla lista prodotti è possibile aprire una pagina di visualizzazione dedicata per il singolo prodotto (non solo l'edit)
+  - [ ] La pagina mostra, in ordine cronologico, ogni riga di `enrichment_logs` collegata al prodotto: step, esito/confidenza, modello usato, token input/output quando presenti
+  - [ ] Se il prodotto non ha ancora voci di enrichment, la sezione mostra uno stato vuoto esplicito ("nessun arricchimento eseguito")
+  - [ ] La pagina mostra lo stato dell'embedding del prodotto-base collegato: presente (con modello e data generazione) oppure assente
+  - [ ] I campi con origine manuale (`*_source = 'manual'`) restano visivamente distinti come già avviene nella lista/form esistente

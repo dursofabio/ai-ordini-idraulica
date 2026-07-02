@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-031
+title: Azioni manuali di rielaborazione per singolo prodotto
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: HIGH
+points: 3
+status: TODO
+body: |-
+  #### US-031: Azioni manuali di rielaborazione per singolo prodotto
+
+  **Epica:** EP-007 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio tasti di azione sul singolo prodotto per rilanciare l'arricchimento deterministico, la classificazione AI o la generazione dell'embedding del suo prodotto-base,
+  così da poter correggere o forzare l'elaborazione di un prodotto specifico senza rilanciare l'intero batch da riga di comando.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un amministratore apre un prodotto (o la lista prodotti) e trova tre azioni distinte — "Rilancia arricchimento deterministico", "Rilancia classificazione AI", "Rigenera embedding prodotto-base" — che accodano il job corrispondente solo per quel record e notificano l'utente dell'accodamento.
+
+  **Criteri di Accettazione**
+  - [ ] Un'azione sul prodotto rilancia il resolver deterministico (brand/attributi/famiglia) solo per quel prodotto e mostra una notifica di conferma
+  - [ ] Un'azione sul prodotto accoda la classificazione AI solo per quel prodotto, indipendentemente dal suo `enrichment_status` corrente, e mostra una notifica di conferma
+  - [ ] Un'azione sul prodotto-base collegato accoda `GenerateProductBaseEmbeddingJob` per quel solo prodotto-base, sovrascrivendo un embedding già esistente se presente, e mostra una notifica di conferma
+  - [ ] Le azioni sono disponibili sia dalla riga della lista sia dalla pagina di dettaglio del prodotto
+  - [ ] Se un'azione non è eseguibile (es. classificazione AI su un prodotto senza descrizione), il pulsante è disabilitato o l'azione mostra un errore chiaro invece di accodare un job destinato a fallire
