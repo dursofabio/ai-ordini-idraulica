@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-032
+title: Collegamento diretto marca/famiglia/sottofamiglia da valori già presenti nel file
+epic:
+  code: EP-003
+  title: Arricchimento Deterministico
+priority: HIGH
+points: 5
+status: PLANNED
+body: |-
+  #### US-032: Collegamento diretto marca/famiglia/sottofamiglia da valori già presenti nel file
+
+  **Epica:** EP-003 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che marca, famiglia e sottofamiglia già presenti nel file di import vengano collegate direttamente al prodotto quando corrispondono a una voce di tassonomia esistente,
+  così da evitare deduzioni testuali inutili (e potenzialmente errate) quando il dato è già certo nel file sorgente.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, importando un file XLSX in cui una riga riporta Marca="WAVIN", Fam="TUBI" e S.Fam="RACCORDI" già presenti in tassonomia, il prodotto risultante ha `brand_id`/`family_id`/`subfamily_id` collegati direttamente con `*_source='file'`, senza che il resolver testuale o la propagazione intervengano su quel prodotto.
+
+  **Criteri di Accettazione**
+  - [ ] Per ogni riga promossa a prodotto, se il codice o l'etichetta di Marca/Fam/S.Fam della riga corrisponde (per slug o alias) a un Brand/Family/Subfamily già esistente in tassonomia, il prodotto viene collegato direttamente con `brand_source`/`family_source`/`subfamily_source = 'file'`
+  - [ ] Il collegamento da file ha priorità assoluta: viene eseguito prima della deduzione testuale della marca, del clustering prodotti-base e della propagazione famiglia/sottofamiglia nella pipeline di arricchimento deterministico, così che questi passaggi non tentino la deduzione su prodotti già collegati da file
+  - [ ] Un prodotto già collegato con source `'file'` non viene mai sovrascritto da propagazione, deduzione testuale o classificazione AI
+  - [ ] Se il valore Marca/Fam/S.Fam della riga non corrisponde a nessuna voce esistente in tassonomia, il prodotto resta senza collegamento da file e segue il normale flusso di arricchimento (deduzione testuale, propagazione, AI)
+  - [ ] I test coprono: match esatto per codice, match esatto per etichetta, nessun match, e la non sovrascrittura di un valore già impostato con source `'file'`
