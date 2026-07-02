@@ -1,0 +1,93 @@
+schema: archetipo/plan/v2
+spec_code: US-029
+body: |-
+  # US-029: Risorsa Filament per il dettaglio dei batch di import — Piano di Implementazione
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-02
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-007 — Backoffice Filament
+  **Priorità:** HIGH | **Punti:** 3
+
+  **User Story**
+  Come amministratore del catalogo, voglio una sezione del backoffice che elenchi i batch di import con il loro esito, così da capire cosa è successo in ciascuna importazione senza dover consultare il database o i log da riga di comando.
+
+  **Criteri di Accettazione**
+  - Una nuova voce di navigazione mostra l'elenco degli `import_batches` ordinato dal più recente, con colonne: nome file, stato (badge colorato in base a `ImportBatchStatus`), righe totali, nuove, aggiornate, in errore, scartate, data avvio/fine
+  - La lista è filtrabile per stato e ordinabile per data
+  - Aprendo un batch si accede a una pagina di dettaglio con tutti i contatori e i timestamp del batch
+  - Se `error_rows > 0`, il dettaglio evidenzia il conteggio errori con enfasi visiva (es. badge "danger")
+  - La sezione è di sola lettura (nessuna azione di modifica/eliminazione sul batch)
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Si introduce `ImportBatchResource`, una risorsa Filament in sola lettura sul modello `ImportBatch` già esistente (nessuna migrazione: tutti i contatori — `total_rows`, `processed_rows`, `rows_new`, `rows_updated`, `error_rows`, `skipped_rows` — e i timestamp `started_at`/`finished_at` sono già colonne del modello, US-005/US-007/US-008). La risorsa segue lo stesso pattern a cartelle di `BrandResource`/`FamilyResource` (Tables/, Schemas/, Pages/), con due sole pagine registrate (`index`, `view`) e le operazioni di scrittura disattivate a livello di risorsa.
+
+  - **Sola lettura**: `ImportBatchResource::canCreate()` → `false`, `canEdit()`/`canDelete()` → `false` sul model policy-level (nessuna pagina Create/Edit registrata in `getPages()`, nessuna `DeleteAction`/`DeleteBulkAction` nella tabella). Questo evita qualunque azione distruttiva sui batch, come richiesto dall'AC5.
+  - **Tabella** (`ImportBatchesTable`): colonne `filename`, `status` (badge, stessa mappa colori già usata in `ImportCatalog::table()` — `completed`→success, `failed`→danger, `uploaded`→gray, default warning), `total_rows`, `rows_new`, `rows_updated`, `error_rows` (badge, colore danger quando > 0 altrimenti gray), `skipped_rows`, `started_at`, `finished_at`. Ordinamento default per `created_at` desc (AC1), colonne `started_at`/`finished_at` sortable (AC2). Filtro stato con `SelectFilter::make('status')->options(...)` basato sui case di `ImportBatchStatus` (AC2).
+  - **Dettaglio** (`ImportBatchInfolist`, esposto via `ImportBatchResource::infolist()`): sezione con tutti i contatori e i timestamp del batch (AC3); l'entry `error_rows` usa lo stesso schema badge della tabella per l'enfasi visiva quando > 0 (AC4). La pagina `ViewImportBatch` è la prima `ViewRecord` del progetto — finora tutte le risorse esistenti avevano solo `Create`/`Edit` — ma è un pattern Filament nativo e diretto, nessun componente custom necessario.
+  - **Navigazione**: nuova voce sotto un gruppo dedicato `Import` (icona `Heroicon::OutlinedQueueList`, label `Storico Import`), distinta dalla pagina esistente `ImportCatalog` ("Importa Catalogo", upload) per non confondere le due funzioni. Nessuna modifica alla pagina `ImportCatalog` esistente (minimal disruption).
+
+  **Alternative scartate**: aggiungere le colonne di dettaglio direttamente come azione/modal sulla tabella già esistente in `ImportCatalog` (scartato, l'AC chiede esplicitamente una risorsa/sezione con pagina di dettaglio propria e navigazione dedicata, e `ImportCatalog` resta focalizzata sull'upload); drill-down sui singoli errori di `staging_articoli.error` nel dettaglio (fuori scope, l'AC4 richiede solo l'enfasi sul conteggio `error_rows`, non un elenco riga-per-riga); mockup dedicato (la risorsa riusa gli stessi componenti Filament nativi — tabella con badge, infolist — già stabiliti in `ImportCatalog`/Brand/Family, nessuna interfaccia custom da progettare, stessa motivazione già adottata in US-021/US-022/US-025).
+
+  ---
+
+  ## Strategia di Test
+
+  Test Feature con `Livewire::test()`, seguendo il pattern già usato in `ImportCatalogTableTest`. Nessuna infrastruttura e2e richiesta: la spec è un backoffice CRUD in sola lettura su un modello già coperto da test di dominio (`ImportBatchStatusLifecycleTest`, `ImportBatchDeduplicationTest`), non un nuovo flusso utente end-to-end.
+
+  - Lista: ordinamento per più recente, colonne che espongono i contatori corretti, stati diversi visualizzati con il badge/colore atteso, filtro per stato che restringe i risultati attesi
+  - Assenza di azioni di scrittura: nessun pulsante/azione Create sulla lista, nessuna azione Edit/Delete su riga o in bulk
+  - Dettaglio: `assertSchemaStateSet()` su tutti i contatori e i timestamp del batch; caso `error_rows > 0` con enfasi badge danger verificata, caso `error_rows = 0` senza enfasi
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-02_
+tasks:
+  - id: TASK-01
+    title: Creare lo scheletro di ImportBatchResource in sola lettura
+    description: Nuova risorsa app/Filament/Resources/ImportBatches/ImportBatchResource.php sul model ImportBatch, navigationGroup 'Import', navigationLabel 'Storico Import', icona OutlinedQueueList. canCreate()/canEdit()/canDelete() a false, getPages() con solo 'index' e 'view'.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Implementare ImportBatchesTable
+    description: 'Tables/ImportBatchesTable.php: colonne filename, status (badge colorato), total_rows, rows_new, rows_updated, error_rows (badge danger se >0), skipped_rows, started_at, finished_at; defaultSort(''created_at'',''desc''); SelectFilter su status con i case di ImportBatchStatus; nessuna azione riga/bulk di modifica o eliminazione.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Test feature sulla lista dei batch
+    description: 'tests/Feature/ImportBatchResourceTableTest.php: ordinamento per più recente, stato colonne sui contatori, badge colore per stato, filtro per stato, assenza di azioni Create/Edit/Delete.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Implementare ImportBatchInfolist
+    description: 'Schemas/ImportBatchInfolist.php: TextEntry per tutti i contatori e i timestamp del batch, entry error_rows con badge danger quando >0 (altrimenti gray), esposto tramite ImportBatchResource::infolist().'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-05
+    title: Implementare le pagine ListImportBatches e ViewImportBatch
+    description: Pages/ListImportBatches.php e Pages/ViewImportBatch.php, wiring standard Filament (nessuna EditAction/DeleteAction negli header della pagina di dettaglio).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+      - TASK-04
+  - id: TASK-06
+    title: Test feature sul dettaglio del batch
+    description: 'tests/Feature/ImportBatchResourceViewTest.php: assertSchemaStateSet su tutti i contatori/timestamp, caso error_rows>0 con enfasi badge danger, caso error_rows=0 senza enfasi, assenza di azione Edit nella pagina.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
