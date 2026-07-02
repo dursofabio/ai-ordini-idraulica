@@ -54,39 +54,45 @@ tasks:
     title: Creare config/catalog.php con watch_path e schedule_frequency_minutes
     description: Nuovo file di config (pattern analogo a config/search.php) che espone 'watch_path' (env CATALOG_WATCH_PATH, default storage_path('import/catalogo.xlsx')) e 'schedule_frequency_minutes' (env CATALOG_SCHEDULE_FREQUENCY_MINUTES, default 15), così la frequenza del check è configurabile senza toccare codice.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Creare CatalogImportIfChangedCommand
     description: 'Nuovo App\Console\Commands\CatalogImportIfChangedCommand: legge config(''catalog.watch_path''), esce SUCCESS senza log se il file non esiste, altrimenti chiama ImportBatchService::startImport() e in caso di successo dispatcha la stessa Bus::chain([ImportXlsxJob, PromoteStagingToProductsJob]) di CatalogImportCommand loggando un Log::info con l''id del batch. Cattura DuplicateImportException ed esce SUCCESS senza scrivere log (nessun rumore quando l''hash non è cambiato). Cattura ogni altra eccezione con Log::error ed exit FAILURE.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Test CatalogImportIfChangedCommand
     description: 'Feature test: file assente termina SUCCESS senza log e senza batch; file nuovo crea un ImportBatch, dispatcha la chain (Queue::fake) e scrive un log informativo; stesso file rieseguito dopo un batch Completed con hash identico non crea nulla, resta SUCCESS e non scrive alcuna riga di log (Log::spy/shouldReceive never); un''eccezione generica da startImport() produce Log::error e FAILURE.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Registrare gli schedule in bootstrap/app.php
     description: 'Aggiungere ->withSchedule(function (Schedule $schedule) { ... }) a bootstrap/app.php: $schedule->command(''catalog:import-if-changed'')->cron(''*/''.config(''catalog.schedule_frequency_minutes'').'' * * * *'')->withoutOverlapping() e $schedule->command(''catalog:embed'', [''--missing'' => true])->daily()->withoutOverlapping() per il job notturno di embedding, riusando il comando esistente da US-026 senza nuove classi.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-04
   - id: TASK-05
     title: Test registrazione schedule
     description: Feature test che verifica, tramite l'istanza Schedule risolta dal container (app(Schedule::class)->events()), che catalog:import-if-changed e catalog:embed --missing risultino tra i task registrati con la frequenza/cron attesa, prevenendo regressioni silenziose su bootstrap/app.php.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Test configurazione catalog.php
     description: Feature/Unit test che verifica i default di config('catalog.watch_path') e config('catalog.schedule_frequency_minutes') e il corretto override tramite variabili d'ambiente (Config::set nel test), garantendo che l'AC 'frequenza configurabile' sia effettivamente verificato.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-06
