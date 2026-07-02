@@ -87,7 +87,7 @@ tasks:
     title: Test e2e Dusk scenario ricerca completo
     description: 'tests/Browser/ProductSearchTest.php (pattern ReviewQueueTriageTest): login operatore, apertura "Ricerca prodotti", stato vuoto iniziale, inserimento testo+filtro, click "Cerca", verifica lista candidati con marca/famiglia/varianti/potenza; scenario filtri senza risultati. Screenshot per-step in docs/test-results/US-033/, nessun video (Dusk non lo supporta in questo progetto).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
       - TASK-04

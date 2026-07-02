@@ -7,6 +7,7 @@ use App\Models\ProductAttribute;
 use App\Models\ProductBase;
 use App\Services\Ai\EmbeddingClient;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -43,13 +44,51 @@ class SearchService
      */
     public function search(string $query, array $filters = []): Collection
     {
+        return $this->buildSearchQuery($query, $filters)->get()
+            ->map(fn (ProductBase $productBase): SearchResult => $this->toSearchResult($productBase));
+    }
+
+    /**
+     * Same ranking/filtering as {@see search()}, but paginated at the SQL
+     * level (`LIMIT`/`OFFSET`) instead of loading and mapping every matching
+     * row just to serve one page of results — used by the backoffice
+     * results table (US-033) to keep page loads fast regardless of how many
+     * product-bases a broad query matches.
+     *
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @return LengthAwarePaginator<int, SearchResult>
+     */
+    public function paginate(string $query, array $filters, int $perPage, int $page): LengthAwarePaginator
+    {
+        $paginator = $this->buildSearchQuery($query, $filters)->paginate($perPage, ['*'], 'page', $page);
+
+        return $paginator->setCollection(
+            $paginator->getCollection()->mapWithKeys(fn (ProductBase $productBase): array => [
+                $productBase->id => $this->toSearchResult($productBase),
+            ]),
+        );
+    }
+
+    /**
+     * Builds the filtered, ranked, grouping-enriched product-base query
+     * shared by {@see search()} and {@see paginate()}.
+     *
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @return Builder<ProductBase>
+     */
+    private function buildSearchQuery(string $query, array $filters): Builder
+    {
         $exactMatchBaseId = $this->findExactCodeMatchBaseId($query);
 
         $builder = $this->applyFilters(ProductBase::query(), $filters);
-        $builder = $this->applyRanking($builder, $query, $exactMatchBaseId);
-        $builder = $this->withGroupingMeta($builder);
+        $builder = $this->applyRanking($builder, $query, $exactMatchBaseId, hasFilters: $filters !== []);
 
-        return $builder->get()->map(fn (ProductBase $productBase) => new SearchResult(
+        return $this->withGroupingMeta($builder);
+    }
+
+    private function toSearchResult(ProductBase $productBase): SearchResult
+    {
+        return new SearchResult(
             productBase: $productBase,
             variantsCount: (int) $productBase->getAttribute('variants_count'),
             powerRangeMin: $productBase->getAttribute('power_range_min') !== null
@@ -58,7 +97,7 @@ class SearchService
             powerRangeMax: $productBase->getAttribute('power_range_max') !== null
                 ? (float) $productBase->getAttribute('power_range_max')
                 : null,
-        ));
+        );
     }
 
     /**
@@ -106,10 +145,23 @@ class SearchService
      * On any other driver (no tsvector/pgvector support) it falls back to a
      * plain `LIKE` match on title/description_ai, without vector fusion.
      *
+     * When `$query` is non-blank and no structured filter narrowed the pool
+     * already, rows with neither a real FTS match nor a meaningful vector
+     * match (both scores at or below `config('search.relevance.min_score')`)
+     * are excluded — otherwise a query with no real match would rank (and
+     * return) the entire catalog. The raw per-signal scores are used for
+     * this check rather than the weighted `combined_score`, since a poor
+     * vector match legitimately pulls that weighted sum negative even for a
+     * row with a strong FTS match (or vice versa) — that's a ranking signal,
+     * not a sign of irrelevance. The cutoff is skipped entirely when
+     * structured filters are present (they already narrowed the pool
+     * intentionally) or the query is blank. The exact code match is always
+     * kept regardless.
+     *
      * @param  Builder<ProductBase>  $builder
      * @return Builder<ProductBase>
      */
-    private function applyRanking(Builder $builder, string $query, ?int $exactMatchBaseId): Builder
+    private function applyRanking(Builder $builder, string $query, ?int $exactMatchBaseId, bool $hasFilters): Builder
     {
         $isExactMatch = $exactMatchBaseId !== null
             ? "CASE WHEN product_bases.id = {$exactMatchBaseId} THEN 1 ELSE 0 END"
@@ -131,26 +183,36 @@ class SearchService
         $queryEmbedding = '['.implode(',', $this->embedQuery($query)).']';
         $vectorWeight = (float) config('search.weights.vector');
         $ftsWeight = (float) config('search.weights.fts');
+        $ftsScoreExpression = "ts_rank(product_bases.search_vector, plainto_tsquery('italian', ?))";
+        $vectorScoreExpression = 'COALESCE(1 - (product_embeddings.embedding <=> ?), 0)';
 
-        return $builder
+        $builder = $builder
             ->leftJoin('product_embeddings', function ($join) use ($model) {
                 $join->on('product_embeddings.product_base_id', '=', 'product_bases.id')
                     ->where('product_embeddings.model', '=', $model);
             })
             ->select('product_bases.*')
+            ->selectRaw("{$ftsScoreExpression} AS fts_score", [$query])
+            ->selectRaw("{$vectorScoreExpression} AS vector_score", [$queryEmbedding])
             ->selectRaw(
-                'ts_rank(product_bases.search_vector, plainto_tsquery(\'italian\', ?)) AS fts_score',
-                [$query],
-            )
-            ->selectRaw(
-                'COALESCE(1 - (product_embeddings.embedding <=> ?), 0) AS vector_score',
-                [$queryEmbedding],
-            )
-            ->selectRaw(
-                "({$vectorWeight} * COALESCE(1 - (product_embeddings.embedding <=> ?), 0)) "
-                ."+ ({$ftsWeight} * ts_rank(product_bases.search_vector, plainto_tsquery('italian', ?))) AS combined_score",
+                "({$vectorWeight} * {$vectorScoreExpression}) + ({$ftsWeight} * {$ftsScoreExpression}) AS combined_score",
                 [$queryEmbedding, $query],
-            )
+            );
+
+        if (trim($query) !== '' && ! $hasFilters) {
+            $minScore = (float) config('search.relevance.min_score');
+
+            $builder->where(function (Builder $q) use ($ftsScoreExpression, $vectorScoreExpression, $query, $queryEmbedding, $minScore, $exactMatchBaseId) {
+                $q->whereRaw("{$ftsScoreExpression} > ?", [$query, $minScore])
+                    ->orWhereRaw("{$vectorScoreExpression} > ?", [$queryEmbedding, $minScore]);
+
+                if ($exactMatchBaseId !== null) {
+                    $q->orWhere('product_bases.id', $exactMatchBaseId);
+                }
+            });
+        }
+
+        return $builder
             ->orderByRaw("{$isExactMatch} DESC")
             ->orderByRaw('combined_score DESC');
     }
