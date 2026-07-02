@@ -1,0 +1,94 @@
+schema: archetipo/plan/v2
+spec_code: US-033
+body: |
+  ## Soluzione Tecnica
+
+  ### Approccio
+
+  US-033 aggiunge una pagina di sola consultazione nel backoffice per il motore di ricerca ibrido già implementato in `SearchService` (US-019). Nessuna modifica alla logica di ricerca: la pagina è uno strato di presentazione che raccoglie testo libero + filtri, invoca `SearchService::search()` on-demand (submit esplicito, non ricerca live-typing, per evitare chiamate ripetute al provider di embedding) e mostra i `SearchResult` in tabella.
+
+  ### Componenti
+
+  **1. Pagina Filament `App\Filament\Pages\ProductSearch`**
+
+  - Pattern analogo a `ImportCatalog`/`ReviewQueue`: `Page` + `HasSchemas`/`HasTable`, `InteractsWithSchemas`/`InteractsWithTable`. Non serve `HasActions`/`InteractsWithActions`, non ci sono azioni per record.
+  - Navigazione: label/titolo "Ricerca prodotti", icona coerente (es. `Heroicon::OutlinedMagnifyingGlass`).
+  - Form di ricerca (schema, stato in proprietà pubblica `$data`): `TextInput::make('query')` testo libero, `Select::make('brand_id')->relationship('brand','name')`, `Select::make('family_id')->relationship('family','name')->live()`, `Select::make('subfamily_id')` con opzioni filtrate per famiglia (pattern `Get`/`options` già usato in `ReviewQueue::correctAction()`), e un set fisso di filtri per attributi tecnici numerici: `potenza_kw_min/max`, `diametro_nominale_min/max` (DN), `pressione_nominale_min/max` (PN) — le tre chiavi con estrattore deterministico già live (`AttributeResolver`, US-028).
+  - Bottone "Cerca" (submit dello schema): valida e salva lo stato del form in proprietà pubbliche della pagina, poi forza il refresh della tabella (Livewire re-render sulle proprietà osservate da `records()`).
+
+  **2. Tabella risultati via `->records()` (non Eloquent query diretta)**
+
+  - `SearchService::search()` restituisce `Collection<SearchResult>`, non un `Builder` — per questo si usa `Table::records(fn(): Collection => ...)` (feature nativa Filament v5 per data source custom, vedi doc "Custom Data") invece di `Table::query()`.
+  - Il closure `records()`: se testo vuoto E nessun filtro valorizzato → ritorna collection vuota senza chiamare `SearchService` (evita chiamate embedding a vuoto e soddisfa l'AC4 "stato vuoto guida"); altrimenti mappa i filtri del form nel formato atteso da `SearchService::search()` (`brand_id`/`family_id`/`subfamily_id`/`attributes: [{key, min, max}]`, solo le entry con almeno un bound valorizzato) e trasforma ogni `SearchResult` in un array per le colonne tabella (`title`, `brand_name`, `family_name`/`subfamily_name`, `variants_count`, `power_range` formattato "min–max kW" o "-" se assente).
+  - Colonne: `TextColumn` per titolo, marca, famiglia/sottofamiglia, numero varianti, range potenza. Nessuna colonna sortable/searchable nativa: sorting/search sono delegati al motore di ricerca, coerente con la documentazione Filament sui dati custom.
+  - Stato vuoto: `->emptyStateHeading()`/`->emptyStateDescription()` distinto per "nessun criterio inserito" vs "nessun risultato trovato" (derivabile da una proprietà booleana `hasSearched`).
+
+  **3. View blade**
+
+  - Nuovo `resources/views/filament/pages/product-search.blade.php`, pattern minimale identico a `import-catalog.blade.php`/`review-queue.blade.php` (form + tabella nello stesso `<x-filament-panels::page>`).
+
+  ### Alternative valutate
+
+  - **Ricerca live durante la digitazione (table `searchable()` nativo)**: scartata — ogni ricerca chiama il provider di embedding (rete + costo), la ricerca live moltiplicherebbe le chiamate ad ogni keystroke; il submit esplicito è coerente con l'uso "verifica manuale" della spec.
+  - **Filtri attributo dinamici per famiglia**: scartati per esplicita decisione (set fisso), rimandabile a una spec futura se serve copertura più ampia.
+  - **Nuovo endpoint API dedicato**: scartato, la pagina chiama direttamente `SearchService` (già iniettabile via container) come fa `ImportCatalog` con `ImportBatchService` — nessun giro HTTP interno necessario.
+
+  ## Strategia di Test
+
+  **Feature (PHPUnit + Livewire)**
+
+  - Test `ProductSearchPageTest`: submit con solo testo → tabella mostra i prodotti-base attesi ordinati per rilevanza (fixture con `Http::fake` sull'endpoint embedding, pattern `SearchServiceFiltersTest`).
+  - Submit con testo + filtro brand/famiglia/sottofamiglia → risultati ristretti coerentemente.
+  - Submit con filtro attributo numerico (es. `potenza_kw` min/max) → solo i prodotti-base con varianti nel range.
+  - Submit senza testo e senza filtri → nessuna chiamata a `SearchService`/endpoint embedding, tabella mostra lo stato vuoto guida.
+  - Submit con filtri combinati che non producono risultati → stato vuoto "nessun risultato", distinto dal caso precedente.
+
+  ### E2E Tests — User Simulation
+
+  **Framework:** Laravel Dusk (già presente nel progetto, vedi `tests/Browser/ReviewQueueTriageTest.php`)
+  **Artefatto visivo:** screenshot per-step (Dusk non registra video in questo progetto), salvati in `docs/test-results/US-033/`
+
+  | Scenario | Flusso utente |
+  |---|---|
+  | Ricerca con esito | Login operatore → apre "Ricerca prodotti" → vede lo stato vuoto guida iniziale → inserisce testo libero + un filtro (es. famiglia) → clic "Cerca" → vede la lista dei prodotti candidati con marca/famiglia/numero varianti/range potenza |
+  | Ricerca senza risultati | Login operatore → apre "Ricerca prodotti" → imposta filtri che non producono risultati → clic "Cerca" → vede il messaggio "nessun risultato" distinto dallo stato iniziale |
+tasks:
+  - id: TASK-01
+    title: Creare la pagina Filament ProductSearch con form di ricerca
+    description: 'Nuova classe App\Filament\Pages\ProductSearch (pattern ReviewQueue/ImportCatalog): Page + HasSchemas/HasTable, InteractsWithSchemas/InteractsWithTable, navigationIcon/label/title "Ricerca prodotti", view filament.pages.product-search. Schema di ricerca: TextInput query, Select brand_id/family_id (relationship, live) e subfamily_id (opzioni filtrate per famiglia, pattern ReviewQueue::correctAction), TextInput numerici min/max per potenza_kw, diametro_nominale (DN), pressione_nominale (PN). Bottone "Cerca" che salva lo stato del form in proprietà pubbliche della pagina.'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Implementare la tabella risultati via records() collegata a SearchService
+    description: 'Metodo table() con Table::records(): se nessun testo e nessun filtro valorizzato ritorna collection vuota (AC4) senza chiamare SearchService; altrimenti mappa lo stato del form nel formato filters atteso da SearchService::search() (brand_id/family_id/subfamily_id/attributes) e converte ogni SearchResult in riga tabella (titolo, marca, famiglia/sottofamiglia, numero varianti, range potenza). Colonne TextColumn, emptyState distinto per "nessun criterio" vs "nessun risultato".'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Test feature ricerca per testo libero e filtri anagrafici
+    description: 'PHPUnit+Livewire su ProductSearch: submit con testo → risultati attesi ordinati per rilevanza (Http::fake su embedding, pattern SearchServiceFiltersTest); submit con filtro brand/famiglia/sottofamiglia → risultati ristretti coerentemente.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-03
+  - id: TASK-04
+    title: Test feature filtri attributo numerico e stati vuoti
+    description: 'PHPUnit+Livewire: submit con filtro potenza_kw/DN/PN min-max → solo prodotti-base con varianti nel range; submit senza testo e senza filtri → nessuna chiamata all''endpoint embedding e stato vuoto guida; submit con filtri che non producono risultati → stato "nessun risultato" distinto.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-04
+  - id: TASK-05
+    title: Test e2e Dusk scenario ricerca completo
+    description: 'tests/Browser/ProductSearchTest.php (pattern ReviewQueueTriageTest): login operatore, apertura "Ricerca prodotti", stato vuoto iniziale, inserimento testo+filtro, click "Cerca", verifica lista candidati con marca/famiglia/varianti/potenza; scenario filtri senza risultati. Screenshot per-step in docs/test-results/US-033/, nessun video (Dusk non lo supporta in questo progetto).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+      - TASK-04
+    ref: TASK-05

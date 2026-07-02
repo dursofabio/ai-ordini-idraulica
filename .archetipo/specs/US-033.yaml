@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-033
+title: Pagina di ricerca prodotti con testo libero e filtri attributi
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 3
+status: IN PROGRESS
+body: |-
+  #### US-033: Pagina di ricerca prodotti con testo libero e filtri attributi
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come operatore di backoffice,
+  voglio una pagina Filament dove inserire un testo di ricerca libero insieme a filtri su brand, famiglia, sottofamiglia e un set fisso di attributi tecnici comuni (es. potenza, DN, PN),
+  così da verificare rapidamente quali prodotti candidati restituisce il motore di ricerca ibrido per una data query.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un operatore può aprire la pagina "Ricerca prodotti" nel backoffice, digitare un testo (es. "compressore 2CV"), impostare eventuali filtri di brand/famiglia/sottofamiglia e attributi tecnici, e ottenere una tabella con i prodotti-base candidati ordinati per rilevanza, ciascuno con numero varianti e range di potenza quando disponibile.
+
+  **Criteri di Accettazione**
+  - [ ] La pagina espone un form con campo di testo libero e filtri select per brand, famiglia, sottofamiglia
+  - [ ] Il form espone un set fisso di filtri per attributi tecnici comuni (es. potenza_kw min/max, DN, PN) mappati sui filtri `attributes` supportati dal motore di ricerca
+  - [ ] Il submit del form esegue la ricerca con testo e filtri impostati e mostra i risultati in una tabella (titolo, brand, famiglia/sottofamiglia, numero varianti, range di potenza)
+  - [ ] Con testo vuoto e nessun filtro impostato la pagina non esegue la ricerca e mostra uno stato vuoto guida
+  - [ ] La pagina è di sola consultazione: nessuna azione di selezione, modifica o collegamento a ordini sui risultati mostrati
