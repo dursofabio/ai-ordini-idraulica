@@ -1,0 +1,102 @@
+schema: archetipo/plan/v2
+spec_code: US-025
+body: |+
+  ## Soluzione Tecnica
+
+  Quattro widget Filament nativi (`StatsOverviewWidget`) registrati sulla `Dashboard` di default del pannello admin, che leggono direttamente da `products` ed `enrichment_logs` tramite query aggregate leggere (nessuna nuova tabella, nessun job). `discoverWidgets(in: app_path('Filament/Widgets'))` è già configurato in `AdminPanelProvider`, quindi basta creare le classi in `app/Filament/Widgets/` e aggiungerle a `->pages([Dashboard::class])`/`->widgets([...])` o lasciarle all'autodiscovery.
+
+  - **Widget copertura catalogo** (`CatalogCoverageWidget`): tre `Stat` (marca, famiglia, sottofamiglia) con percentuale `whereNotNull('brand_id')->count() / Product::count()` (idem per family_id/subfamily_id), calcolate con query aggregate singole (COUNT + SUM condizionale) per evitare N+1.
+  - **Widget stato arricchimento** (`EnrichmentStatusWidget`): un `Stat` per ciascun valore di `enrichment_status` presente nei dati, ottenuto con `Product::query()->select('enrichment_status', DB::raw('count(*) as total'))->groupBy('enrichment_status')->pluck(...)`. `enrichment_status` è una colonna stringa libera (non un Enum PHP), quindi il widget enumera dinamicamente gli stati effettivamente presenti invece di assumere un set fisso — evita di mostrare '0' hardcoded per stati mai usati e resta corretto se in futuro se ne aggiungono altri.
+  - **Widget costi AI ultimo batch** (`AiCostWidget`): non esiste una colonna `run_id`/batch persistita su `enrichment_logs` (il `runId` di `ClassificationBatchDispatcher` vive solo in cache tramite `AiSpendGuard`, con TTL 24h, e non è mai scritto su riga). Le righe di uno stesso `ClassifyProductsBatchJob::logResults()` vengono inserite in bulk con lo stesso `created_at` (`Carbon::now()` catturato una volta per chiamata), quindi "ultimo batch" è definito come il gruppo di `enrichment_logs` con il `created_at` massimo (stesso timestamp esatto). Il widget somma `tokens_in`/`tokens_out` di quel gruppo per `model` e usa `AiSpendGuard::estimateCost()` (già esistente, pricing da `config('services.anthropic.pricing')`) per calcolare il costo stimato in USD. **Assunzione registrata**: se in futuro serve un raggruppamento per batch realmente robusto (non basato sul timestamp coincidente), servirà una migrazione che aggiunge `run_id` a `enrichment_logs` — fuori scope per questa spec da 3 punti.
+  - **Widget articoli inattivi** (`InactiveProductsWidget`): singolo `Stat` con `Product::where('is_active', false)->count()`.
+  - **Aggiornamento senza reload** (AC5): tutti i widget estendono `StatsOverviewWidget` con `protected function getPollingInterval(): ?string { return '15s'; }` (polling nativo di Filament via Livewire `wire:poll`), pattern already supportato senza dipendenze aggiuntive. Evitato l'uso di eventi WebSocket/broadcasting perché non presenti nello stack del progetto e sproporzionato per uno use case di semplice refresh periodico di stat aggregate.
+  - Ogni widget incapsula la propria query in un metodo privato testabile isolatamente via Feature test che invoca `Livewire::test(WidgetClass::class)` e asserisce lo stato calcolato, seguendo la convenzione Filament standard.
+  - Nessuna modifica al modello dati richiesta: si riusa `Product`, `EnrichmentLog`, `AiSpendGuard::estimateCost()` così come sono.
+
+  **Alternative scartate**: nuova colonna `run_id` su `enrichment_logs` per un batch tracking esatto (richiederebbe migrazione + backfill, sproporzionato per lo scope MVP di 3 punti; il raggruppamento per `created_at` copiato è già affidabile dato come `logResults()`/`markNeedsReview()` inseriscono le righe in bulk con un unico `Carbon::now()`); `ChartWidget` per la copertura (scartato, i criteri di accettazione chiedono percentuali/numeri puntuali, non un trend temporale — uno `StatsOverviewWidget` è più diretto); mockup dedicato (i quattro widget riusano i componenti Filament nativi `StatsOverviewWidget`/`Stat` già stabiliti nello stack, nessuna interfaccia custom da progettare, stessa motivazione già adottata in US-022).
+
+  ## Strategia di Test
+
+  Feature test per ciascun widget con `Livewire::test()` che crea dati via factory (prodotti con vari `brand_id`/`family_id`/`subfamily_id`/`enrichment_status`/`is_active`, e righe `EnrichmentLog` con `tokens_in`/`tokens_out`/`model` noti) e asserisce i valori numerici/percentuali calcolati, incluso il caso limite di catalogo vuoto (0 prodotti, divisione per zero evitata) e il caso di più batch AI in tempi diversi (verifica che solo l'ultimo, per `created_at` massimo, venga sommato). Un test di integrazione verifica che la Dashboard admin (`/admin`) monti tutti e quattro i widget senza errori per un utente autenticato.
+
+  ### Test E2E — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già presente nello stack; convenzione osservata in `tests/Browser/BrandAliasManagementTest.php` — US-022: screenshot per-step salvati in `docs/test-results/{US-CODE}/` invece di video, poiché Dusk non supporta la registrazione video nativa in questo progetto).
+
+  | Scenario | Descrizione del flusso utente |
+  |---|---|
+  | Amministratore consulta la dashboard di copertura | L'admin effettua login, apre `/admin`, vede i quattro widget popolati con i valori attesi (seed di prodotti/log noti), attende il ciclo di polling (15s) e verifica che i numeri restino coerenti senza ricaricare la pagina; screenshot salvati in `docs/test-results/US-025/`. |
+
+tasks:
+  - id: TASK-01
+    title: Creare CatalogCoverageWidget
+    description: Widget StatsOverviewWidget in app/Filament/Widgets/ con tre Stat (percentuale marca, famiglia, sottofamiglia valorizzate) calcolate con query aggregate su Product; gestisce il caso 0 prodotti senza divisione per zero.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Test CatalogCoverageWidget
+    description: Feature test con Livewire::test() che verifica le percentuali calcolate con prodotti factory (con/senza brand_id, family_id, subfamily_id) e il caso limite di catalogo vuoto.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Creare EnrichmentStatusWidget
+    description: Widget StatsOverviewWidget che enumera dinamicamente i valori distinti di enrichment_status presenti su Product con il relativo conteggio (group by), senza assumere un set fisso di stati.
+    type: Impl
+    status: TODO
+  - id: TASK-04
+    title: Test EnrichmentStatusWidget
+    description: Feature test che verifica il conteggio corretto per stato con prodotti factory in stati misti (pending, enriched, needs_review, done) e il caso di un solo stato presente.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: Creare InactiveProductsWidget
+    description: Widget StatsOverviewWidget con singolo Stat che conta i prodotti con is_active=false.
+    type: Impl
+    status: TODO
+  - id: TASK-06
+    title: Test InactiveProductsWidget
+    description: Feature test che verifica il conteggio con prodotti attivi e inattivi misti.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Creare AiCostWidget
+    description: Widget StatsOverviewWidget che individua il gruppo di EnrichmentLog con created_at massimo (ultimo batch inserito), somma tokens_in/tokens_out per model, e usa AiSpendGuard::estimateCost() per calcolare il costo stimato in USD mostrato come Stat.
+    type: Impl
+    status: TODO
+  - id: TASK-08
+    title: Test AiCostWidget
+    description: Feature test che crea EnrichmentLog di due batch distinti (created_at diversi) e verifica che solo l'ultimo batch venga sommato nel costo mostrato, incluso il caso senza alcun log (0 costo, nessun errore).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-07
+  - id: TASK-09
+    title: Abilitare polling sui quattro widget
+    description: Aggiungere getPollingInterval() (15s) a ciascun widget per l'aggiornamento automatico via Livewire wire:poll, soddisfacendo AC5 (nessun reload di pagina).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-03
+      - TASK-05
+      - TASK-07
+  - id: TASK-10
+    title: Registrare i widget sulla Dashboard admin
+    description: Verificare/estendere AdminPanelProvider affinché i quattro widget siano montati sulla Dashboard di default (discoverWidgets già configurato; aggiungere test di integrazione che la pagina /admin monta tutti i widget senza errori per un utente autenticato).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-09
+  - id: TASK-11
+    title: 'E2E Dusk: dashboard di copertura'
+    description: Test Dusk che effettua login admin, apre /admin, verifica la presenza e i valori dei quattro widget con dati seed noti, e salva screenshot per-step in docs/test-results/US-025/ seguendo la convenzione di tests/Browser/BrandAliasManagementTest.php.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
