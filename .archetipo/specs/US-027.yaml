@@ -6,7 +6,7 @@ epic:
   title: Comandi e Scheduling
 priority: LOW
 points: 2
-status: TODO
+status: PLANNED
 blocked_by:
   - US-026
 scope: Growth
