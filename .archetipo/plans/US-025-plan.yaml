@@ -32,71 +32,82 @@ tasks:
     title: Creare CatalogCoverageWidget
     description: Widget StatsOverviewWidget in app/Filament/Widgets/ con tre Stat (percentuale marca, famiglia, sottofamiglia valorizzate) calcolate con query aggregate su Product; gestisce il caso 0 prodotti senza divisione per zero.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Test CatalogCoverageWidget
     description: Feature test con Livewire::test() che verifica le percentuali calcolate con prodotti factory (con/senza brand_id, family_id, subfamily_id) e il caso limite di catalogo vuoto.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Creare EnrichmentStatusWidget
     description: Widget StatsOverviewWidget che enumera dinamicamente i valori distinti di enrichment_status presenti su Product con il relativo conteggio (group by), senza assumere un set fisso di stati.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-03
   - id: TASK-04
     title: Test EnrichmentStatusWidget
     description: Feature test che verifica il conteggio corretto per stato con prodotti factory in stati misti (pending, enriched, needs_review, done) e il caso di un solo stato presente.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Creare InactiveProductsWidget
     description: Widget StatsOverviewWidget con singolo Stat che conta i prodotti con is_active=false.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-05
   - id: TASK-06
     title: Test InactiveProductsWidget
     description: Feature test che verifica il conteggio con prodotti attivi e inattivi misti.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Creare AiCostWidget
     description: Widget StatsOverviewWidget che individua il gruppo di EnrichmentLog con created_at massimo (ultimo batch inserito), somma tokens_in/tokens_out per model, e usa AiSpendGuard::estimateCost() per calcolare il costo stimato in USD mostrato come Stat.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-07
   - id: TASK-08
     title: Test AiCostWidget
     description: Feature test che crea EnrichmentLog di due batch distinti (created_at diversi) e verifica che solo l'ultimo batch venga sommato nel costo mostrato, incluso il caso senza alcun log (0 costo, nessun errore).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-08
   - id: TASK-09
     title: Abilitare polling sui quattro widget
     description: Aggiungere getPollingInterval() (15s) a ciascun widget per l'aggiornamento automatico via Livewire wire:poll, soddisfacendo AC5 (nessun reload di pagina).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-03
       - TASK-05
       - TASK-07
+    ref: TASK-09
   - id: TASK-10
     title: Registrare i widget sulla Dashboard admin
     description: Verificare/estendere AdminPanelProvider affinché i quattro widget siano montati sulla Dashboard di default (discoverWidgets già configurato; aggiungere test di integrazione che la pagina /admin monta tutti i widget senza errori per un utente autenticato).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-09
+    ref: TASK-10
   - id: TASK-11
     title: 'E2E Dusk: dashboard di copertura'
     description: Test Dusk che effettua login admin, apre /admin, verifica la presenza e i valori dei quattro widget con dati seed noti, e salva screenshot per-step in docs/test-results/US-025/ seguendo la convenzione di tests/Browser/BrandAliasManagementTest.php.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-10
+    ref: TASK-11

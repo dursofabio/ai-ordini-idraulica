@@ -6,7 +6,7 @@ epic:
   title: Backoffice Filament
 priority: MEDIUM
 points: 3
-status: PLANNED
+status: REVIEW
 scope: MVP
 body: |-
   #### US-025: Dashboard widget copertura catalogo e costi AI
