@@ -54,40 +54,46 @@ tasks:
     title: Creare lo scheletro di ImportBatchResource in sola lettura
     description: Nuova risorsa app/Filament/Resources/ImportBatches/ImportBatchResource.php sul model ImportBatch, navigationGroup 'Import', navigationLabel 'Storico Import', icona OutlinedQueueList. canCreate()/canEdit()/canDelete() a false, getPages() con solo 'index' e 'view'.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Implementare ImportBatchesTable
     description: 'Tables/ImportBatchesTable.php: colonne filename, status (badge colorato), total_rows, rows_new, rows_updated, error_rows (badge danger se >0), skipped_rows, started_at, finished_at; defaultSort(''created_at'',''desc''); SelectFilter su status con i case di ImportBatchStatus; nessuna azione riga/bulk di modifica o eliminazione.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Test feature sulla lista dei batch
     description: 'tests/Feature/ImportBatchResourceTableTest.php: ordinamento per più recente, stato colonne sui contatori, badge colore per stato, filtro per stato, assenza di azioni Create/Edit/Delete.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Implementare ImportBatchInfolist
     description: 'Schemas/ImportBatchInfolist.php: TextEntry per tutti i contatori e i timestamp del batch, entry error_rows con badge danger quando >0 (altrimenti gray), esposto tramite ImportBatchResource::infolist().'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-04
   - id: TASK-05
     title: Implementare le pagine ListImportBatches e ViewImportBatch
     description: Pages/ListImportBatches.php e Pages/ViewImportBatch.php, wiring standard Filament (nessuna EditAction/DeleteAction negli header della pagina di dettaglio).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Test feature sul dettaglio del batch
     description: 'tests/Feature/ImportBatchResourceViewTest.php: assertSchemaStateSet su tutti i contatori/timestamp, caso error_rows>0 con enfasi badge danger, caso error_rows=0 senza enfasi, assenza di azione Edit nella pagina.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06

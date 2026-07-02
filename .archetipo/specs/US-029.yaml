@@ -6,7 +6,7 @@ epic:
   title: Backoffice Filament
 priority: HIGH
 points: 3
-status: TODO
+status: REVIEW
 body: |-
   #### US-029: Risorsa Filament per il dettaglio dei batch di import
 
