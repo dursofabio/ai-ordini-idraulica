@@ -90,6 +90,22 @@ class CatalogEnrichCommandTest extends TestCase
         );
     }
 
+    public function test_skip_ai_runs_step_a_only_and_never_queues_step_b(): void
+    {
+        Product::factory()->create([
+            'description_raw' => 'ARTICOLO GENERICO SENZA MARCA NOTA',
+            'description_clean' => null,
+            'enrichment_status' => 'pending',
+            'brand_id' => null,
+        ]);
+
+        $this->artisan('catalog:enrich', ['--skip-ai' => true])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Step B (classificazione AI) saltato per via di --skip-ai.');
+
+        Queue::assertNotPushed(ClassifyProductsBatchJob::class);
+    }
+
     public function test_fails_with_an_unsupported_only_value(): void
     {
         $this->artisan('catalog:enrich', ['--only' => 'all'])

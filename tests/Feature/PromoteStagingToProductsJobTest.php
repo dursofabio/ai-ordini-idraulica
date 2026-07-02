@@ -127,6 +127,90 @@ class PromoteStagingToProductsJobTest extends TestCase
         $this->assertTrue($product->is_active);
     }
 
+    public function test_new_product_is_promoted_with_raw_taxonomy_columns_from_staging_row(): void
+    {
+        $batch = $this->enrichingBatch();
+
+        StagingArticolo::factory()->create([
+            'import_batch_id' => $batch->id,
+            'codice_articolo' => 'ART-RAW1',
+            'descrizione' => 'Tubo rame 18mm',
+            'costo' => 12.5,
+            'giacenza' => 40,
+            'raw_row' => [
+                'codice_articolo' => 'ART-RAW1',
+                'descrizione' => 'Tubo rame 18mm',
+                'costo_un_1' => 12.5,
+                'giac_att_1' => 40,
+                'marca' => '01',
+                'descrizione_marca' => 'WAVIN ITALIA SPA',
+                'fam' => '12',
+                'descrizione_fam' => 'TUBI',
+                's_fam' => 'RAC',
+                'descrizione_s_fam' => 'RACCORDI',
+            ],
+        ]);
+
+        PromoteStagingToProductsJob::dispatchSync($batch);
+
+        $product = Product::where('codice_articolo', 'ART-RAW1')->firstOrFail();
+
+        $this->assertSame('01', $product->marca_codice);
+        $this->assertSame('WAVIN ITALIA SPA', $product->descrizione_marca);
+        $this->assertSame('12', $product->fam_codice);
+        $this->assertSame('TUBI', $product->fam_descrizione);
+        $this->assertSame('RAC', $product->subfam_codice);
+        $this->assertSame('RACCORDI', $product->subfam_descrizione);
+    }
+
+    public function test_update_with_unchanged_description_still_refreshes_raw_taxonomy_columns(): void
+    {
+        $batch = $this->enrichingBatch();
+
+        Product::factory()->create([
+            'codice_articolo' => 'ART-RAW2',
+            'description_raw' => 'Tubo rame 18mm',
+            'enrichment_status' => 'enriched',
+            'costo' => 5,
+            'giacenza' => 5,
+            'is_active' => true,
+            'marca_codice' => null,
+            'fam_codice' => null,
+        ]);
+
+        StagingArticolo::factory()->create([
+            'import_batch_id' => $batch->id,
+            'codice_articolo' => 'ART-RAW2',
+            'descrizione' => 'Tubo rame 18mm',
+            'costo' => 20,
+            'giacenza' => 100,
+            'raw_row' => [
+                'codice_articolo' => 'ART-RAW2',
+                'descrizione' => 'Tubo rame 18mm',
+                'costo_un_1' => 20,
+                'giac_att_1' => 100,
+                'marca' => '01',
+                'descrizione_marca' => 'WAVIN ITALIA SPA',
+                'fam' => '12',
+                'descrizione_fam' => 'TUBI',
+                's_fam' => 'RAC',
+                'descrizione_s_fam' => 'RACCORDI',
+            ],
+        ]);
+
+        PromoteStagingToProductsJob::dispatchSync($batch);
+
+        $product = Product::where('codice_articolo', 'ART-RAW2')->firstOrFail();
+
+        $this->assertSame('enriched', $product->enrichment_status);
+        $this->assertSame('01', $product->marca_codice);
+        $this->assertSame('WAVIN ITALIA SPA', $product->descrizione_marca);
+        $this->assertSame('12', $product->fam_codice);
+        $this->assertSame('TUBI', $product->fam_descrizione);
+        $this->assertSame('RAC', $product->subfam_codice);
+        $this->assertSame('RACCORDI', $product->subfam_descrizione);
+    }
+
     public function test_is_active_matrix_from_costo_and_giacenza(): void
     {
         $cases = [

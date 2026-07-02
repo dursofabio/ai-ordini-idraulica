@@ -55,78 +55,89 @@ tasks:
     title: 'Migrazione: colonne raw taxonomy su products'
     description: Aggiungere a products le colonne nullable marca_codice, fam_codice, fam_descrizione, subfam_codice, subfam_descrizione (descrizione_marca esiste già ma è orfana).
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Aggiornare ProductCatalogSchemaTest
     description: Estendere l'elenco delle colonne attese di products con le nuove colonne raw taxonomy introdotte da TASK-01.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Propagare i valori grezzi in PromoteStagingToProductsJob
     description: Estrarre marca/descrizione_marca/fam/descrizione_fam/s_fam/descrizione_s_fam da $row->raw_row e includerli nell'upsert (rami newOrChanged e unchanged, incluse le colonne da aggiornare).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Test di promozione dei valori grezzi
     description: Estendere PromoteStagingToProductsJobTest per verificare che le colonne raw taxonomy siano popolate sia per un prodotto nuovo sia per un aggiornamento con descrizione invariata.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Creare FileTaxonomyResolver
     description: Nuovo resolver in app/Services/Enrichment/ che risolve brand_id/family_id/subfamily_id da marca_codice|descrizione_marca, fam_codice|fam_descrizione, subfam_codice|subfam_descrizione tramite TaxonomyCatalog, impostando *_source='file' (e confidence=100 per la marca) solo quando il campo è ancora null e il valore corrisponde a una voce esistente.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: Test unitari FileTaxonomyResolver
     description: 'Coprire: match per codice, match per etichetta, nessun match, sottofamiglia scoped alla famiglia della riga, non sovrascrittura di valori già presenti.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Integrare FileTaxonomyResolver nella pipeline deterministica
     description: Invocare FileTaxonomyResolver per primo in DeterministicEnrichmentPipeline::run(), prima di BrandResolver/AttributeResolver/GroupingResolver/FamilyPropagationResolver, ed estendere l'array di summary con i nuovi contatori.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-07
   - id: TASK-08
     title: Test di ordinamento della pipeline
     description: 'Estendere DeterministicEnrichmentPipelineTest: un prodotto con marca di riga già in tassonomia riceve brand_source=''file'' anche quando la descrizione conterrebbe un match testuale valido, e il clustering usa comunque il brand risolto da file.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-08
   - id: TASK-09
     title: Proteggere i campi 'file' dalla sovrascrittura AI
     description: Estendere i guard in EnrichmentApplier::resolvedAttributes() da '!== manual' a '!== manual && !== file' per brand_source/family_source/subfamily_source.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-09
   - id: TASK-10
     title: Test di non sovrascrittura AI per source 'file'
     description: Estendere EnrichmentApplierTest con un caso analogo al test 'manual' esistente ma con *_source='file'.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-09
+    ref: TASK-10
   - id: TASK-11
     title: Regressione e formattazione
     description: Eseguire la suite completa dei test toccati (PromoteStagingToProductsJobTest, FileTaxonomyResolverTest, DeterministicEnrichmentPipelineTest, EnrichmentApplierTest, CatalogSeedTaxonomyCommandTest, ProductCatalogSchemaTest) e vendor/bin/sail bin pint --dirty --format agent sui file modificati.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
       - TASK-04
       - TASK-06
       - TASK-08
       - TASK-10
+    ref: TASK-11

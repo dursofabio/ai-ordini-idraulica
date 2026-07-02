@@ -4,7 +4,9 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\ProductBases\Pages\EditProductBase;
 use App\Filament\Resources\ProductBases\Pages\ListProductBases;
+use App\Filament\Resources\ProductBases\RelationManagers\ProductsRelationManager;
 use App\Jobs\GenerateProductBaseEmbeddingJob;
+use App\Models\Product;
 use App\Models\ProductBase;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -107,5 +109,50 @@ class ProductBaseResourceTest extends TestCase
             GenerateProductBaseEmbeddingJob::class,
             static fn (GenerateProductBaseEmbeddingJob $job): bool => $job->productBaseId === $productBase->id,
         );
+    }
+
+    public function test_list_table_shows_products_count(): void
+    {
+        $admin = User::factory()->create();
+        $productBase = ProductBase::factory()->create();
+        Product::factory()->count(3)->create(['product_base_id' => $productBase->id]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ListProductBases::class)
+            ->assertTableColumnStateSet('products_count', 3, $productBase);
+    }
+
+    public function test_list_table_can_be_sorted_by_title(): void
+    {
+        $admin = User::factory()->create();
+        $productBase1 = ProductBase::factory()->create(['title' => 'Zeta']);
+        $productBase2 = ProductBase::factory()->create(['title' => 'Alpha']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ListProductBases::class)
+            ->sortTable('title')
+            ->assertCanSeeTableRecords([$productBase2, $productBase1], inOrder: true)
+            ->sortTable('title', 'desc')
+            ->assertCanSeeTableRecords([$productBase1, $productBase2], inOrder: true);
+    }
+
+    public function test_edit_page_renders_products_relation_manager(): void
+    {
+        $admin = User::factory()->create();
+        $productBase = ProductBase::factory()->create();
+        $products = Product::factory()->count(2)->create(['product_base_id' => $productBase->id]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(EditProductBase::class, ['record' => $productBase->getRouteKey()])
+            ->assertSeeLivewire(ProductsRelationManager::class);
+
+        Livewire::test(ProductsRelationManager::class, [
+            'ownerRecord' => $productBase,
+            'pageClass' => EditProductBase::class,
+        ])
+            ->assertCanSeeTableRecords($products);
     }
 }

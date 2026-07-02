@@ -33,8 +33,8 @@ class TaxonomyCatalog
     private ?Collection $subfamilies = null;
 
     /**
-     * Whether the given brand name matches an existing brand's name or slug,
-     * case-insensitively.
+     * Whether the given brand name matches an existing brand's name, slug,
+     * or alias, case-insensitively.
      */
     public function isValidBrand(string $name): bool
     {
@@ -42,8 +42,8 @@ class TaxonomyCatalog
     }
 
     /**
-     * Whether the given family name matches an existing family's name or
-     * slug, case-insensitively.
+     * Whether the given family name matches an existing family's name,
+     * slug, or alias, case-insensitively.
      */
     public function isValidFamily(string $name): bool
     {
@@ -51,9 +51,10 @@ class TaxonomyCatalog
     }
 
     /**
-     * Whether the given subfamily name matches an existing subfamily's name
-     * or slug, case-insensitively. When `$familyName` is provided, the match
-     * is additionally scoped to subfamilies belonging to that family.
+     * Whether the given subfamily name matches an existing subfamily's name,
+     * slug, or alias, case-insensitively. When `$familyName` is provided,
+     * the match is additionally scoped to subfamilies belonging to that
+     * family.
      */
     public function isValidSubfamily(string $name, ?string $familyName = null): bool
     {
@@ -73,7 +74,7 @@ class TaxonomyCatalog
     }
 
     /**
-     * Find the existing brand matching the given name or slug,
+     * Find the existing brand matching the given name, slug, or alias,
      * case-insensitively.
      */
     public function findBrand(string $name): ?Brand
@@ -82,7 +83,7 @@ class TaxonomyCatalog
     }
 
     /**
-     * Find the existing family matching the given name or slug,
+     * Find the existing family matching the given name, slug, or alias,
      * case-insensitively.
      */
     public function findFamily(string $name): ?Family
@@ -91,7 +92,7 @@ class TaxonomyCatalog
     }
 
     /**
-     * Find the existing subfamily matching the given name or slug,
+     * Find the existing subfamily matching the given name, slug, or alias,
      * case-insensitively. When `$familyName` is provided, the lookup is
      * additionally scoped to subfamilies belonging to that family.
      */
@@ -139,7 +140,7 @@ class TaxonomyCatalog
      */
     private function brands(): Collection
     {
-        return $this->brands ??= Brand::all(['id', 'name', 'slug']);
+        return $this->brands ??= Brand::all(['id', 'name', 'slug', 'aliases']);
     }
 
     /**
@@ -147,7 +148,7 @@ class TaxonomyCatalog
      */
     private function families(): Collection
     {
-        return $this->families ??= Family::all(['id', 'name', 'slug']);
+        return $this->families ??= Family::all(['id', 'name', 'slug', 'aliases']);
     }
 
     /**
@@ -155,7 +156,7 @@ class TaxonomyCatalog
      */
     private function subfamilies(): Collection
     {
-        return $this->subfamilies ??= Subfamily::all(['id', 'name', 'slug', 'family_id']);
+        return $this->subfamilies ??= Subfamily::all(['id', 'name', 'slug', 'family_id', 'aliases']);
     }
 
     /**
@@ -167,6 +168,12 @@ class TaxonomyCatalog
     }
 
     /**
+     * Matches against `name` and `slug` first, then falls back to `aliases`
+     * (US-032): `catalog:seed-taxonomy` stores the raw ERP code — e.g. a
+     * two-digit brand code, a short family code — as an alias rather than as
+     * `name`/`slug`, so a code-based lookup only succeeds once aliases are
+     * considered too.
+     *
      * @template TModel of Brand|Family|Subfamily
      *
      * @param  Collection<int, TModel>  $items
@@ -177,7 +184,19 @@ class TaxonomyCatalog
         return $items->first(
             fn (Brand|Family|Subfamily $item): bool => $this->sameToken($item->name, $name)
                 || $this->sameToken($item->slug, $name)
+                || $this->matchesAlias($item, $name)
         );
+    }
+
+    private function matchesAlias(Brand|Family|Subfamily $item, string $name): bool
+    {
+        foreach ($item->aliases ?? [] as $alias) {
+            if ($this->sameToken($alias, $name)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function sameToken(string $a, string $b): bool

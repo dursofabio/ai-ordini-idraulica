@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\ImportXlsxJob;
 use App\Jobs\PromoteStagingToProductsJob;
+use App\Jobs\SeedTaxonomyFromStagingJob;
 use App\Models\Product;
 use App\Models\StagingArticolo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -14,7 +15,8 @@ use Tests\TestCase;
 
 /**
  * US-007/US-008 acceptance criteria — catalog:import wires the job chain:
- *  - A valid file creates a batch and chains ImportXlsxJob -> PromoteStagingToProductsJob.
+ *  - A valid file creates a batch and chains ImportXlsxJob ->
+ *    SeedTaxonomyFromStagingJob -> PromoteStagingToProductsJob.
  *  - Run end to end (sync), the command populates staging_articoli AND products.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
@@ -56,6 +58,7 @@ class CatalogImportDispatchTest extends TestCase
         // own.
         Bus::assertChained([
             ImportXlsxJob::class,
+            SeedTaxonomyFromStagingJob::class,
             PromoteStagingToProductsJob::class,
         ]);
 
@@ -65,7 +68,8 @@ class CatalogImportDispatchTest extends TestCase
     public function test_command_populates_staging_end_to_end(): void
     {
         // No Bus::fake(): the sync connection runs the whole chain inline
-        // (ImportXlsxJob then PromoteStagingToProductsJob).
+        // (ImportXlsxJob, then SeedTaxonomyFromStagingJob, then
+        // PromoteStagingToProductsJob).
         $path = $this->makeXlsx();
 
         $this->artisan('catalog:import', ['path' => $path])->assertSuccessful();

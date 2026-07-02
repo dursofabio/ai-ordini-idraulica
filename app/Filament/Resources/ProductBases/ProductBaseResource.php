@@ -4,6 +4,7 @@ namespace App\Filament\Resources\ProductBases;
 
 use App\Filament\Resources\ProductBases\Pages\EditProductBase;
 use App\Filament\Resources\ProductBases\Pages\ListProductBases;
+use App\Filament\Resources\ProductBases\RelationManagers\ProductsRelationManager;
 use App\Filament\Resources\ProductBases\Schemas\ProductBaseForm;
 use App\Filament\Resources\ProductBases\Tables\ProductBasesTable;
 use App\Models\ProductBase;
@@ -50,7 +51,7 @@ class ProductBaseResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            ProductsRelationManager::class,
         ];
     }
 

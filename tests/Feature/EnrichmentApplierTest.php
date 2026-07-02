@@ -145,6 +145,41 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame(90, $fresh->confidence);
     }
 
+    public function test_file_brand_source_is_never_overwritten_but_other_fields_and_status_still_update(): void
+    {
+        $fileBrand = Brand::factory()->create(['name' => 'Hansgrohe']);
+        $aiBrand = Brand::factory()->create(['name' => 'Grohe']);
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+
+        $product = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'brand_id' => $fileBrand->id,
+            'brand_source' => 'file',
+        ]);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'Grohe',
+            family: 'Rubinetteria',
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: 90,
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertSame($fileBrand->id, $fresh->brand_id);
+        $this->assertSame('file', $fresh->brand_source);
+        $this->assertNotSame($aiBrand->id, $fresh->brand_id);
+        $this->assertSame($family->id, $fresh->family_id);
+        $this->assertSame('ai', $fresh->family_source);
+        $this->assertSame('enriched', $fresh->enrichment_status);
+        $this->assertSame('ai', $fresh->source);
+        $this->assertSame(90, $fresh->confidence);
+    }
+
     public function test_ai_value_not_present_in_taxonomy_is_ignored_without_exception(): void
     {
         $product = Product::factory()->create(['enrichment_status' => 'pending']);

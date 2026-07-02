@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Filament\Pages\ImportCatalog;
 use App\Jobs\ImportXlsxJob;
 use App\Jobs\PromoteStagingToProductsJob;
+use App\Jobs\SeedTaxonomyFromStagingJob;
 use App\Models\ImportBatch;
 use App\Models\User;
 use App\Services\ImportBatchService;
@@ -21,7 +22,8 @@ use Throwable;
 /**
  * US-024 acceptance criteria for the "Importa Catalogo" upload action:
  *  - AC1: uploading a valid XLSX creates an ImportBatch and starts the same
- *    job chain used by `catalog:import` (ImportXlsxJob -> PromoteStagingToProductsJob).
+ *    job chain used by `catalog:import` (ImportXlsxJob ->
+ *    SeedTaxonomyFromStagingJob -> PromoteStagingToProductsJob).
  *  - AC4: a file whose hash was already completed is rejected with a warning
  *    notification and no new batch is created; a non-XLSX/unreadable file
  *    is rejected with a danger notification and no unhandled exception.
@@ -77,6 +79,7 @@ class ImportCatalogUploadActionTest extends TestCase
 
         Bus::assertChained([
             ImportXlsxJob::class,
+            SeedTaxonomyFromStagingJob::class,
             PromoteStagingToProductsJob::class,
         ]);
     }

@@ -6,6 +6,7 @@ use App\Enums\ImportBatchStatus;
 use App\Exceptions\DuplicateImportException;
 use App\Jobs\ImportXlsxJob;
 use App\Jobs\PromoteStagingToProductsJob;
+use App\Jobs\SeedTaxonomyFromStagingJob;
 use App\Models\ImportBatch;
 use App\Services\ImportBatchService;
 use Illuminate\Console\Command;
@@ -61,6 +62,7 @@ class CatalogImportCommand extends Command
         try {
             Bus::chain([
                 new ImportXlsxJob($batch, (string) realpath($path)),
+                new SeedTaxonomyFromStagingJob($batch),
                 new PromoteStagingToProductsJob($batch),
             ])->dispatch();
         } catch (Throwable $e) {

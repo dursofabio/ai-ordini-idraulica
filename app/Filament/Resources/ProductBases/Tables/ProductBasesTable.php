@@ -19,16 +19,26 @@ class ProductBasesTable
             ->columns([
                 TextColumn::make('title')
                     ->label('Titolo')
-                    ->searchable(),
+                    ->searchable()
+                    ->sortable(),
                 TextColumn::make('brand.name')
-                    ->label('Marca'),
+                    ->label('Marca')
+                    ->sortable(),
                 TextColumn::make('family.name')
-                    ->label('Famiglia'),
+                    ->label('Famiglia')
+                    ->sortable(),
                 TextColumn::make('subfamily.name')
-                    ->label('Sottofamiglia'),
+                    ->label('Sottofamiglia')
+                    ->sortable(),
+                TextColumn::make('products_count')
+                    ->label('Prodotti')
+                    ->counts('products')
+                    ->badge()
+                    ->sortable(),
                 TextColumn::make('description_ai')
                     ->label('Descrizione AI')
                     ->limit(60)
+                    ->sortable()
                     ->tooltip(function (TextColumn $column): ?string {
                         $state = $column->getState();
 

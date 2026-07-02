@@ -2,10 +2,12 @@
 
 namespace App\Jobs;
 
+use App\Console\Commands\CatalogSeedTaxonomyCommand;
 use App\Enums\ImportBatchStatus;
 use App\Models\ImportBatch;
 use App\Models\Product;
 use App\Models\StagingArticolo;
+use App\Services\Enrichment\FileTaxonomyResolver;
 use App\Services\ImportBatchService;
 use Filament\Notifications\Notification;
 use Illuminate\Bus\Queueable;
@@ -43,6 +45,19 @@ class PromoteStagingToProductsJob implements ShouldQueue
      * Number of staging rows read per chunk.
      */
     public const CHUNK_SIZE = 1000;
+
+    /**
+     * Raw taxonomy columns copied verbatim from `staging_articoli.raw_row`
+     * (US-032), in upsert-column order.
+     */
+    public const RAW_TAXONOMY_COLUMNS = [
+        'marca_codice',
+        'descrizione_marca',
+        'fam_codice',
+        'fam_descrizione',
+        'subfam_codice',
+        'subfam_descrizione',
+    ];
 
     /**
      * Upsert jobs are heavy but resumable per batch only as a whole: run once.
@@ -84,6 +99,7 @@ class PromoteStagingToProductsJob implements ShouldQueue
                 foreach ($chunk as $row) {
                     $product = $existing->get($row->codice_articolo);
                     $isActive = self::computeIsActive($row->costo, $row->giacenza);
+                    $rawTaxonomy = self::extractRawTaxonomy($row->raw_row);
 
                     if ($product === null) {
                         $rowsNew++;
@@ -91,6 +107,7 @@ class PromoteStagingToProductsJob implements ShouldQueue
                         $newOrChanged[] = [
                             'codice_articolo' => $row->codice_articolo,
                             'description_raw' => $row->descrizione,
+                            ...$rawTaxonomy,
                             'costo' => $row->costo ?? 0,
                             'giacenza' => $row->giacenza ?? 0,
                             'is_active' => $isActive,
@@ -108,6 +125,7 @@ class PromoteStagingToProductsJob implements ShouldQueue
                         $newOrChanged[] = [
                             'codice_articolo' => $row->codice_articolo,
                             'description_raw' => $row->descrizione,
+                            ...$rawTaxonomy,
                             'costo' => $row->costo ?? 0,
                             'giacenza' => $row->giacenza ?? 0,
                             'is_active' => $isActive,
@@ -122,6 +140,7 @@ class PromoteStagingToProductsJob implements ShouldQueue
                     $unchanged[] = [
                         'codice_articolo' => $row->codice_articolo,
                         'description_raw' => $product->description_raw,
+                        ...$rawTaxonomy,
                         'costo' => $row->costo ?? 0,
                         'giacenza' => $row->giacenza ?? 0,
                         'is_active' => $isActive,
@@ -135,7 +154,10 @@ class PromoteStagingToProductsJob implements ShouldQueue
                     DB::table('products')->upsert(
                         $newOrChanged,
                         ['codice_articolo'],
-                        ['description_raw', 'costo', 'giacenza', 'is_active', 'enrichment_status', 'updated_at'],
+                        [
+                            'description_raw', ...self::RAW_TAXONOMY_COLUMNS,
+                            'costo', 'giacenza', 'is_active', 'enrichment_status', 'updated_at',
+                        ],
                     );
                 }
 
@@ -143,7 +165,7 @@ class PromoteStagingToProductsJob implements ShouldQueue
                     DB::table('products')->upsert(
                         $unchanged,
                         ['codice_articolo'],
-                        ['costo', 'giacenza', 'is_active', 'updated_at'],
+                        [...self::RAW_TAXONOMY_COLUMNS, 'costo', 'giacenza', 'is_active', 'updated_at'],
                     );
                 }
             });
@@ -203,5 +225,35 @@ class PromoteStagingToProductsJob implements ShouldQueue
     private static function sameDescription(?string $existing, ?string $incoming): bool
     {
         return trim((string) $existing) === trim((string) $incoming);
+    }
+
+    /**
+     * Pulls the raw Marca/Fam/S.Fam code and label values out of the staging
+     * row's `raw_row` (same keys as {@see CatalogSeedTaxonomyCommand}),
+     * so {@see FileTaxonomyResolver} can match them
+     * against the taxonomy directly from the promoted `products` row.
+     *
+     * @param  array<string, mixed>|null  $rawRow
+     * @return array<string, string|null>
+     */
+    private static function extractRawTaxonomy(?array $rawRow): array
+    {
+        $raw = $rawRow ?? [];
+
+        return [
+            'marca_codice' => self::stringOrNull($raw['marca'] ?? null),
+            'descrizione_marca' => self::stringOrNull($raw['descrizione_marca'] ?? null),
+            'fam_codice' => self::stringOrNull($raw['fam'] ?? null),
+            'fam_descrizione' => self::stringOrNull($raw['descrizione_fam'] ?? null),
+            'subfam_codice' => self::stringOrNull($raw['s_fam'] ?? null),
+            'subfam_descrizione' => self::stringOrNull($raw['descrizione_s_fam'] ?? null),
+        ];
+    }
+
+    private static function stringOrNull(mixed $value): ?string
+    {
+        $value = is_scalar($value) ? trim((string) $value) : '';
+
+        return $value === '' ? null : $value;
     }
 }

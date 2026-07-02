@@ -12,7 +12,10 @@ use Throwable;
  * Runs the deterministic Step A resolvers (via
  * {@see DeterministicEnrichmentPipeline}) synchronously over every pending
  * product, then dispatches Step B AI classification for whatever remains
- * unresolved (via {@see ClassificationBatchDispatcher}).
+ * unresolved (via {@see ClassificationBatchDispatcher}) — unless `--skip-ai`
+ * is passed, in which case Step B is never queued, so the deterministic
+ * result (file link, brand/attribute/grouping/family) can be inspected on
+ * its own without incurring any AI classification cost.
  *
  * `--only=pending` is the sole supported filter for MVP: it is accepted as a
  * no-op (the command already scopes to pending products by definition) so the
@@ -28,7 +31,9 @@ class CatalogEnrichCommand extends Command
     /**
      * @var string
      */
-    protected $signature = 'catalog:enrich {--only= : Filtra i prodotti da arricchire (solo "pending" è supportato)}';
+    protected $signature = 'catalog:enrich
+        {--only= : Filtra i prodotti da arricchire (solo "pending" è supportato)}
+        {--skip-ai : Esegue solo lo Step A deterministico, senza accodare la classificazione AI (Step B)}';
 
     /**
      * @var string
@@ -46,15 +51,30 @@ class CatalogEnrichCommand extends Command
         }
 
         try {
-            [$processed, $brandsResolved, $attributesWritten, $groupsResolved, $familiesPropagated] = $this->runStepA($pipeline);
+            $summary = $this->runStepA($pipeline);
         } catch (Throwable $e) {
             $this->error("Errore durante l'arricchimento deterministico: {$e->getMessage()}");
 
             return self::FAILURE;
         }
 
-        if ($processed === 0) {
+        if ($summary['processed'] === 0) {
             $this->info('Nessun prodotto in stato "pending" da arricchire.');
+
+            return self::SUCCESS;
+        }
+
+        $this->info("Prodotti processati (Step A): {$summary['processed']}");
+        $this->line("  Marche collegate da file: {$summary['brands_linked_from_file']}");
+        $this->line("  Famiglie collegate da file: {$summary['families_linked_from_file']}");
+        $this->line("  Sottofamiglie collegate da file: {$summary['subfamilies_linked_from_file']}");
+        $this->line("  Brand risolti (testuale): {$summary['brands_resolved']}");
+        $this->line("  Attributi scritti: {$summary['attributes_written']}");
+        $this->line("  Gruppi (product_base) risolti: {$summary['groups_resolved']}");
+        $this->line("  Famiglie propagate: {$summary['families_propagated']}");
+
+        if ($this->option('skip-ai')) {
+            $this->info('Step B (classificazione AI) saltato per via di --skip-ai.');
 
             return self::SUCCESS;
         }
@@ -67,43 +87,43 @@ class CatalogEnrichCommand extends Command
             return self::FAILURE;
         }
 
-        $this->info("Prodotti processati (Step A): {$processed}");
-        $this->line("  Brand risolti: {$brandsResolved}");
-        $this->line("  Attributi scritti: {$attributesWritten}");
-        $this->line("  Gruppi (product_base) risolti: {$groupsResolved}");
-        $this->line("  Famiglie propagate: {$familiesPropagated}");
         $this->info("Job di classificazione AI accodati (Step B): {$jobsQueued}");
 
         return self::SUCCESS;
     }
 
     /**
-     * @return array{0: int, 1: int, 2: int, 3: int, 4: int}
+     * @return array{processed: int, brands_linked_from_file: int, families_linked_from_file: int, subfamilies_linked_from_file: int, brands_resolved: int, attributes_written: int, groups_resolved: int, families_propagated: int}
      */
     private function runStepA(DeterministicEnrichmentPipeline $pipeline): array
     {
-        $processed = 0;
-        $brandsResolved = 0;
-        $attributesWritten = 0;
-        $groupsResolved = 0;
-        $familiesPropagated = 0;
+        $totals = [
+            'processed' => 0,
+            'brands_linked_from_file' => 0,
+            'families_linked_from_file' => 0,
+            'subfamilies_linked_from_file' => 0,
+            'brands_resolved' => 0,
+            'attributes_written' => 0,
+            'groups_resolved' => 0,
+            'families_propagated' => 0,
+        ];
 
         Product::query()
             ->where('enrichment_status', 'pending')
             ->orderBy('id')
-            ->chunkById(self::CHUNK_SIZE, function ($chunk) use ($pipeline, &$processed, &$brandsResolved, &$attributesWritten, &$groupsResolved, &$familiesPropagated): void {
+            ->chunkById(self::CHUNK_SIZE, function ($chunk) use ($pipeline, &$totals): void {
                 /** @var Product $product */
                 foreach ($chunk as $product) {
                     $summary = $pipeline->run($product);
 
-                    $processed++;
-                    $brandsResolved += $summary['brands_resolved'];
-                    $attributesWritten += $summary['attributes_written'];
-                    $groupsResolved += $summary['groups_resolved'];
-                    $familiesPropagated += $summary['families_propagated'];
+                    $totals['processed']++;
+
+                    foreach ($summary as $key => $value) {
+                        $totals[$key] += $value;
+                    }
                 }
             });
 
-        return [$processed, $brandsResolved, $attributesWritten, $groupsResolved, $familiesPropagated];
+        return $totals;
     }
 }

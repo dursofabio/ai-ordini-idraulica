@@ -19,7 +19,8 @@ use App\Services\Ai\TaxonomyCatalog;
  * Brand/family/subfamily are resolved against the closed taxonomy via
  * {@see TaxonomyCatalog}; values that don't resolve to an existing record
  * are ignored rather than raising an exception. A field already carrying
- * `*_source = 'manual'` is never overwritten, regardless of confidence.
+ * `*_source = 'manual'` or `*_source = 'file'` (US-032) is never
+ * overwritten, regardless of confidence.
  */
 class EnrichmentApplier
 {
@@ -69,7 +70,7 @@ class EnrichmentApplier
     {
         $attributes = [];
 
-        if ($product->brand_source !== 'manual' && $result->brand !== null) {
+        if ($product->brand_source !== 'manual' && $product->brand_source !== 'file' && $result->brand !== null) {
             $brand = $taxonomy->findBrand($result->brand);
 
             if ($brand !== null) {
@@ -78,7 +79,7 @@ class EnrichmentApplier
             }
         }
 
-        if ($product->family_source !== 'manual' && $result->family !== null) {
+        if ($product->family_source !== 'manual' && $product->family_source !== 'file' && $result->family !== null) {
             $family = $taxonomy->findFamily($result->family);
 
             if ($family !== null) {
@@ -87,7 +88,7 @@ class EnrichmentApplier
             }
         }
 
-        if ($product->subfamily_source !== 'manual' && $result->subfamily !== null) {
+        if ($product->subfamily_source !== 'manual' && $product->subfamily_source !== 'file' && $result->subfamily !== null) {
             $subfamily = $taxonomy->findSubfamily($result->subfamily, $result->family);
 
             if ($subfamily !== null) {

@@ -14,7 +14,9 @@ use Tests\TestCase;
  * US-014 acceptance criteria — closed-vocabulary taxonomy validation:
  *  - Only brands/families/subfamilies already present in the database are
  *    considered valid.
- *  - Matching is case-insensitive against both name and slug.
+ *  - Matching is case-insensitive against name, slug, and alias (US-032:
+ *    `catalog:seed-taxonomy` stores the raw ERP code as an alias, so a
+ *    code-based lookup must also resolve through it).
  *  - Any value not present in the catalog is rejected.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
@@ -41,6 +43,25 @@ class TaxonomyCatalogTest extends TestCase
         $catalog = new TaxonomyCatalog;
 
         $this->assertTrue($catalog->isValidBrand('grohe-it'));
+    }
+
+    public function test_recognises_existing_brand_by_alias(): void
+    {
+        Brand::factory()->create(['name' => 'Wavin Italia Spa', 'slug' => 'wavin-italia-spa', 'aliases' => ['01', 'WAVIN']]);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertTrue($catalog->isValidBrand('01'));
+        $this->assertTrue($catalog->isValidBrand('wavin'));
+    }
+
+    public function test_find_brand_returns_matching_model_by_alias(): void
+    {
+        $brand = Brand::factory()->create(['name' => 'Wavin Italia Spa', 'slug' => 'wavin-italia-spa', 'aliases' => ['01', 'WAVIN']]);
+
+        $catalog = new TaxonomyCatalog;
+
+        $this->assertTrue($catalog->findBrand('01')->is($brand));
     }
 
     public function test_rejects_brand_not_present_in_catalog(): void

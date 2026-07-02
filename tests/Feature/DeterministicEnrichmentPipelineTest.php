@@ -6,10 +6,12 @@ use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductBase;
+use App\Services\Ai\TaxonomyCatalog;
 use App\Services\Enrichment\AttributeResolver;
 use App\Services\Enrichment\BrandResolver;
 use App\Services\Enrichment\DeterministicEnrichmentPipeline;
 use App\Services\Enrichment\FamilyPropagationResolver;
+use App\Services\Enrichment\FileTaxonomyResolver;
 use App\Services\Enrichment\GroupingResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
@@ -34,6 +36,7 @@ class DeterministicEnrichmentPipelineTest extends TestCase
     private function pipeline(): DeterministicEnrichmentPipeline
     {
         return new DeterministicEnrichmentPipeline(
+            new FileTaxonomyResolver(new TaxonomyCatalog),
             new BrandResolver,
             new AttributeResolver,
             new GroupingResolver,
@@ -100,6 +103,36 @@ class DeterministicEnrichmentPipelineTest extends TestCase
         $this->assertSame($family->id, $product->family_id);
         $this->assertSame('propagated', $product->family_source);
         $this->assertGreaterThan(0, $summary['families_propagated']);
+    }
+
+    public function test_file_taxonomy_link_wins_over_textual_brand_deduction_and_still_feeds_grouping(): void
+    {
+        $fileBrand = Brand::factory()->create(['name' => 'WAVIN', 'slug' => 'wavin']);
+        Brand::factory()->create(['name' => 'Vaillant', 'aliases' => ['VAI']]);
+
+        $product = Product::factory()->create([
+            // Contains a valid inline textual match for "Vaillant" (via the
+            // "VAI" alias), so a plain BrandResolver run would pick it —
+            // the row's marca_codice must win instead.
+            'description_raw' => 'TUBO VAI 20MM PPR',
+            'description_clean' => null,
+            'marca_codice' => 'WAVIN',
+            'descrizione_marca' => null,
+            'enrichment_status' => 'pending',
+            'brand_id' => null,
+            'product_base_id' => null,
+        ]);
+
+        $summary = $this->pipeline()->run($product);
+
+        $product->refresh();
+        $this->assertSame($fileBrand->id, $product->brand_id);
+        $this->assertSame('file', $product->brand_source);
+        $this->assertSame(1, $summary['brands_linked_from_file']);
+        $this->assertSame(0, $summary['brands_resolved'], 'BrandResolver must no-op once the file has already linked a brand.');
+
+        $this->assertNotNull($product->product_base_id, 'Grouping must still run using the brand linked from file.');
+        $this->assertSame($fileBrand->id, $product->productBase->brand_id);
     }
 
     public function test_is_a_noop_for_a_product_that_is_not_pending(): void

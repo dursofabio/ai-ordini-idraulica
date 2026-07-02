@@ -5,6 +5,7 @@ namespace App\Filament\Pages;
 use App\Exceptions\DuplicateImportException;
 use App\Jobs\ImportXlsxJob;
 use App\Jobs\PromoteStagingToProductsJob;
+use App\Jobs\SeedTaxonomyFromStagingJob;
 use App\Models\ImportBatch;
 use App\Services\ImportBatchService;
 use BackedEnum;
@@ -30,8 +31,9 @@ use InvalidArgumentException;
  * reachable via `catalog:import` on the command line (US-007/US-008). The
  * page uploads the file, starts the same job chain the console command uses
  * (`ImportBatchService::startImport()` -> `ImportXlsxJob` ->
- * `PromoteStagingToProductsJob`), and surfaces progress through a polling
- * table of `ImportBatch` records. No import business logic lives here.
+ * `SeedTaxonomyFromStagingJob` -> `PromoteStagingToProductsJob`), and
+ * surfaces progress through a polling table of `ImportBatch` records. No
+ * import business logic lives here.
  */
 class ImportCatalog extends Page implements HasActions, HasSchemas, HasTable
 {
@@ -145,6 +147,7 @@ class ImportCatalog extends Page implements HasActions, HasSchemas, HasTable
 
                 Bus::chain([
                     new ImportXlsxJob($batch, $path),
+                    new SeedTaxonomyFromStagingJob($batch),
                     new PromoteStagingToProductsJob($batch),
                 ])->dispatch();
 

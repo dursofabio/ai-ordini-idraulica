@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Exceptions\DuplicateImportException;
 use App\Jobs\ImportXlsxJob;
 use App\Jobs\PromoteStagingToProductsJob;
+use App\Jobs\SeedTaxonomyFromStagingJob;
 use App\Services\ImportBatchService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Bus;
@@ -58,6 +59,7 @@ class CatalogImportIfChangedCommand extends Command
 
         Bus::chain([
             new ImportXlsxJob($batch, (string) realpath($path)),
+            new SeedTaxonomyFromStagingJob($batch),
             new PromoteStagingToProductsJob($batch),
         ])->dispatch();
 
