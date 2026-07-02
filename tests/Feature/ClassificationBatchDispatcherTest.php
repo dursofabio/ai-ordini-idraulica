@@ -98,4 +98,25 @@ class ClassificationBatchDispatcherTest extends TestCase
 
         Queue::assertNotPushed(ClassifyProductsBatchJob::class);
     }
+
+    public function test_all_jobs_from_one_dispatch_call_share_the_same_run_id(): void
+    {
+        Queue::fake();
+
+        Product::factory()->count(85)->create([
+            'enrichment_status' => 'pending',
+            'brand_id' => null,
+        ]);
+
+        (new ClassificationBatchDispatcher)->dispatch();
+
+        $pushed = Queue::pushed(ClassifyProductsBatchJob::class);
+
+        $this->assertGreaterThan(1, $pushed->count(), 'Expected multiple batches to be dispatched.');
+
+        $runIds = $pushed->map(fn (ClassifyProductsBatchJob $job): string => $job->runId)->unique();
+
+        $this->assertCount(1, $runIds, 'All jobs from the same dispatch() call must share the same runId.');
+        $this->assertNotSame('', $runIds->first());
+    }
 }

@@ -6,7 +6,7 @@ epic:
   title: Arricchimento AI
 priority: MEDIUM
 points: 2
-status: PLANNED
+status: REVIEW
 blocked_by:
   - US-015
 scope: MVP

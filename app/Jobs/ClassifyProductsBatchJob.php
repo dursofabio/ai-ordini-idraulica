@@ -11,7 +11,10 @@ use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\ClaudeClient;
 use App\Services\Ai\TaxonomyCatalog;
 use App\Services\Ai\ValidatedClassification;
+use App\Services\Enrichment\AiSpendGuard;
+use App\Services\Enrichment\ClassificationBatchDispatcher;
 use App\Services\Enrichment\EnrichmentApplier;
+use App\Services\Enrichment\EnrichmentCache;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -20,6 +23,8 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection as SupportCollection;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Classifies a batch of products (brand, family, subfamily, product type,
@@ -27,16 +32,23 @@ use Illuminate\Support\Collection as SupportCollection;
  * model for the bulk call and escalating to the smart model per-product
  * when confidence is low.
  *
- * Flow: build one prompt for the whole batch → call model_fast → validate.
- * If validation fails, retry once with the same prompt/model; a second
- * failure marks every product in the batch `needs_review` and logs the
- * validation error per product, without throwing. On a valid response, any
- * result with confidence < {@see self::LOW_CONFIDENCE_THRESHOLD} is
- * re-classified individually with model_smart before logging. Each product
- * gets exactly one `enrichment_logs` row (step `ai_classification`) with the
- * batch's token usage divided evenly across its products. After logging,
- * {@see EnrichmentApplier} writes the classification result back onto the
- * product according to its confidence band (US-015).
+ * Flow: partition the batch into cache hits ({@see EnrichmentCache}) and
+ * cache misses (also deduplicated by `description_raw` hash within the
+ * batch) → build one prompt for the miss representatives → call model_fast
+ * → validate. If validation fails, retry once with the same prompt/model; a
+ * second failure marks every non-cached product in the batch `needs_review`
+ * and logs the validation error per product, without throwing. On a valid
+ * response, any result with confidence < {@see self::LOW_CONFIDENCE_THRESHOLD}
+ * is re-classified individually with model_smart before logging, and every
+ * new result is written back into {@see EnrichmentCache} so later batches or
+ * reimports with the same description skip the API call entirely (US-016).
+ * Each product gets exactly one `enrichment_logs` row (step
+ * `ai_classification`) with the batch's token usage divided evenly across
+ * its non-cached products. Before any call, {@see AiSpendGuard} is consulted
+ * against the run's configured cost cap; if already exceeded, no call is
+ * made and the event is logged (US-016). After logging, {@see EnrichmentApplier}
+ * writes the classification result back onto the product according to its
+ * confidence band (US-015).
  */
 class ClassifyProductsBatchJob implements ShouldQueue
 {
@@ -50,6 +62,13 @@ class ClassifyProductsBatchJob implements ShouldQueue
      * escalation to the smart model.
      */
     private const LOW_CONFIDENCE_THRESHOLD = 60;
+
+    /**
+     * Worst-case output tokens assumed when estimating the cost of a call
+     * before it is made, matching the `max_tokens` requested by
+     * {@see ClassificationPromptBuilder}.
+     */
+    private const MAX_TOKENS = 8192;
 
     public int $tries = 1;
 
@@ -70,6 +89,17 @@ class ClassifyProductsBatchJob implements ShouldQueue
     private array $escalatedModels = [];
 
     /**
+     * codice_articolo (of a duplicate, non-representative product) =>
+     * codice_articolo of the representative product that was actually sent
+     * to the AI for the same `description_raw` hash, so
+     * {@see self::logResults()} can replicate the representative's result
+     * onto every duplicate (US-016 AC4).
+     *
+     * @var array<string, string>
+     */
+    private array $representativeCodiceByDuplicate = [];
+
+    /**
      * Message of the most recent {@see InvalidClassificationResponseException}
      * caught during {@see self::classifyWithRetry()}, kept so the
      * `needs_review` audit log can record the actual rejection reason
@@ -78,11 +108,32 @@ class ClassifyProductsBatchJob implements ShouldQueue
     private ?string $lastValidationError = null;
 
     /**
+     * Whether the spend cap event has already been logged for this job
+     * instance, so a cap exceeded mid-escalation logs only once even though
+     * multiple per-product escalation calls could each observe the cap.
+     */
+    private bool $capExceededLogged = false;
+
+    /**
+     * Shared cost-tracking identifier for all jobs dispatched by the same
+     * {@see ClassificationBatchDispatcher} run. Set
+     * in the constructor body (rather than promoted with a default) because
+     * the default value — a freshly generated UUID — cannot be expressed as
+     * a constant constructor-promotion default.
+     */
+    public string $runId;
+
+    /**
      * @param  array<int, int>  $productIds
+     * @param  string|null  $runId  Defaults to a freshly generated UUID when
+     *                              omitted, so the job remains usable standalone (e.g. in tests)
+     *                              without a caller-supplied run.
      */
     public function __construct(
         public array $productIds,
+        ?string $runId = null,
     ) {
+        $this->runId = $runId ?? (string) Str::uuid();
         $this->onQueue('enrich');
     }
 
@@ -102,21 +153,178 @@ class ClassifyProductsBatchJob implements ShouldQueue
 
         $taxonomy = new TaxonomyCatalog;
         $modelFast = (string) config('services.anthropic.model_fast');
-        $expectedCodici = $products->pluck('codice_articolo');
+        $cache = new EnrichmentCache;
+        $spendGuard = new AiSpendGuard;
 
-        $validated = $this->classifyWithRetry($client, $promptBuilder, $validator, $products, $taxonomy, $modelFast, $expectedCodici);
+        [$cached, $toClassify, $notCached] = $this->partitionByCache($products, $cache);
+
+        // Apply cache hits immediately; nothing to classify for them.
+        $this->applyCachedResults($cached, $taxonomy, new EnrichmentApplier);
+
+        if ($toClassify->isEmpty()) {
+            return;
+        }
+
+        if ($spendGuard->capExceeded($this->runId)) {
+            // Worst-case estimate (MAX_TOKENS output) for this batch, logged
+            // alongside the already-spent/cap figures so the warning shows
+            // what this batch would have cost had it been allowed to run.
+            $estimatedCost = $spendGuard->estimateCost($modelFast, $this->promptInputTokenEstimate($toClassify), self::MAX_TOKENS);
+
+            $this->handleCapExceeded($notCached, $spendGuard, $estimatedCost);
+
+            return;
+        }
+
+        $expectedCodici = $toClassify->pluck('codice_articolo');
+
+        $validated = $this->classifyWithRetry($client, $promptBuilder, $validator, $toClassify, $taxonomy, $modelFast, $expectedCodici);
 
         if ($validated === null) {
-            $this->markNeedsReview($products, $this->lastValidationError ?? 'Risposta AI non valida dopo un retry.');
+            $this->markNeedsReview($notCached, $this->lastValidationError ?? 'Risposta AI non valida dopo un retry.');
 
             return;
         }
 
         [$classification, $tokensIn, $tokensOut] = $validated;
 
-        $this->escalateLowConfidenceResults($client, $promptBuilder, $validator, $products, $taxonomy, $classification);
+        $spendGuard->spend($this->runId, $spendGuard->estimateCost($modelFast, $tokensIn, $tokensOut));
 
-        $this->logResults($products, $classification, $taxonomy, $modelFast, $tokensIn, $tokensOut);
+        $this->escalateLowConfidenceResults($client, $promptBuilder, $validator, $toClassify, $taxonomy, $classification, $spendGuard);
+
+        $this->logResults($notCached, $toClassify->count(), $classification, $taxonomy, $modelFast, $tokensIn, $tokensOut, $cache);
+    }
+
+    /**
+     * Splits `$products` into cache hits (resolved via {@see EnrichmentCache}),
+     * the deduplicated representatives that still need classification (one
+     * per distinct `description_raw` hash within the batch, per US-016 AC4),
+     * and every non-cached product (representatives plus duplicates) for
+     * bookkeeping (audit logging, `needs_review` marking) that must cover
+     * duplicates too. Duplicate codici are recorded in
+     * {@see self::$representativeCodiceByDuplicate} so {@see self::logResults()}
+     * can replicate the representative's result onto them.
+     *
+     * @param  EloquentCollection<int, Product>  $products
+     * @return array{0: SupportCollection<int, array{product: Product, result: ClassifiedProduct}>, 1: EloquentCollection<int, Product>, 2: EloquentCollection<int, Product>}
+     */
+    private function partitionByCache(EloquentCollection $products, EnrichmentCache $cache): array
+    {
+        $cachedEntries = collect();
+        $toClassify = [];
+        $notCached = [];
+        $representativeByHash = [];
+
+        foreach ($products as $product) {
+            $cachedResult = $cache->get($product);
+
+            if ($cachedResult !== null) {
+                $cachedEntries->push(['product' => $product, 'result' => $this->rekeyed($cachedResult, $product)]);
+
+                continue;
+            }
+
+            $notCached[] = $product;
+
+            $hash = $this->descriptionHash($product);
+
+            if (! isset($representativeByHash[$hash])) {
+                $representativeByHash[$hash] = $product->codice_articolo;
+                $toClassify[] = $product;
+
+                continue;
+            }
+
+            // Another product in this batch already represents this
+            // description hash; skip sending this one to the AI and
+            // replicate the representative's result onto it once the
+            // classification completes (US-016 AC4).
+            $this->representativeCodiceByDuplicate[$product->codice_articolo] = $representativeByHash[$hash];
+        }
+
+        return [$cachedEntries, new EloquentCollection($toClassify), new EloquentCollection($notCached)];
+    }
+
+    /**
+     * Applies every cache-hit result directly, without calling the AI or
+     * writing a new `enrichment_logs` row (the result was already logged
+     * when it was first classified).
+     *
+     * @param  SupportCollection<int, array{product: Product, result: ClassifiedProduct}>  $cached
+     */
+    private function applyCachedResults(SupportCollection $cached, TaxonomyCatalog $taxonomy, EnrichmentApplier $applier): void
+    {
+        foreach ($cached as $entry) {
+            $applier->apply($entry['product'], $entry['result'], $taxonomy);
+        }
+    }
+
+    /**
+     * A cached {@see ClassifiedProduct} was stored under a different
+     * product's `codice_articolo`; rekey it to the current product so
+     * {@see EnrichmentApplier} and any downstream code see a consistent
+     * identity.
+     */
+    private function rekeyed(ClassifiedProduct $result, Product $product): ClassifiedProduct
+    {
+        if ($result->codiceArticolo === $product->codice_articolo) {
+            return $result;
+        }
+
+        return new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: $result->brand,
+            family: $result->family,
+            subfamily: $result->subfamily,
+            productType: $result->productType,
+            enrichedDescription: $result->enrichedDescription,
+            confidence: $result->confidence,
+        );
+    }
+
+    private function descriptionHash(Product $product): string
+    {
+        return hash('sha256', trim((string) $product->description_raw));
+    }
+
+    /**
+     * Rough worst-case input token estimate for a batch, used only for the
+     * pre-call spend check; real spend after the call uses the API's
+     * reported usage instead. One token ~= 4 characters is a coarse but
+     * conservative approximation of the prompt built by
+     * {@see ClassificationPromptBuilder}.
+     *
+     * @param  EloquentCollection<int, Product>  $products
+     */
+    private function promptInputTokenEstimate(EloquentCollection $products): int
+    {
+        $chars = $products->sum(fn (Product $product): int => strlen((string) ($product->description_clean ?? $product->description_raw)) + 64);
+
+        return (int) ceil($chars / 4);
+    }
+
+    /**
+     * Marks every product not resolved from cache as `needs_review` because
+     * the run's spend cap is already exceeded (or would be exceeded by this
+     * batch), without making any API call, and logs the event once per job
+     * instance.
+     *
+     * @param  EloquentCollection<int, Product>  $products
+     */
+    private function handleCapExceeded(EloquentCollection $products, AiSpendGuard $spendGuard, ?float $estimatedCost = null): void
+    {
+        $this->markNeedsReview($products, 'Tetto di spesa AI raggiunto per questo run.');
+
+        if (! $this->capExceededLogged) {
+            $this->capExceededLogged = true;
+
+            Log::warning('Tetto di spesa AI raggiunto: elaborazione interrotta', [
+                'run_id' => $this->runId,
+                'estimated_cost' => $estimatedCost,
+                'batch_cost_cap' => config('services.anthropic.batch_cost_cap'),
+                'remaining_budget' => $spendGuard->remainingBudget($this->runId),
+            ]);
+        }
     }
 
     /**
@@ -159,6 +367,9 @@ class ClassifyProductsBatchJob implements ShouldQueue
      * Re-classifies, one product at a time with the smart model, every
      * result whose confidence is below the escalation threshold, replacing
      * it in place within `$classification`'s underlying results collection.
+     * Re-checks the spend cap before each per-product call; once exceeded,
+     * remaining products keep their fast-model result and the cap event is
+     * logged exactly once (US-016).
      *
      * @param  EloquentCollection<int, Product>  $products
      */
@@ -169,6 +380,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         EloquentCollection $products,
         TaxonomyCatalog $taxonomy,
         ValidatedClassification $classification,
+        AiSpendGuard $spendGuard,
     ): void {
         $modelSmart = (string) config('services.anthropic.model_smart');
 
@@ -179,9 +391,26 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 continue;
             }
 
+            if ($spendGuard->capExceeded($this->runId)) {
+                if (! $this->capExceededLogged) {
+                    $this->capExceededLogged = true;
+
+                    Log::warning('Tetto di spesa AI raggiunto durante l\'escalation: prodotti rimanenti mantengono il risultato fast-model', [
+                        'run_id' => $this->runId,
+                        'estimated_cost' => null,
+                        'batch_cost_cap' => config('services.anthropic.batch_cost_cap'),
+                        'remaining_budget' => $spendGuard->remainingBudget($this->runId),
+                    ]);
+                }
+
+                break;
+            }
+
             $singleBatch = collect([$product]);
             $payload = $promptBuilder->build($singleBatch, $taxonomy, $modelSmart);
             $response = $client->messages($payload);
+
+            $spendGuard->spend($this->runId, $spendGuard->estimateCost($modelSmart, $response->tokensIn, $response->tokensOut));
 
             try {
                 $escalated = $validator->validate($response, collect([$product->codice_articolo]), $taxonomy);
@@ -199,24 +428,39 @@ class ClassifyProductsBatchJob implements ShouldQueue
     }
 
     /**
-     * Divides the batch's token usage evenly across its products via integer
-     * division: for counts that don't divide evenly, up to `$count - 1`
-     * tokens are dropped from the audit trail rather than attributed to any
-     * single product. Acceptable for the confidence/model audit purpose of
-     * `enrichment_logs`; revisit if exact per-product cost accounting is
-     * needed later.
+     * Divides the batch's token usage evenly across its distinct
+     * (deduplicated) representatives — `$representativeCount` — via integer
+     * division: for counts that don't divide evenly, up to
+     * `$representativeCount - 1` tokens are dropped from the audit trail
+     * rather than attributed to any single product. Acceptable for the
+     * confidence/model audit purpose of `enrichment_logs`; revisit if exact
+     * per-product cost accounting is needed later.
      *
-     * @param  EloquentCollection<int, Product>  $products
+     * `$notCached` covers every non-cached product in the batch, including
+     * duplicates that were never sent to the AI: a duplicate's result is
+     * resolved from its representative's entry in `$classification` via
+     * {@see self::resolveResult()}, so it gets the same brand/family/etc. and
+     * its own `enrichment_logs` row (US-016 AC4), but is not charged its own
+     * token share since no call was made for it.
+     *
+     * Every classified product's result — representatives and duplicates
+     * alike — is written into {@see EnrichmentCache} so later batches, jobs,
+     * or reimports sharing the same `description_raw` resolve from cache
+     * instead of calling the AI again (US-016).
+     *
+     * @param  EloquentCollection<int, Product>  $notCached
      */
     private function logResults(
-        EloquentCollection $products,
+        EloquentCollection $notCached,
+        int $representativeCount,
         ValidatedClassification $classification,
         TaxonomyCatalog $taxonomy,
         string $modelFast,
         int $batchTokensIn,
         int $batchTokensOut,
+        EnrichmentCache $cache,
     ): void {
-        $count = max($products->count(), 1);
+        $count = max($representativeCount, 1);
         $shareIn = intdiv($batchTokensIn, $count);
         $shareOut = intdiv($batchTokensOut, $count);
         $now = Carbon::now();
@@ -224,14 +468,23 @@ class ClassifyProductsBatchJob implements ShouldQueue
 
         $rows = [];
 
-        foreach ($products as $product) {
-            $result = $classification->for($product->codice_articolo);
+        foreach ($notCached as $product) {
+            [$result, $isDuplicate] = $this->resolveResult($product, $classification);
 
             if ($result === null) {
                 continue;
             }
 
-            $escalation = $this->escalatedModels[$product->codice_articolo] ?? null;
+            // A duplicate's model must reflect whichever model actually
+            // produced its (borrowed) result: look the escalation up under
+            // the representative's codice_articolo, not the duplicate's own
+            // (which never made its own API call and so is never a key in
+            // $escalatedModels). Token share is still 0 for duplicates since
+            // no call was made on their behalf.
+            $escalationCodice = $isDuplicate
+                ? ($this->representativeCodiceByDuplicate[$product->codice_articolo] ?? $product->codice_articolo)
+                : $product->codice_articolo;
+            $escalation = $this->escalatedModels[$escalationCodice] ?? null;
 
             $rows[] = [
                 'product_id' => $product->id,
@@ -240,18 +493,47 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 'output' => json_encode($this->resultToArray($result), JSON_UNESCAPED_UNICODE),
                 'confidence' => $result->confidence,
                 'model' => $escalation[0] ?? $modelFast,
-                'tokens_in' => $escalation[1] ?? $shareIn,
-                'tokens_out' => $escalation[2] ?? $shareOut,
+                'tokens_in' => $isDuplicate ? 0 : ($escalation[1] ?? $shareIn),
+                'tokens_out' => $isDuplicate ? 0 : ($escalation[2] ?? $shareOut),
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
 
             $applier->apply($product, $result, $taxonomy);
+            $cache->put($product, $result);
         }
 
         if ($rows !== []) {
             EnrichmentLog::query()->insert($rows);
         }
+    }
+
+    /**
+     * Resolves the classification result to apply to `$product`: its own
+     * entry in `$classification` when it was sent to the AI directly, or its
+     * representative's result (rekeyed to this product's codice_articolo)
+     * when it was deduplicated onto another product with the same
+     * `description_raw` (US-016 AC4).
+     *
+     * @return array{0: ClassifiedProduct|null, 1: bool} The result (or null
+     *                                                   if unresolvable) and whether it was borrowed from a representative.
+     */
+    private function resolveResult(Product $product, ValidatedClassification $classification): array
+    {
+        $direct = $classification->for($product->codice_articolo);
+
+        if ($direct !== null) {
+            return [$direct, false];
+        }
+
+        $representativeCodice = $this->representativeCodiceByDuplicate[$product->codice_articolo] ?? null;
+        $representativeResult = $representativeCodice !== null ? $classification->for($representativeCodice) : null;
+
+        if ($representativeResult === null) {
+            return [null, false];
+        }
+
+        return [$this->rekeyed($representativeResult, $product), true];
     }
 
     /**

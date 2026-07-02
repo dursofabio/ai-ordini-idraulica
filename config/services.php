@@ -45,6 +45,38 @@ return [
         'timeout' => env('ANTHROPIC_TIMEOUT', 120),
         'retry_times' => env('ANTHROPIC_RETRY_TIMES', 2),
         'retry_delay_ms' => env('ANTHROPIC_RETRY_DELAY_MS', 2000),
+
+        /*
+        |----------------------------------------------------------------
+        | Pricing, spend cap, and enrichment cache TTL
+        |----------------------------------------------------------------
+        |
+        | Per-model-role pricing (USD per million tokens) used by
+        | AiSpendGuard to estimate the cost of a classification batch
+        | before/after calling the API. Models are matched to their price
+        | by comparing the model name against `model_fast`/`model_smart`
+        | above, so a single price applies regardless of which concrete
+        | model string is configured for that role.
+        | `batch_cost_cap` is the maximum USD spend allowed per
+        | ClassificationBatchDispatcher run (shared across all jobs
+        | dispatched by that run); null disables the cap.
+        | `enrichment_cache_ttl` is the TTL in seconds for cached
+        | classification results keyed by description_raw hash; null means
+        | cached forever (no expiration).
+        |
+        */
+        'pricing' => [
+            'model_fast' => [
+                'input_per_million' => env('ANTHROPIC_PRICE_FAST_INPUT', 0.8),
+                'output_per_million' => env('ANTHROPIC_PRICE_FAST_OUTPUT', 4.0),
+            ],
+            'model_smart' => [
+                'input_per_million' => env('ANTHROPIC_PRICE_SMART_INPUT', 3.0),
+                'output_per_million' => env('ANTHROPIC_PRICE_SMART_OUTPUT', 15.0),
+            ],
+        ],
+        'batch_cost_cap' => env('ANTHROPIC_BATCH_COST_CAP'),
+        'enrichment_cache_ttl' => env('ANTHROPIC_ENRICHMENT_CACHE_TTL'),
     ],
 
     'embedding' => [

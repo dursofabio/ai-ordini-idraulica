@@ -8,10 +8,14 @@ use App\Models\EnrichmentLog;
 use App\Models\Product;
 use App\Services\Ai\ClassificationPromptBuilder;
 use App\Services\Ai\ClassificationResponseValidator;
+use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\ClaudeClient;
+use App\Services\Enrichment\AiSpendGuard;
+use App\Services\Enrichment\EnrichmentCache;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
@@ -47,6 +51,8 @@ class ClassifyProductsBatchJobTest extends TestCase
     {
         parent::setUp();
 
+        config()->set('cache.default', 'array');
+
         config()->set('services.anthropic', [
             'api_key' => 'test-api-key',
             'model' => 'claude-test-model',
@@ -57,6 +63,12 @@ class ClassifyProductsBatchJobTest extends TestCase
             'timeout' => 120,
             'retry_times' => 1,
             'retry_delay_ms' => 1,
+            'pricing' => [
+                'model_fast' => ['input_per_million' => 0.8, 'output_per_million' => 4.0],
+                'model_smart' => ['input_per_million' => 3.0, 'output_per_million' => 15.0],
+            ],
+            'batch_cost_cap' => null,
+            'enrichment_cache_ttl' => null,
         ]);
     }
 
@@ -274,6 +286,319 @@ class ClassifyProductsBatchJobTest extends TestCase
         $this->assertSame('needs_review', $fresh->enrichment_status);
         $this->assertNull($fresh->source);
         $this->assertNull($fresh->confidence);
+    }
+
+    public function test_product_with_precached_description_does_not_call_the_api(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $cachedProduct = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'description_raw' => 'Miscelatore da cucina Grohe cromato',
+        ]);
+
+        (new EnrichmentCache)->put($cachedProduct, new ClassifiedProduct(
+            codiceArticolo: $cachedProduct->codice_articolo,
+            brand: 'Grohe',
+            family: null,
+            subfamily: null,
+            productType: 'Miscelatore',
+            enrichedDescription: 'Descrizione arricchita cacheata',
+            confidence: 92,
+        ));
+
+        Http::fake();
+
+        (new ClassifyProductsBatchJob([$cachedProduct->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertNothingSent();
+
+        $fresh = $cachedProduct->fresh();
+        $this->assertNotNull($fresh->brand_id);
+        $this->assertSame('enriched', $fresh->enrichment_status);
+        $this->assertSame('ai', $fresh->source);
+        $this->assertSame(92, $fresh->confidence);
+    }
+
+    public function test_two_products_with_identical_description_in_the_same_batch_generate_one_call_and_share_the_result(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $sharedDescription = 'Valvola a sfera 1/2 pollice ottone';
+
+        $first = Product::factory()->create(['enrichment_status' => 'pending', 'description_raw' => $sharedDescription]);
+        $second = Product::factory()->create(['enrichment_status' => 'pending', 'description_raw' => $sharedDescription]);
+
+        Http::fake([
+            '*' => Http::response($this->anthropicBody(new EloquentCollection([$first]), confidence: 90)),
+        ]);
+
+        (new ClassifyProductsBatchJob([$first->id, $second->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertSentCount(1);
+
+        foreach ([$first, $second] as $product) {
+            $fresh = $product->fresh();
+            $this->assertNotNull($fresh->brand_id, "Product {$product->codice_articolo} should have been enriched.");
+            $this->assertSame('enriched', $fresh->enrichment_status);
+            $this->assertSame(90, $fresh->confidence);
+        }
+    }
+
+    public function test_duplicate_of_an_escalated_representative_logs_the_smart_model_it_actually_received(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $sharedDescription = 'Miscelatore monocomando lavabo bianco';
+
+        $representative = Product::factory()->create(['enrichment_status' => 'pending', 'description_raw' => $sharedDescription]);
+        $duplicate = Product::factory()->create(['enrichment_status' => 'pending', 'description_raw' => $sharedDescription]);
+
+        $batchBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [$this->resultFor($representative, confidence: 40)],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 100, 'output_tokens' => 40],
+        ];
+
+        $escalationBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [$this->resultFor($representative, confidence: 88)],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 30, 'output_tokens' => 10],
+        ];
+
+        Http::fake([
+            '*' => Http::sequence()
+                ->push($batchBody)
+                ->push($escalationBody),
+        ]);
+
+        (new ClassifyProductsBatchJob([$representative->id, $duplicate->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertSentCount(2);
+
+        // Both rows must report the smart model, since the duplicate's
+        // applied result was borrowed from the representative's escalated
+        // (smart-model) classification, not from the fast-model batch call.
+        $representativeLog = EnrichmentLog::query()->where('product_id', $representative->id)->first();
+        $this->assertNotNull($representativeLog);
+        $this->assertSame('claude-smart-test', $representativeLog->model);
+        $this->assertSame(88, $representativeLog->confidence);
+
+        $duplicateLog = EnrichmentLog::query()->where('product_id', $duplicate->id)->first();
+        $this->assertNotNull($duplicateLog);
+        $this->assertSame('claude-smart-test', $duplicateLog->model);
+        $this->assertSame(88, $duplicateLog->confidence);
+        $this->assertSame(0, $duplicateLog->tokens_in);
+        $this->assertSame(0, $duplicateLog->tokens_out);
+    }
+
+    public function test_batch_fully_resolved_from_cache_sends_no_http_request(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $products = Product::factory()->count(2)->create(['enrichment_status' => 'pending']);
+        $cache = new EnrichmentCache;
+
+        foreach ($products as $product) {
+            $cache->put($product, new ClassifiedProduct(
+                codiceArticolo: $product->codice_articolo,
+                brand: 'Grohe',
+                family: null,
+                subfamily: null,
+                productType: 'Miscelatore',
+                enrichedDescription: 'Descrizione arricchita cacheata',
+                confidence: 90,
+            ));
+        }
+
+        Http::fake();
+
+        (new ClassifyProductsBatchJob($products->pluck('id')->all()))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertNothingSent();
+    }
+
+    public function test_successful_classification_populates_cache_and_a_later_reimport_skips_the_api_call(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $originalProduct = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'description_raw' => 'Rubinetto a sfera 3/4 pollice',
+        ]);
+
+        // Simulate a reimport: a second product row with the same
+        // description_raw, created upfront (like the original) so both
+        // rows' ProductBase-creation side effects (embedding dispatch) run
+        // before Http::fake() is armed below and are not counted as
+        // classification calls.
+        $reimportedProduct = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'description_raw' => 'Rubinetto a sfera 3/4 pollice',
+        ]);
+
+        Http::fake([
+            '*' => Http::response($this->anthropicBody(new EloquentCollection([$originalProduct]), confidence: 90)),
+        ]);
+
+        (new ClassifyProductsBatchJob([$originalProduct->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertSentCount(1);
+
+        $cached = (new EnrichmentCache)->get($originalProduct->fresh());
+        $this->assertNotNull($cached);
+
+        (new ClassifyProductsBatchJob([$reimportedProduct->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        // Still only the one call made for the original product; the
+        // reimported product resolved entirely from cache.
+        Http::assertSentCount(1);
+
+        $fresh = $reimportedProduct->fresh();
+        $this->assertNotNull($fresh->brand_id);
+        $this->assertSame('enriched', $fresh->enrichment_status);
+    }
+
+    public function test_job_stops_and_logs_when_spend_cap_already_exceeded(): void
+    {
+        config()->set('services.anthropic.batch_cost_cap', 1.0);
+
+        $products = Product::factory()->count(2)->create(['enrichment_status' => 'pending']);
+        $job = new ClassifyProductsBatchJob($products->pluck('id')->all(), 'run-cap-exceeded');
+
+        (new AiSpendGuard)->spend('run-cap-exceeded', 5.0);
+
+        Http::fake();
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('Tetto di spesa AI raggiunto: elaborazione interrotta', \Mockery::on(
+                static fn (array $context): bool => $context['run_id'] === 'run-cap-exceeded'
+                    && $context['batch_cost_cap'] === 1.0
+            ));
+
+        $job->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertNothingSent();
+
+        foreach ($products as $product) {
+            $this->assertSame('needs_review', $product->fresh()->enrichment_status);
+        }
+    }
+
+    public function test_cap_exceeded_mid_escalation_keeps_fast_model_results_and_logs_once(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        // Pricing from setUp(): model_smart costs $3.0/$15.0 per million
+        // input/output tokens. Each escalation call below reports
+        // 1,000,000 in / 1,000,000 out => costs exactly $18.0. With the cap
+        // set to $18.0 and nothing else spent yet, the first escalation call
+        // is allowed (pre-call check passes at exactly-at-cap spend of 0)
+        // and its $18.0 spend then exactly reaches the cap, so the second
+        // escalation call's pre-call check sees capExceeded() = true and is
+        // skipped.
+        config()->set('services.anthropic.batch_cost_cap', 18.0);
+
+        $firstLowConfidence = Product::factory()->create(['enrichment_status' => 'pending']);
+        $secondLowConfidence = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $products = collect([$firstLowConfidence, $secondLowConfidence]);
+
+        $batchBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [
+                        $this->resultFor($firstLowConfidence, confidence: 40),
+                        $this->resultFor($secondLowConfidence, confidence: 45),
+                    ],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            // Negligible usage so the initial batch call itself does not
+            // make a dent in the $18.0 cap.
+            'usage' => ['input_tokens' => 10, 'output_tokens' => 10],
+        ];
+
+        $escalationBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [$this->resultFor($firstLowConfidence, confidence: 85)],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 1_000_000, 'output_tokens' => 1_000_000],
+        ];
+
+        Http::fake([
+            '*' => Http::sequence()
+                ->push($batchBody)
+                ->push($escalationBody),
+        ]);
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('Tetto di spesa AI raggiunto durante l\'escalation: prodotti rimanenti mantengono il risultato fast-model', \Mockery::type('array'));
+
+        (new ClassifyProductsBatchJob($products->pluck('id')->all(), 'run-cap-mid-escalation'))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        // Initial batch call + exactly one escalation call (for the first
+        // low-confidence product); the second low-confidence product's
+        // escalation is skipped because the cap was reached by the first
+        // escalation's recorded spend.
+        Http::assertSentCount(2);
+
+        $firstLog = EnrichmentLog::query()->where('product_id', $firstLowConfidence->id)->first();
+        $this->assertNotNull($firstLog);
+        $this->assertSame('claude-smart-test', $firstLog->model);
+        $this->assertSame(85, $firstLog->confidence);
+
+        // The second low-confidence product never got its escalation call,
+        // so it keeps its original fast-model result.
+        $secondLog = EnrichmentLog::query()->where('product_id', $secondLowConfidence->id)->first();
+        $this->assertNotNull($secondLog);
+        $this->assertSame('claude-fast-test', $secondLog->model);
+        $this->assertSame(45, $secondLog->confidence);
     }
 
     /**

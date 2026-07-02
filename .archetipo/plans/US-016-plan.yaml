@@ -109,89 +109,102 @@ tasks:
     title: Config pricing/cost cap/cache TTL per anthropic
     description: Estendere config/services.php nel blocco 'anthropic' con pricing (model_fast/model_smart, input_per_million/output_per_million, da env ANTHROPIC_PRICE_FAST_INPUT/ANTHROPIC_PRICE_FAST_OUTPUT/ANTHROPIC_PRICE_SMART_INPUT/ANTHROPIC_PRICE_SMART_OUTPUT), batch_cost_cap (env ANTHROPIC_BATCH_COST_CAP, default null) e enrichment_cache_ttl (env ANTHROPIC_ENRICHMENT_CACHE_TTL, default null = nessuna scadenza). Documentare tutte le nuove variabili in .env.example.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'EnrichmentCache: get/put per hash di description_raw'
     description: 'Creare App\Services\Enrichment\EnrichmentCache con get(Product $product): ?ClassifiedProduct e put(Product $product, ClassifiedProduct $result): void, chiave ''enrichment:classification:{sha256(trim(description_raw))}'' via facade Cache, TTL da config(''services.anthropic.enrichment_cache_ttl'') (null = Cache::rememberForever/forever, altrimenti Cache::remember/put con TTL).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'Test: EnrichmentCache hit/miss/dedup per hash'
     description: 'Feature test (store cache ''array'' in setUp) che verifica: put() seguito da get() sullo stesso description_raw ritorna lo stesso ClassifiedProduct; get() su descrizione mai cacheata ritorna null; due prodotti con description_raw identica condividono lo stesso hit; una modifica di description_raw produce un miss.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: 'AiSpendGuard: stima costo e contatore di spesa condiviso per run'
     description: 'Creare App\Services\Enrichment\AiSpendGuard con estimateCost(string $model, int $tokensIn, int $tokensOut): float (applica config(''services.anthropic.pricing'')), spend(string $runId, float $cost): float (incrementa atomicamente, via Cache::lock, il contatore ''enrichment:spend:{$runId}'' con TTL 24h e ritorna il totale), remainingBudget(string $runId): ?float e capExceeded(string $runId): bool basati su config(''services.anthropic.batch_cost_cap'') (null = nessun limite).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-04
   - id: TASK-05
     title: 'Test: AiSpendGuard stima, accumulo e verifica cap'
     description: 'Feature test (store cache ''array'') che verifica: estimateCost() calcola correttamente il costo per model_fast/model_smart dato il pricing configurato; spend() accumula correttamente su chiamate successive con lo stesso runId; remainingBudget()/capExceeded() rispettano un cap configurato e ritornano rispettivamente null/false quando batch_cost_cap non è configurato.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: 'ClassificationBatchDispatcher: generazione e propagazione di runId'
     description: Estendere ClassificationBatchDispatcher::dispatch() per generare un runId (Str::uuid()) condiviso da tutti i lotti dispatchati in quella chiamata, passandolo al costruttore di ogni ClassifyProductsBatchJob.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: ClassificationBatchDispatcher condivide lo stesso runId tra i job'
     description: Feature test con Queue::fake() che verifica che tutti i ClassifyProductsBatchJob dispatchati in una singola chiamata a dispatch() abbiano la stessa proprietà runId, ispezionata via Queue::assertPushed.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: 'ClassifyProductsBatchJob: parametro runId con fallback e consultazione cache prima della classificazione'
     description: Aggiungere il parametro (opzionale, con default Str::uuid() generato nel costruttore se assente) string $runId a ClassifyProductsBatchJob. In handle(), prima di costruire il prompt, partizionare $products in prodotti risolti da EnrichmentCache::get() (cache hit) e prodotti da classificare (miss), deduplicando anche per hash di description_raw all'interno dello stesso lotto (un solo rappresentante per hash inviato all'AI, risultato poi replicato su tutti i codici articolo che condividono l'hash). Se tutti i prodotti del lotto sono risolti da cache, nessuna chiamata HTTP viene effettuata.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-08
   - id: TASK-09
     title: 'Test: ClassifyProductsBatchJob evita chiamate API su cache hit e su descrizioni duplicate nello stesso lotto'
     description: 'Feature test con Http::fake() che verifica: (1) un prodotto con description_raw pre-cacheata non genera alcuna chiamata HTTP e produce comunque EnrichmentLog/applicazione EnrichmentApplier coerente col risultato cacheato; (2) un lotto con due prodotti a description_raw identica genera una sola chiamata HTTP e replica correttamente il risultato su entrambi (AC4); (3) un lotto interamente cacheato non genera alcuna chiamata HTTP (Http::assertNothingSent).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-09
   - id: TASK-10
     title: 'ClassifyProductsBatchJob: scrittura in cache dopo classificazione riuscita'
     description: Dopo classifyWithRetry() (e dopo ogni escalation al modello smart), scrivere ogni nuovo risultato valido in EnrichmentCache::put() prima del logging, cosi' i prodotti classificati in questo job popolano la cache per lotti/job/reimport successivi con la stessa description_raw.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-10
   - id: TASK-11
     title: 'Test: ClassifyProductsBatchJob popola la cache e un reimport successivo non richiama l''API'
     description: Feature test con Http::fake() che, dopo una classificazione riuscita, verifica che il risultato sia leggibile via EnrichmentCache::get() con lo stesso hash, poi istanzia ed esegue un secondo ClassifyProductsBatchJob per un nuovo prodotto con la stessa description_raw e verifica che Http::assertSentCount rimanga invariato (nessuna nuova chiamata AI), simulando un reimport di articoli invariati.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-10
+    ref: TASK-11
   - id: TASK-12
     title: 'ClassifyProductsBatchJob: verifica del tetto di spesa prima delle chiamate e blocco con logging'
     description: In handle(), prima di classifyWithRetry(), stimare il costo del lotto con AiSpendGuard::estimateCost() (worst-case su ClassificationPromptBuilder::MAX_TOKENS per tokensOut) e verificare AiSpendGuard::capExceeded($runId). Se il cap e' gia' superato, non effettuare alcuna chiamata, marcare i prodotti non risolti da cache 'needs_review' (riusando markNeedsReview() con messaggio dedicato) e loggare l'evento con Log::warning includendo run_id, costo stimato/speso e cap configurato. Dopo ogni chiamata effettivamente eseguita (lotto principale ed escalation), registrare la spesa reale (su token effettivi da ClaudeResponse) via AiSpendGuard::spend($runId, ...). In escalateLowConfidenceResults(), ricontrollare il cap prima di ciascuna chiamata smart-model per-prodotto; se superato a meta' escalation, i prodotti non ancora escalati mantengono il risultato fast-model e l'evento di cap raggiunto viene loggato una sola volta.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
       - TASK-08
+    ref: TASK-12
   - id: TASK-13
     title: 'Test: ClassifyProductsBatchJob si ferma e logga quando il tetto di spesa e'' raggiunto'
     description: 'Feature test con ANTHROPIC_BATCH_COST_CAP configurato e spesa pre-caricata in cache (via AiSpendGuard::spend) per il runId del job, oltre il cap, prima dell''esecuzione: verifica che il job non effettui alcuna chiamata HTTP (Http::assertNothingSent), marchi tutti i prodotti del lotto enrichment_status=''needs_review'', e che l''evento venga loggato (Log::shouldReceive(''warning'') con asserzione sul contenuto: costo stimato, cap). Test separato per il cap superato durante l''escalation: i prodotti successivi al superamento mantengono il risultato fast-model, l''evento viene loggato una sola volta.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-12
+    ref: TASK-13

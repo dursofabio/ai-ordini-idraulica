@@ -5,12 +5,17 @@ namespace App\Services\Enrichment;
 use App\Jobs\ClassifyProductsBatchJob;
 use App\Models\Product;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 /**
  * Selects the products still missing a brand or family and dispatches one
  * {@see ClassifyProductsBatchJob} per batch of 20-50 product IDs, so the
  * costly AI classification call is amortized across many products instead
  * of one call per product.
+ *
+ * All jobs dispatched by a single {@see self::dispatch()} call share one
+ * generated `runId`, so {@see AiSpendGuard} can
+ * track and cap AI spend across the whole run instead of per job (US-016).
  */
 class ClassificationBatchDispatcher
 {
@@ -48,9 +53,10 @@ class ClassificationBatchDispatcher
             ->pluck('id');
 
         $dispatched = 0;
+        $runId = (string) Str::uuid();
 
         foreach ($this->balancedBatches($ids, $targetBatchSize) as $batch) {
-            ClassifyProductsBatchJob::dispatch($batch);
+            ClassifyProductsBatchJob::dispatch($batch, $runId);
             $dispatched++;
         }
 
