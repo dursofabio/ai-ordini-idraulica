@@ -61,46 +61,53 @@ tasks:
     title: 'FamilyPropagationResolver: scheletro e calcolo del valore prevalente'
     description: 'Creare App\Services\Enrichment\FamilyPropagationResolver con resolve(ProductBase $productBase): int. Implementare il calcolo del family_id prevalente tra le varianti del gruppo (conteggio per valore non-null, tie-break sull''id più basso in caso di parità), come metodo privato riusabile e parametrizzabile per la stessa logica su subfamily_id.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: 'Test: calcolo del valore prevalente e tie-break deterministico'
     description: Feature test che verifica che il resolver identifichi correttamente il family_id con conteggio più alto tra le varianti del gruppo, e che in caso di parità di conteggio tra due valori distinti scelga sempre lo stesso (id più basso) in modo deterministico su più esecuzioni.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'FamilyPropagationResolver: propagazione a varianti con family_id null'
     description: Estendere il resolver per scrivere family_id = valore prevalente e family_source = 'propagated' su tutte le varianti del gruppo con family_id attualmente null, tramite update batch. Applicare la stessa logica, indipendente, per subfamily_id/subfamily_source. Ritornare il numero totale di varianti aggiornate.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: 'Test: demo della spec — propagazione su 3 varianti classificate e 1 no'
     description: 'Feature test dedicato alla demo della spec: un product_base con 4 varianti, 3 con lo stesso family_id valorizzato e 1 con family_id null. Dopo resolve(), la quarta variante riceve il family_id prevalente del gruppo e family_source = ''propagated''.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: 'Test: guardia contro la sovrascrittura di varianti già classificate'
     description: Feature test che verifica che una variante con family_id già valorizzato e family_source in 'file', 'ai' o 'manual' non venga mai alterata dal resolver, anche quando il suo valore differisce dal family_id prevalente del gruppo.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: 'Test: idempotenza e assenza di maggioranza'
     description: 'Feature test che verifica: (1) rieseguire resolve() sullo stesso product_base dopo una prima propagazione non altera ulteriormente le varianti (0 aggiornamenti al secondo run, stato invariato); (2) un gruppo in cui nessuna variante ha family_id valorizzato non produce alcuna scrittura.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-06
   - id: TASK-07
     title: 'Test: propagazione indipendente di subfamily rispetto a family'
     description: 'Feature test che verifica che family e subfamily vengano propagate in modo indipendente: un gruppo dove solo la subfamily ha un valore prevalente (la family non ha maggioranza decidibile) propaga correttamente solo subfamily_id/subfamily_source = ''propagated'', lasciando family_id invariato su tutte le varianti.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-07

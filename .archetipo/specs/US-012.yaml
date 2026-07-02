@@ -6,7 +6,7 @@ epic:
   title: Arricchimento Deterministico
 priority: MEDIUM
 points: 2
-status: PLANNED
+status: REVIEW
 blocked_by:
   - US-011
 scope: MVP
