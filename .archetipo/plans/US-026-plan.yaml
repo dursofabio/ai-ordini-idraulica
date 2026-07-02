@@ -25,49 +25,57 @@ tasks:
     title: Creare DeterministicEnrichmentPipeline (Step A)
     description: Nuovo App\Services\Enrichment\DeterministicEnrichmentPipeline che, dato un Product pending, invoca in sequenza BrandResolver, AttributeResolver, GroupingResolver e, se un product_base è stato assegnato, FamilyPropagationResolver sul ProductBase risultante. Ritorna un riepilogo conteggi (brand risolti, attributi scritti, gruppi creati).
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Test DeterministicEnrichmentPipeline
     description: Feature test che verifica l'ordine di esecuzione (brand prima di grouping), i conteggi restituiti, e che un product già non-pending o già arricchito venga ignorato.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Comando catalog:enrich {--only=pending}
     description: 'Nuovo App\Console\Commands\CatalogEnrichCommand: valida --only (solo ''pending'' o assente), itera i Product pending in chunk applicando DeterministicEnrichmentPipeline, poi dispatcha ClassificationBatchDispatcher::dispatch() per lo Step B. Stampa riepilogo (prodotti processati, brand risolti, job AI accodati) e gestisce errori con exit code non-zero.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Test catalog:enrich
     description: 'Feature test con Queue::fake(): Step A applicato sincronamente sui prodotti pending, ClassifyProductsBatchJob accodato solo per i residui privi di brand/family, --only con valore non supportato fallisce con FAILURE, catalogo vuoto termina con successo e messaggio esplicito.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Comando catalog:reindex
     description: 'Nuovo App\Console\Commands\CatalogReindexCommand: su Postgres esegue REINDEX INDEX (fallback non-CONCURRENTLY se necessario) su product_bases_search_vector_gin_idx; su altri driver (SQLite) ricalcola esplicitamente search_vector per ogni ProductBase in chunk da title+description_ai normalizzati. Gestisce errori con exit code non-zero e stampa il conteggio righe processate.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-05
   - id: TASK-06
     title: Test catalog:reindex
     description: Feature test (SQLite via RequiresDatabase) che verifica search_vector popolato correttamente dopo il comando e che un errore durante la query esca con FAILURE.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Opzione --wait e riepilogo finale su catalog:import
     description: 'Aggiungere l''opzione --wait a CatalogImportCommand: se presente, attende sincronamente (poll con timeout configurabile) il completamento del batch e stampa il riepilogo finale (totali, nuovi, aggiornati, saltati) da ImportBatch; senza l''opzione il comportamento asincrono attuale resta invariato con un messaggio che indica come consultare il riepilogo.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-07
   - id: TASK-08
     title: Test catalog:import --wait e regressione
     description: Feature test che verifica il riepilogo finale stampato con --wait (job eseguiti in modo sincrono nel test) e rieseguire CatalogImportCommandTest/CatalogEmbedCommandTest esistenti per confermare nessuna regressione.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-08
