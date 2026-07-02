@@ -4,7 +4,9 @@ namespace App\Filament\Resources\Products;
 
 use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\Pages\ListProducts;
+use App\Filament\Resources\Products\Pages\ViewProduct;
 use App\Filament\Resources\Products\Schemas\ProductForm;
+use App\Filament\Resources\Products\Schemas\ProductInfolist;
 use App\Filament\Resources\Products\Tables\ProductsTable;
 use App\Models\Product;
 use BackedEnum;
@@ -24,6 +26,11 @@ class ProductResource extends Resource
         return ProductForm::configure($schema);
     }
 
+    public static function infolist(Schema $schema): Schema
+    {
+        return ProductInfolist::configure($schema);
+    }
+
     public static function table(Table $table): Table
     {
         return ProductsTable::configure($table);
@@ -40,6 +47,7 @@ class ProductResource extends Resource
     {
         return [
             'index' => ListProducts::route('/'),
+            'view' => ViewProduct::route('/{record}'),
             'edit' => EditProduct::route('/{record}/edit'),
         ];
     }

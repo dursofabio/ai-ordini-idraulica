@@ -6,7 +6,7 @@ epic:
   title: Backoffice Filament
 priority: HIGH
 points: 3
-status: TODO
+status: REVIEW
 body: |-
   #### US-030: Vista di dettaglio prodotto con storico enrichment e stato embedding
 

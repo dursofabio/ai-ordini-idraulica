@@ -1,0 +1,99 @@
+schema: archetipo/plan/v2
+spec_code: US-030
+body: |-
+  # US-030: Vista di dettaglio prodotto con storico enrichment e stato embedding — Piano di Implementazione
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-02
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-007 — Backoffice Filament
+  **Priorità:** HIGH | **Punti:** 3
+
+  **User Story**
+  Come amministratore del catalogo, voglio aprire un prodotto e vedere lo storico di come è stato arricchito e se il suo prodotto-base ha un embedding generato, così da capire perché un prodotto ha un certo brand/famiglia/confidenza senza dover ispezionare `enrichment_logs` a mano.
+
+  **Criteri di Accettazione**
+  - Dalla lista prodotti è possibile aprire una pagina di visualizzazione dedicata per il singolo prodotto (non solo l'edit)
+  - La pagina mostra, in ordine cronologico, ogni riga di `enrichment_logs` collegata al prodotto: step, esito/confidenza, modello usato, token input/output quando presenti
+  - Se il prodotto non ha ancora voci di enrichment, la sezione mostra uno stato vuoto esplicito ("nessun arricchimento eseguito")
+  - La pagina mostra lo stato dell'embedding del prodotto-base collegato: presente (con modello e data generazione) oppure assente
+  - I campi con origine manuale (`*_source = 'manual'`) restano visivamente distinti come già avviene nella lista/form esistente
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Si introduce una pagina `ViewProduct` (prima `ViewRecord` di `ProductResource`, stesso pattern nativo Filament già pianificato per `ImportBatchResource` in US-029) con un `ProductInfolist` dedicato, esposto tramite `ProductResource::infolist()`. Nessuna migrazione: tutti i dati necessari sono già persistiti (`enrichment_logs` da US-013/US-014, `product_embeddings` da US-017).
+
+  - **Navigazione verso il dettaglio (AC1)**: aggiunta `ViewAction::make()` in `ProductsTable::configure()` accanto alla `EditAction` esistente; nuova route `'view' => ViewProduct::route('/{record}')` in `ProductResource::getPages()`. La pagina `EditProduct` resta invariata (nessuna modifica al flusso di modifica esistente).
+  - **Identità prodotto e distinzione manuale (AC5)**: sezione "Prodotto" nell'infolist con `codice_articolo`, `description_raw` e `brand`/`family`/`subfamily` come `TextEntry` badge, riusando esattamente la stessa logica di colore/icona (`info` + `Heroicon::OutlinedLockClosed` quando `*_source === 'manual'`, altrimenti `gray`/nessuna icona) già presente in `ProductsTable` — nessuna nuova convenzione visiva introdotta, coerenza con lista/form esistenti come richiesto dall'AC.
+  - **Storico enrichment (AC2/AC3)**: sezione "Storico Arricchimento" con `RepeatableEntry::make('enrichmentLogs')` in layout `->table([...])` (colonne: step, esito/confidenza, modello, token input, token output). L'ordine cronologico è garantito da uno `->state(fn (Product $record) => $record->enrichmentLogs()->orderBy('created_at')->get())` locale all'entry, senza toccare la relazione `Product::enrichmentLogs()` (usata invariata altrove, es. `VectorStagingAuditRelationsTest`, minimal disruption). Lo stato vuoto esplicito è un `TextEntry` placeholder ("Nessun arricchimento eseguito") con `->visible(fn (Product $record) => $record->enrichmentLogs->isEmpty())`, mentre il repeatable ha `->visible(fn (Product $record) => $record->enrichmentLogs->isNotEmpty())` — nessun componente custom, solo composizione di entry native.
+  - **Stato embedding (AC4)**: sezione "Stato Embedding" con un `TextEntry` badge derivato (`->state(fn (Product $record) => $record->productBase?->embedding ? 'Generato' : 'Assente')`, colore `success`/`gray`) più `TextEntry::make('productBase.embedding.model')` e `TextEntry::make('productBase.embedding.created_at')->dateTime()`, entrambi `->visible()` solo quando l'embedding esiste. L'accesso `productBase?->embedding` è null-safe sia per prodotti senza `product_base_id` sia per basi senza embedding generato, coprendo entrambi i casi "assente" dell'AC in un'unica condizione.
+
+  **Alternative scartate**: mockup dedicato (la pagina riusa componenti Filament nativi — Section/TextEntry/RepeatableEntry — e la stessa logica badge già stabilita in `ProductsTable`/`ProductForm`, nessuna interfaccia custom da progettare, stessa motivazione già adottata in US-021/US-025/US-029); ordinare cronologicamente modificando `Product::enrichmentLogs()` con un `orderBy` permanente sulla relazione (scartato per minimal disruption, altri consumer della relazione non hanno bisogno di un ordine specifico ed è più sicuro isolare l'ordinamento nell'entry che lo richiede).
+
+  ---
+
+  ## Strategia di Test
+
+  Test Feature con `Livewire::test()`, seguendo il pattern già usato in `ProductResourceTest`. Nessuna infrastruttura e2e richiesta: come già deciso per US-029 (stessa epica, stesso tipo di pagina), la spec aggiunge una vista di sola lettura su dati già coperti da test di dominio (`VectorStagingAuditRelationsTest`), non un nuovo flusso utente interattivo end-to-end — l'infrastruttura Dusk esistente nel progetto resta riservata ai flussi con interazione reale (es. `ProductManualBrandOverrideTest`).
+
+  - Navigazione: la lista prodotti espone l'azione di visualizzazione; la pagina `ViewProduct` carica correttamente (`assertOk`) per un prodotto esistente
+  - Storico enrichment: con più `EnrichmentLog` collegati a un prodotto, l'infolist mostra step/confidenza/modello/token nell'ordine cronologico corretto (`assertSchemaStateSet` sulla relazione ordinata); con zero log collegati, è visibile il messaggio di stato vuoto e il repeatable non è visibile
+  - Stato embedding: caso `ProductBase` con `ProductEmbedding` collegato (modello e data visibili), caso `ProductBase` senza embedding, caso `Product` senza `product_base_id` — tutti e tre devono risultare in stato "Assente" tranne il primo
+  - Distinzione manuale: `assertSchemaComponentExists()` con `checkComponentUsing` sull'entry brand/family per verificare colore `info`/icona lucchetto quando `*_source === 'manual'`, colore `gray`/nessuna icona altrimenti — stessa tecnica già usata in `ProductResourceTest::test_manual_brand_is_visually_distinct_in_table`, adattata da colonna tabella a entry infolist
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-02_
+tasks:
+  - id: TASK-01
+    title: Registrare la pagina ViewProduct e l'azione di navigazione
+    description: Creare app/Filament/Resources/Products/Pages/ViewProduct.php (estende ViewRecord), aggiungere la route 'view' in ProductResource::getPages() e ViewAction::make() in ProductsTable::configure() accanto a EditAction. Nessuna modifica a EditProduct/ListProducts esistenti.
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test feature sulla navigazione al dettaglio
+    description: 'tests/Feature/ProductResourceViewTest.php: la lista espone l''azione di visualizzazione, Livewire::test(ViewProduct::class, [''record'' => ...])->assertOk() per un prodotto esistente (AC1).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Implementare ProductInfolist — identità prodotto e stato embedding
+    description: Creare app/Filament/Resources/Products/Schemas/ProductInfolist.php con Section 'Prodotto' (codice_articolo, description_raw, brand/family/subfamily come TextEntry badge riusando colore/icona da ProductsTable per *_source = 'manual') e Section 'Stato Embedding' (badge Generato/Assente derivato da productBase?->embedding, model e data generazione quando presenti). Esporre via ProductResource::infolist().
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: Test feature su identità/manual badge e stato embedding
+    description: 'In ProductResourceViewTest.php: assertSchemaComponentExists con checkComponentUsing su colore/icona brand/family manuale vs AI (AC5); tre scenari stato embedding — presente con modello/data, ProductBase senza embedding, Product senza product_base_id (AC4).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Implementare la sezione Storico Arricchimento in ProductInfolist
+    description: Aggiungere Section 'Storico Arricchimento' con RepeatableEntry::make('enrichmentLogs')->table([...]) (step, esito/confidenza, modello, token input/output), state() che ordina la relazione per created_at senza modificare Product::enrichmentLogs(), e TextEntry placeholder 'Nessun arricchimento eseguito' visibile solo quando la collezione è vuota.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-05
+  - id: TASK-06
+    title: Test feature sullo storico enrichment
+    description: 'In ProductResourceViewTest.php: con più EnrichmentLog collegati, assertSchemaStateSet verifica ordine cronologico e campi (step/confidenza/modello/token) (AC2); con zero log collegati, verificato il messaggio di stato vuoto e l''assenza del repeatable (AC3).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
