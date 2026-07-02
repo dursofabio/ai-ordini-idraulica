@@ -1,0 +1,73 @@
+schema: archetipo/plan/v2
+spec_code: US-026
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  Due dei quattro comandi richiesti esistono già, realizzati sotto altre spec prima che US-026 fosse pianificata: `catalog:import {path}` (US-006/US-007, `App\Console\Commands\CatalogImportCommand`) e `catalog:embed --missing` (US-018, `App\Console\Commands\CatalogEmbedCommand`), entrambi già coperti da test (`CatalogImportCommandTest`, `CatalogEmbedCommandTest`) e già conformi all'AC1 e AC3. Il vero gap è: (a) `catalog:enrich {--only=pending}` non esiste, e i resolver deterministici (`BrandResolver`, `AttributeResolver`, `GroupingResolver`, `FamilyPropagationResolver`, tutti in `App\Services\Enrichment`) non sono orchestrati da nessun job/comando — restano servizi isolati, testati singolarmente ma mai invocati in pipeline; (b) `catalog:reindex` non esiste, mentre `product_bases.search_vector` è una colonna `tsvector` generata (`storedAs`) solo su Postgres (migration `2026_07_01_203240_add_search_vector_to_product_bases_table`), quindi normalmente si auto-mantiene, ma serve un comando di manutenzione per i casi in cui l'indice GIN va ricostruito o righe scritte fuori dal flusso Eloquent necessitano un refresh esplicito; (c) `catalog:import` oggi accoda i job in modo asincrono e non stampa un riepilogo con i totali finali (l'AC1 lo richiede esplicitamente); (d) nessuno dei quattro comandi ha una convenzione uniforme di gestione errori/exit code non-zero, da consolidare.
+
+  **Decisioni chiave**
+  1. **`catalog:enrich {--only=pending}` — nuovo comando + nuovo orchestratore `App\Services\Enrichment\DeterministicEnrichmentPipeline`**: incapsula la sequenza Step A (deterministica, sincrona, senza costo AI) sui `Product` con `enrichment_status = pending`: `BrandResolver::resolve()` → `AttributeResolver::resolve()` → `GroupingResolver::resolve()` (richiede brand risolto) → per ogni `ProductBase` toccato, `FamilyPropagationResolver::resolve()`. Il comando itera i prodotti pending in chunk (stesso pattern `chunk()` già usato in `PromoteStagingToProductsJob`/`CatalogSeedTaxonomyCommand`), applica la pipeline e conta quanti brand/attributi/gruppi sono stati risolti. Al termine dello Step A, dispatcha lo Step B chiamando `ClassificationBatchDispatcher::dispatch()` (già esistente, US-016/US-020), che seleziona autonomamente i prodotti ancora `pending` con brand/family mancante e accoda `ClassifyProductsBatchJob` a batch da 20-50. L'opzione `--only=pending` è l'unico valore supportato per MVP (come da AC), quindi il comando valida che sia assente o valorizzata a `pending` e fallisce con messaggio esplicito altrimenti, lasciando la strada aperta a valori futuri senza cambiare la firma.
+  2. **`catalog:reindex` — nuovo comando**: su Postgres esegue `REINDEX INDEX CONCURRENTLY` (fallback a `REINDEX INDEX` se `CONCURRENTLY` non è consentito dentro una transazione) su `product_bases_search_vector_gin_idx` per ricostruire l'indice GIN, poi un `UPDATE product_bases SET updated_at = updated_at` mirato solo alle righe il cui `search_vector` risulti `NULL` pur avendo `title`/`description_ai` valorizzati (edge case: righe scritte con `DB::table()->insert()` grezzo che bypassano il generated column solo se la colonna non fosse stata popolata al momento dell'insert — di norma Postgres la calcola sempre in scrittura, quindi questo passo è un no-op difensivo). Su driver non-Postgres (SQLite, usato nei test) `search_vector` è una colonna testo semplice non auto-calcolata: il comando ricalcola e scrive esplicitamente `strtoupper(trim(title.' '.description_ai))` per ogni riga in chunk, cosi la stessa interfaccia CLI è testabile in SQLite senza divergere nel comportamento osservabile (colonna popolata coerentemente con title+description_ai). Stesso guard-pattern già usato in `add_search_vector_to_product_bases_table` e `SearchService::applyRanking`.
+  3. **Riepilogo (AC1) su `catalog:import`**: il comando resta asincrono (l'upsert di 42k righe non è accettabile in modo sincrono in foreground), ma dopo il dispatch stampa i contatori disponibili subito (nome batch, stato) e aggiunge un'opzione `--wait` che, se passata, attende sincronamente il completamento del batch (poll su `ImportBatch::fresh()->status` con timeout configurabile) per poi stampare il riepilogo finale (totali, nuovi, aggiornati, saltati) preso da `ImportBatch`. Senza `--wait` il comportamento resta quello attuale (fire-and-forget) ma il messaggio finale chiarisce come consultare il riepilogo a job concluso. Questo copre l'AC senza introdurre un'esecuzione sincrona pesante di default, coerente con l'architettura a coda già scelta per l'import.
+  4. **Gestione errori/exit code uniforme (AC5)**: tutti e quattro i comandi già seguono `Command::SUCCESS`/`Command::FAILURE`; si allinea `catalog:enrich` e `catalog:reindex` allo stesso pattern (try/catch su eccezioni di dominio, `$this->error()` + `return self::FAILURE`), e si aggiunge un test esplicito di fallimento per ciascun nuovo comando (nessun prodotto pending → esce comunque con successo e messaggio informativo; eccezione del resolver o della query di reindex → `FAILURE`).
+
+  ## Strategia di Test
+
+  - `DeterministicEnrichmentPipeline`: unit/feature test che verifica la sequenza corretta (brand prima di grouping, che richiede brand risolto) su un `Product` factory con descrizione nota, e che il conteggio dei prodotti aggiornati sia corretto; test che un prodotto già `enriched`/non-pending viene ignorato.
+  - `catalog:enrich --only=pending`: feature test con `Queue::fake()` che crea prodotti pending, verifica che i campi deterministici (brand_id, attributi, product_base_id) vengano popolati sincronamente e che `ClassifyProductsBatchJob` venga accodato solo per i prodotti ancora privi di brand/family dopo lo Step A; test che un valore di `--only` diverso da `pending` fa fallire il comando con `FAILURE`; test su catalogo vuoto (nessun prodotto pending) che esce con successo e messaggio esplicito.
+  - `catalog:reindex`: feature test (via `RequiresDatabase`/SQLite) che crea `ProductBase` con `title`/`description_ai` noti, verifica che dopo il comando `search_vector` contenga il testo atteso; test di gestione errore quando la query fallisce (mock/driver non supportato) restituisce `FAILURE`.
+  - `catalog:import --wait`: feature test che, con `Queue::fake()` sostituito da esecuzione sincrona dei job chained (`Bus::dispatchSync` o fake driver `sync`), verifica che il riepilogo finale stampato contenga i totali attesi (nuovi/aggiornati) letti da `ImportBatch`.
+  - Regressione: rieseguire `CatalogImportCommandTest` e `CatalogEmbedCommandTest` esistenti per confermare che nessuna modifica a `catalog:import`/`catalog:embed` rompa il comportamento già coperto.
+  - Nessuna componente UI: tutti i comandi sono CLI-only, nessuna strategia e2e richiesta per questa spec.
+tasks:
+  - id: TASK-01
+    title: Creare DeterministicEnrichmentPipeline (Step A)
+    description: Nuovo App\Services\Enrichment\DeterministicEnrichmentPipeline che, dato un Product pending, invoca in sequenza BrandResolver, AttributeResolver, GroupingResolver e, se un product_base è stato assegnato, FamilyPropagationResolver sul ProductBase risultante. Ritorna un riepilogo conteggi (brand risolti, attributi scritti, gruppi creati).
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Test DeterministicEnrichmentPipeline
+    description: Feature test che verifica l'ordine di esecuzione (brand prima di grouping), i conteggi restituiti, e che un product già non-pending o già arricchito venga ignorato.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Comando catalog:enrich {--only=pending}
+    description: 'Nuovo App\Console\Commands\CatalogEnrichCommand: valida --only (solo ''pending'' o assente), itera i Product pending in chunk applicando DeterministicEnrichmentPipeline, poi dispatcha ClassificationBatchDispatcher::dispatch() per lo Step B. Stampa riepilogo (prodotti processati, brand risolti, job AI accodati) e gestisce errori con exit code non-zero.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: Test catalog:enrich
+    description: 'Feature test con Queue::fake(): Step A applicato sincronamente sui prodotti pending, ClassifyProductsBatchJob accodato solo per i residui privi di brand/family, --only con valore non supportato fallisce con FAILURE, catalogo vuoto termina con successo e messaggio esplicito.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: Comando catalog:reindex
+    description: 'Nuovo App\Console\Commands\CatalogReindexCommand: su Postgres esegue REINDEX INDEX (fallback non-CONCURRENTLY se necessario) su product_bases_search_vector_gin_idx; su altri driver (SQLite) ricalcola esplicitamente search_vector per ogni ProductBase in chunk da title+description_ai normalizzati. Gestisce errori con exit code non-zero e stampa il conteggio righe processate.'
+    type: Impl
+    status: TODO
+  - id: TASK-06
+    title: Test catalog:reindex
+    description: Feature test (SQLite via RequiresDatabase) che verifica search_vector popolato correttamente dopo il comando e che un errore durante la query esca con FAILURE.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Opzione --wait e riepilogo finale su catalog:import
+    description: 'Aggiungere l''opzione --wait a CatalogImportCommand: se presente, attende sincronamente (poll con timeout configurabile) il completamento del batch e stampa il riepilogo finale (totali, nuovi, aggiornati, saltati) da ImportBatch; senza l''opzione il comportamento asincrono attuale resta invariato con un messaggio che indica come consultare il riepilogo.'
+    type: Impl
+    status: TODO
+  - id: TASK-08
+    title: Test catalog:import --wait e regressione
+    description: Feature test che verifica il riepilogo finale stampato con --wait (job eseguiti in modo sincrono nel test) e rieseguire CatalogImportCommandTest/CatalogEmbedCommandTest esistenti per confermare nessuna regressione.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-07
