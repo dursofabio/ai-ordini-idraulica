@@ -1,0 +1,89 @@
+schema: archetipo/plan/v2
+spec_code: US-022
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  Modelli, migration e factory di `Brand`, `Family`, `Subfamily` esistono già (US-009/US-010, cast `aliases` => `array`, colonna `aliases` JSON nullable, `subfamilies.family_id` FK nullable con `nullOnDelete`). `BrandResolver` (US-009) già carica `Brand::all(['id','name','aliases'])` e usa `tokensFor()` = `[name, ...aliases]` sia per il match a suffisso `-MARCA-` sia per il match inline dizionario: l'AC3 ("gli alias vengono caricati e usati dal BrandResolver") è quindi già soddisfatto dal codice esistente e non richiede modifiche al resolver, solo un test di regressione che lo dimostri end-to-end passando per il backoffice. Quello che manca del tutto è lo strato Filament: `app/Filament/Resources/` ha oggi solo `Products` e `ProductBases` (US-021); questa spec aggiunge tre risorse CRUD complete per le anagrafiche.
+
+  **Decisioni chiave**
+
+  1. **Tre risorse Filament v5**, generate con `php artisan make:filament-resource --no-interaction` seguendo esattamente la struttura a cartelle già in uso per `ProductBaseResource` (`Schemas/`, `Tables/`, `Pages/`): `BrandResource` (`app/Filament/Resources/Brands/`), `FamilyResource` (`app/Filament/Resources/Families/`), `SubfamilyResource` (`app/Filament/Resources/Subfamilies/`). Auto-scoperte da `AdminPanelProvider::discoverResources()` (già configurato in US-002), nessuna registrazione manuale necessaria.
+
+  2. **CRUD completo (a differenza di Product/ProductBase)**: qui `canCreate()`/`canDelete()` restano ai default Filament (abilitati), perché la user story dice esplicitamente "gestire" le anagrafiche dal backoffice — a differenza di Product/ProductBase che nascono solo dalla pipeline di import. La cancellazione è sicura a livello DB: `products.brand_id/family_id/subfamily_id` e `product_bases.*` sono tutti `nullOnDelete()`, quindi eliminare una marca/famiglia/sottofamiglia referenziata non lascia FK orfane, semplicemente azzera il riferimento sui prodotti collegati. Nessuna migration necessaria.
+
+  3. **Campo `aliases` come `TagsInput`**: `Filament\Forms\Components\TagsInput::make('aliases')->label('Alias')` su tutte e tre le risorse — coerente con il cast `array` già presente sui tre model, produce un editor a tag per una lista di stringhe (AC1: "campo aliases editabile come lista di stringhe").
+
+  4. **Form `BrandResource`** (`BrandForm`): `TextInput::make('name')->required()`, `TextInput::make('slug')->required()` (slug resta editabile manualmente, coerente col fatto che la migration lo rende `unique()` a livello DB — nessun autoslug automatico introdotto per non deviare dalle convenzioni esistenti, che non usano `Str::slug` reattivo altrove nel backoffice), `TagsInput::make('aliases')`.
+
+  5. **Unicità alias (AC4) — regola custom, non `unique()` nativo**: il vincolo "un alias non può essere già associato a un'altra marca" è un controllo cross-riga su una colonna JSON (`aliases`), che il validatore `unique()`/`scopedUnique()` di Filament non copre (opera su colonne scalari). Si implementa come closure rule su `TagsInput::make('aliases')->rules([fn (Get $get, ?Brand $record) => function (string $attribute, $value, Closure $fail) use ($record) { ... }])`: per ogni tag inviato, verifica che nessun **altro** brand (escluso il record corrente in edit, via `when($record, fn ($q) => $q->whereKeyNot($record->id))`) abbia lo stesso alias in `aliases` (`whereJsonContains('aliases', $tag)`) né lo stesso `name` (case-insensitive, per evitare che un alias collida col nome di un'altra marca). Il controllo gira lato server nel closure rule, quindi si applica sia in create sia in edit. Implementato come metodo statico riusabile in `BrandForm` per evitare duplicazione tra create/edit (la Resource Filament unica gestisce entrambe le pagine sullo stesso `Schema`, quindi un solo punto di definizione basta).
+
+  6. **Form `FamilyResource`/`SubfamilyResource`**: stessa struttura (`name`, `slug`, `aliases` via `TagsInput`); `SubfamilyForm` aggiunge `Select::make('family_id')->relationship('family', 'name')->searchable()->preload()->nullable()` (coerente con la FK nullable esistente). Nessun vincolo di unicità cross-model sugli alias di famiglia/sottofamiglia: l'AC4 nomina esplicitamente solo le "marche" (BrandResolver è l'unico consumer di alias citato nella spec); estendere lo stesso controllo a Family/Subfamily è fuori scope e viene lasciato come nota, non come assunzione silenziosa.
+
+  7. **Tabelle**: colonne `name`, `slug`, conteggio alias (`TextColumn::make('aliases')->formatStateUsing(fn (?array $state) => count($state ?? []))->label('N. alias')` o badge-list troncata) per tutte e tre; `SubfamiliesTable` aggiunge `family.name`. Ricerca (`->searchable()`) su `name`.
+
+  8. **Navigazione**: le tre risorse condividono un `NavigationGroup` (es. "Anagrafiche") per non disperdersi nella sidebar insieme a Products/ProductBases — impostato via `protected static string|UnitEnum|null $navigationGroup` su ciascuna risorsa, pattern nativo Filament, nessuna registrazione aggiuntiva nel panel provider.
+
+  **Alternative scartate**: `unique()`/`scopedUnique()` nativo per gli alias (non supporta colonne JSON in modo diretto — richiederebbe comunque una `modifyRuleUsing` complessa, la closure rule dedicata è più leggibile e testabile); disabilitare `canDelete()` come per Product/ProductBase (scartato perché la story richiede gestione piena e la cancellazione è già sicura via `nullOnDelete`); mockup dedicato (le tre risorse riusano gli stessi componenti Filament nativi già stabiliti in US-021, nessuna interfaccia custom da progettare).
+
+  ## Strategia di Test
+
+  - Feature test su `BrandResource` (list/create/edit via `Livewire::test`): CRUD completo su `name`/`slug`/`aliases` (AC1); stesso pattern ripetuto per `FamilyResource`/`SubfamilyResource` (AC2), incluso il campo `family_id` su Subfamily.
+  - Feature test sulla regola di unicità alias (AC4): creare Brand A con alias `['VAILL']`; tentare di salvare Brand B con lo stesso alias `VAILL` deve fallire la validazione (`assertHasFormErrors`); modificare Brand A riutilizzando il proprio stesso alias esistente deve invece passare (nessun falso positivo per self-collision in edit); un alias che collide col `name` di un'altra marca deve fallire allo stesso modo.
+  - Test di regressione end-to-end sul flusso 'Dimostra' della spec (AC3): creare `Brand::factory(['name' => 'VAILLANT', 'aliases' => []])`, aggiungere `'VAILL'` come alias tramite `Livewire::test(EditBrand::class)->fillForm(['aliases' => ['VAILL']])->call('save')`, poi invocare `(new BrandResolver)->resolve($product)` su un `Product` con `description_raw` contenente `VAILL` e verificare che si risolva sul brand VAILLANT — dimostra che il backoffice e il resolver condividono la stessa fonte dati senza modifiche al resolver.
+
+  ### E2E Test — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già presente nel progetto, `tests/Browser`, pattern di riferimento `AdminLoginTest`/US-002 e il test e2e di US-021)
+  **Registrazione screenshot:** abilitata per ogni step significativo, salvati in `docs/test-results/US-022/` (override di `protected const ARTIFACT_DIR` di `DuskTestCase`, stesso meccanismo già adottato in US-021).
+
+  | Scenario | Descrizione del flusso utente |
+  |---|---|
+  | Aggiunta alias marca dal backoffice | L'admin autenticato apre `/admin`, naviga alla lista Brand, apre la marca 'VAILLANT' in modifica, aggiunge 'VAILL' come alias nel campo tag e salva; verifica che l'alias compaia salvato nel form dopo il reload. Screenshot ad ogni step (login, lista, form con tag aggiunto, conferma salvataggio). |
+
+  _Nessuna nuova infrastruttura e2e da installare: Dusk è già configurato (`tests/DuskTestCase.php`, ChromeDriver, riusato da US-002/US-021)._
+tasks:
+  - id: TASK-01
+    title: 'BrandResource: CRUD con campo aliases (TagsInput)'
+    description: 'Generare App\Filament\Resources\Brands\BrandResource (php artisan make:filament-resource Brand --no-interaction), seguendo la struttura a cartelle Schemas/Tables/Pages di ProductBaseResource. Form: TextInput name/slug required, TagsInput aliases. Tabella: name, slug, conteggio alias, ricerca su name. Navigation group condiviso ''Anagrafiche'' (AC1 parziale, struttura CRUD).'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Regola di unicità cross-model sugli alias di Brand
+    description: 'Closure rule su TagsInput::make(''aliases'') in BrandForm: per ogni tag, verificare che nessun altro Brand (escluso il record corrente in edit) abbia lo stesso alias in aliases (whereJsonContains) o lo stesso name (case-insensitive). Fail con messaggio esplicito se collisione trovata (AC4).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: 'FamilyResource e SubfamilyResource: CRUD con aliases'
+    description: 'Generare App\Filament\Resources\Families\FamilyResource e App\Filament\Resources\Subfamilies\SubfamilyResource, stessa struttura di BrandResource. Form: name/slug/aliases (TagsInput); SubfamilyForm aggiunge Select family_id (relationship, searchable, preload, nullable). Tabelle: name, slug, conteggio alias; SubfamiliesTable aggiunge family.name. Stesso navigation group ''Anagrafiche'' (AC2).'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: 'Test: CRUD BrandResource/FamilyResource/SubfamilyResource e unicità alias'
+    description: 'Feature test con Livewire::test su List/Create/Edit per le tre risorse: creazione e modifica di name/slug/aliases persistono correttamente (AC1, AC2), incluso family_id su Subfamily. Test dedicati sulla regola di unicità: alias duplicato su un altro Brand fallisce la validazione; riutilizzo del proprio alias esistente in edit non fallisce; alias che collide col name di un''altra marca fallisce (AC4).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+  - id: TASK-05
+    title: 'Test di regressione: alias da backoffice usato dal BrandResolver (scenario Dimostra)'
+    description: Feature test che crea Brand 'VAILLANT' senza alias, aggiunge 'VAILL' come alias via Livewire::test(EditBrand::class)->fillForm(['aliases' => ['VAILL']])->call('save'), poi verifica che (new BrandResolver)->resolve($product) su un prodotto con descrizione contenente 'VAILL' risolva correttamente sul brand VAILLANT (AC3).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-06
+    title: 'Test e2e Dusk: aggiunta alias marca dal backoffice (scenario Dimostra)'
+    description: Nuovo test in tests/Browser (pattern AdminLoginTest/US-021) che, autenticato come admin, apre la lista Brand, modifica 'VAILLANT' aggiungendo l'alias 'VAILL' tramite il TagsInput, salva e verifica che l'alias sia persistito dopo il reload del form. Override di protected const ARTIFACT_DIR per salvare gli screenshot in docs/test-results/US-022/.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
