@@ -47,43 +47,49 @@ tasks:
     title: 'BrandResource: CRUD con campo aliases (TagsInput)'
     description: 'Generare App\Filament\Resources\Brands\BrandResource (php artisan make:filament-resource Brand --no-interaction), seguendo la struttura a cartelle Schemas/Tables/Pages di ProductBaseResource. Form: TextInput name/slug required, TagsInput aliases. Tabella: name, slug, conteggio alias, ricerca su name. Navigation group condiviso ''Anagrafiche'' (AC1 parziale, struttura CRUD).'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Regola di unicità cross-model sugli alias di Brand
     description: 'Closure rule su TagsInput::make(''aliases'') in BrandForm: per ogni tag, verificare che nessun altro Brand (escluso il record corrente in edit) abbia lo stesso alias in aliases (whereJsonContains) o lo stesso name (case-insensitive). Fail con messaggio esplicito se collisione trovata (AC4).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: 'FamilyResource e SubfamilyResource: CRUD con aliases'
     description: 'Generare App\Filament\Resources\Families\FamilyResource e App\Filament\Resources\Subfamilies\SubfamilyResource, stessa struttura di BrandResource. Form: name/slug/aliases (TagsInput); SubfamilyForm aggiunge Select family_id (relationship, searchable, preload, nullable). Tabelle: name, slug, conteggio alias; SubfamiliesTable aggiunge family.name. Stesso navigation group ''Anagrafiche'' (AC2).'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: 'Test: CRUD BrandResource/FamilyResource/SubfamilyResource e unicità alias'
     description: 'Feature test con Livewire::test su List/Create/Edit per le tre risorse: creazione e modifica di name/slug/aliases persistono correttamente (AC1, AC2), incluso family_id su Subfamily. Test dedicati sulla regola di unicità: alias duplicato su un altro Brand fallisce la validazione; riutilizzo del proprio alias esistente in edit non fallisce; alias che collide col name di un''altra marca fallisce (AC4).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: 'Test di regressione: alias da backoffice usato dal BrandResolver (scenario Dimostra)'
     description: Feature test che crea Brand 'VAILLANT' senza alias, aggiunge 'VAILL' come alias via Livewire::test(EditBrand::class)->fillForm(['aliases' => ['VAILL']])->call('save'), poi verifica che (new BrandResolver)->resolve($product) su un prodotto con descrizione contenente 'VAILL' risolva correttamente sul brand VAILLANT (AC3).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-05
   - id: TASK-06
     title: 'Test e2e Dusk: aggiunta alias marca dal backoffice (scenario Dimostra)'
     description: Nuovo test in tests/Browser (pattern AdminLoginTest/US-021) che, autenticato come admin, apre la lista Brand, modifica 'VAILLANT' aggiungendo l'alias 'VAILL' tramite il TagsInput, salva e verifica che l'alias sia persistito dopo il reload del form. Override di protected const ARTIFACT_DIR per salvare gli screenshot in docs/test-results/US-022/.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
       - TASK-03
+    ref: TASK-06
