@@ -1,0 +1,79 @@
+schema: archetipo/plan/v2
+spec_code: US-041
+body: |-
+  ## Soluzione Tecnica
+
+  La coda "Da revisionare" ({@see \App\Filament\Pages\ReviewQueue}) cambia grana: invece di interrogare `Product::where('enrichment_status', 'needs_review')` interroga direttamente il registro `enrichment_proposals` introdotto in US-040 filtrando su `status = 'pending'`, con una riga per proposta invece che per prodotto. Il campo `products.enrichment_status` non viene toccato da questa spec: resta governato dalla pipeline di classificazione esistente (Step A/B) per i suoi scopi attuali (widget, filtro in `ProductsTable`, trigger di ri-classificazione); la coda semplicemente smette di usarlo come criterio di visibilità, rendendo il prodotto sempre ricercabile con i valori correntemente applicati indipendentemente dalle proposte pendenti, come richiesto dalla user story. Per evitare di introdurre un nuovo stato di dominio, `enrichment_proposals.status` guadagna un solo valore aggiuntivo oltre a `applied`/`pending` già definiti in US-040: `discarded` (nessuna migrazione necessaria, la colonna è una stringa libera senza vincolo enum a livello DB).
+
+  - **`ReviewQueue::table()`**: query su `EnrichmentProposal::query()->where('status', 'pending')->with('product')`; colonne: `product.codice_articolo`, `product.description_raw`, `field` (etichetta Marca/Famiglia/Sottofamiglia/"Attributo: {attribute_key}"), una colonna calcolata "Valore proposto" che risolve `value_id` contro `Brand`/`Family`/`Subfamily` per i campi di tassonomia o formatta `value_text`/`value_num`/`unit` per gli attributi (stesso formato di troncamento zeri già usato per la colonna attributi esistente), `origin` (riusa `ReviewQueue::originLabel()` invariato, dato che i valori di `origin` del registro coincidono con quelli già mappati per i `*_source`), `confidence` (stesso badge/colore a soglie 60/85 già esistente). `defaultSort` sulla confidenza ascendente con NULL prima, stesso pattern via `orderByRaw` già in uso. `queueHeading()` conta le proposte `pending`, non più i prodotti.
+  - **Filtri**: il filtro per campo (`field`, opzioni Marca/Famiglia/Sottofamiglia/Attributo) sostituisce i tre `SelectFilter` per relazione brand/family/subfamily, che a livello di singola proposta non hanno più senso (una proposta ha un solo campo); il filtro `confidence_band` resta identico nella logica delle soglie ma opera sulla colonna `confidence` nativa della proposta invece che su quella del prodotto.
+  - **Azioni per riga**: `confirmAction()` applica il valore proposto al prodotto esattamente come lo scriverebbe l'applicazione automatica ad alta confidenza — per `field` di tassonomia: `product->update(["{$field}_id" => value_id, "{$field}_source" => $proposal->origin])`; per `field = 'attribute'`: `product->attributes()->updateOrCreate(['key' => attribute_key], ['value_num' => ..., 'value_text' => ..., 'unit' => ..., 'source' => $proposal->origin])` — poi marca la proposta `applied`. `discardAction()` marca la proposta `discarded` senza toccare il prodotto (nessuna scrittura). `correctAction()` diventa uno schema dinamico basato su `$record->field` (chiusura `->schema(fn (EnrichmentProposal $record) => [...])`, stesso pattern di `->fillForm()` dinamico già usato altrove nel progetto): `Select` per il valore di tassonomia (prevalorizzato con il `value_id` proposto, per marca/famiglia tutte le opzioni disponibili, per sottofamiglia filtrate sulla famiglia corrente del prodotto) oppure input testo/numero/unità prevalorizzati per gli attributi; il submit scrive con `source = 'manual'` (stesso significato di sempre: intervento umano esplicito) e marca la proposta `applied`. Le bulk action `confirmSelectedBulkAction()`/`discardSelectedBulkAction()` restano, ma iterano su una `Collection<EnrichmentProposal>` riusando gli stessi helper privati `applyConfirm()`/`applyDiscard()` così le due varianti non possono divergere, come già oggi.
+  - **Link "Dettagli"**: `viewDetailAction()->url()` risolve `$record->product` (il record della riga è ora una proposta, non più il prodotto) verso la stessa {@see \App\Filament\Pages\ReviewQueueDetail} esistente, che resta la vista/form di correzione dell'intero prodotto senza cambi strutturali. Per evitare righe "fantasma" nella nuova coda (una proposta pendente il cui campo è già stato corretto manualmente dalla pagina di dettaglio, che ignora il registro), `ReviewQueueDetail::save()` marca `applied` tutte le proposte ancora `pending` del prodotto dopo aver salvato — un salvataggio completo dal dettaglio è considerato una revisione esaustiva di tutto ciò che era in sospeso per quel prodotto.
+  - **Fuori scope esplicito**: nessuna migrazione (il registro e il suo indice su `status` esistono già da US-040); nessuna modifica a `products.enrichment_status`/`confidence`, alla pipeline di classificazione, al widget `EnrichmentStatusWidget` o al filtro `enrichment_status` in `ProductsTable`; l'`EditProduct` standalone (fuori dalla coda) non viene toccato — se un admin corregge un prodotto da lì mentre esistono proposte pendenti, quelle restano in coda finché non evase esplicitamente (limite noto, accettabile: la coda è comunque idempotente, confermare/scartare una proposta il cui prodotto è già cambiato semplicemente sovrascrive o marca come richiesto).
+
+  ## Strategia di Test
+
+  La suite esistente (`ReviewQueueTest`, `ReviewQueueDetailTest`, `ReviewQueueTriageTest`) è scritta per la grana a prodotto e va riscritta per la grana a proposta, non solo estesa: molti scenari attuali (filtri per brand/family/subfamily, azioni che leggono `$record` come `Product`) non hanno più un equivalente diretto e vanno sostituiti con l'equivalente a livello di proposta.
+
+  - `tests/Feature/ReviewQueueTest.php`: riscrivere gli scenari di listing (una riga per proposta `pending`, un prodotto con più proposte pendenti compare più volte), lo scenario cardine dei criteri di accettazione — un prodotto con marca già `applied` da file e un solo attributo `pending` mostra in coda esclusivamente la riga dell'attributo — le colonne (prodotto/campo/valore proposto/origine/confidenza) per ciascun tipo di campo, i nuovi filtri (`field`, `confidence_band` sulla confidenza della proposta), l'heading che conta le proposte pendenti, confirm/correct/discard per ciascun tipo di campo (marca/famiglia/sottofamiglia/attributo) incluse le bulk action su proposte selezionate, e la non-regressione del link "Dettagli" verso il prodotto sottostante.
+  - `tests/Feature/ReviewQueueDetailTest.php`: aggiungere uno scenario di regressione — salvare dal dettaglio marca `applied` le proposte `pending` del prodotto, che quindi non compaiono più nella coda riscritta.
+  - `tests/Browser/ReviewQueueTriageTest.php` (Dusk, e2e): riscrivere il flusso demo per la nuova grana — un amministratore apre la coda e vede righe per singola proposta (marca/famiglia/sottofamiglia/attributo) invece che per prodotto intero, conferma una proposta, ne corregge un'altra con un valore diverso, ne scarta una terza, verificando che il prodotto sottostante finisca con i valori attesi e che le righe confermate/scartate spariscano dalla coda mentre eventuali altre proposte pendenti dello stesso prodotto restino visibili. Framework: Dusk (già in uso nel progetto). Screenshot per ogni passaggio salvati in `docs/test-results/US-041/`, stesso schema per-step già adottato in `docs/test-results/US-023/` — Dusk non supporta la registrazione video nativa in questo progetto (documentato nel docblock esistente di `ReviewQueueTriageTest`), quindi si mantiene la convenzione screenshot già stabilita invece di introdurre un nuovo meccanismo di registrazione.
+  - Regressione finale: rieseguire `ReviewQueueTest`, `ReviewQueueDetailTest`, `ReviewQueueDetailPageTest`, `ReviewQueueTriageTest` e la suite `EnrichmentApplierTest`/resolver (US-040) per confermare che la creazione delle proposte non sia stata alterata e che la nuova coda non introduca regressioni nella pipeline di classificazione.
+
+  Nessun mockup: la coda è una pagina Filament già esistente (US-023/036/037/038) che viene ristrutturata con i componenti standard del design system Filament già in uso nel progetto, coerente con il fatto che nessuna spec precedente di questa epica ha generato mockup dedicati.
+tasks:
+  - id: TASK-01
+    title: Riscrivere query, colonne e filtri della coda sul registro proposte
+    description: Sostituire la query di ReviewQueue::table() con EnrichmentProposal::where('status','pending')->with('product'); sostituire le colonne con codice_articolo/description_raw del prodotto, campo (etichetta Marca/Famiglia/Sottofamiglia/Attributo), valore proposto (risolto da value_id per i campi di tassonomia o da value_text/value_num/unit per gli attributi), origine (riuso di originLabel) e confidenza (stesso badge/soglie); sostituire i filtri brand/family/subfamily con un filtro 'field' e adattare confidence_band alla colonna confidence della proposta; aggiornare defaultSort e queueHeading() al conteggio delle proposte pendenti.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Riscrivere i test di listing, colonne, filtri e heading della coda
+    description: Riscrivere in tests/Feature/ReviewQueueTest.php gli scenari di listing (una riga per proposta pendente, un prodotto con più proposte pendenti compare più volte), lo scenario cardine AC5 (marca già applicata da file + un solo attributo pendente mostra in coda esclusivamente la proposta dell'attributo), le colonne per ciascun tipo di campo, i nuovi filtri e l'heading basato sul conteggio delle proposte.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Riscrivere le azioni confirm/correct/discard sulla singola proposta
+    description: 'Riscrivere applyConfirm()/applyDiscard() perché operino su EnrichmentProposal: confirm scrive il valore proposto sul prodotto con {field}_source/source = proposal->origin (o crea/aggiorna l''attributo con source = proposal->origin) e marca la proposta ''applied''; discard marca la proposta ''discarded'' senza toccare il prodotto. Riscrivere correctAction() con uno schema dinamico basato su $record->field (Select prevalorizzato con value_id per marca/famiglia/sottofamiglia, input testo/numero/unità prevalorizzati per gli attributi) che scrive con source=''manual'' e marca la proposta ''applied''. Adattare le bulk action a Collection<EnrichmentProposal> riusando gli stessi helper.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-04
+    title: Riscrivere i test di confirm/correct/discard e delle bulk action
+    description: Riscrivere in tests/Feature/ReviewQueueTest.php gli scenari di confirm (per marca/famiglia/sottofamiglia/attributo, verificando il valore scritto e il source=origin della proposta), correct (almeno marca e attributo, verificando source='manual'), discard (prodotto invariato, proposta 'discarded', riga rimossa dalla coda) e le rispettive bulk action su proposte selezionate.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: Aggiornare il link Dettagli e la risoluzione delle proposte pendenti al salvataggio
+    description: Aggiornare viewDetailAction()->url() perché risolva $record->product (il record di riga è ora una proposta). Aggiornare ReviewQueueDetail::save() perché, dopo l'update del prodotto, marchi 'applied' tutte le proposte ancora 'pending' di quel prodotto, evitando righe fantasma nella coda dopo una correzione completa dal dettaglio.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-06
+    title: Test di non-regressione per il link Dettagli e la risoluzione delle proposte dal dettaglio
+    description: Estendere ReviewQueueTest per verificare che il link 'Dettagli' risolva verso il prodotto sottostante alla proposta. Estendere ReviewQueueDetailTest verificando che salvare dal dettaglio marchi 'applied' le proposte pendenti del prodotto, che quindi non compaiono più nella coda riscritta.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Riscrivere lo scenario e2e Dusk della coda per la grana a proposta
+    description: 'Riscrivere tests/Browser/ReviewQueueTriageTest.php: un amministratore apre la coda e vede righe per singola proposta (marca/famiglia/sottofamiglia/attributo), conferma una proposta, ne corregge un''altra con un valore diverso, ne scarta una terza; verificare gli effetti sul prodotto sottostante e che eventuali altre proposte pendenti dello stesso prodotto restino visibili in coda. Salvare gli screenshot per-step in docs/test-results/US-041/, stessa convenzione già adottata in docs/test-results/US-023/ (Dusk non registra video in questo progetto).'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+      - TASK-06
+  - id: TASK-08
+    title: Regressione completa su coda, dettaglio e pipeline di arricchimento
+    description: Rieseguire ReviewQueueTest, ReviewQueueDetailTest, ReviewQueueDetailPageTest, ReviewQueueTriageTest e la suite EnrichmentApplierTest/resolver (US-040) per confermare che la creazione delle proposte non sia stata alterata e che la coda riscritta non introduca regressioni nella pipeline di classificazione.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-07

@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-041
+title: Coda di revisione a livello di singola proposta invece che di intero prodotto
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 5
+status: PLANNED
+body: |-
+  #### US-041: Coda di revisione a livello di singola proposta invece che di intero prodotto
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio vedere ed evadere in coda di revisione le singole proposte in attesa (es. un solo attributo incerto) invece di dover gestire l'intero prodotto,
+  così da correggere solo ciò che serve davvero e ridurre il tempo speso a sistemare i prodotti.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, la coda "Da revisionare" elenca le singole proposte in attesa di approvazione (non più prodotti interi): un prodotto con marca già certa da file e un solo attributo a bassa confidenza mostra in coda solo quella proposta di attributo, con le azioni Conferma/Correggi/Scarta applicabili alla singola proposta; il prodotto resta sempre ricercabile con i valori correntemente applicati, indipendentemente dalle proposte ancora in attesa.
+
+  **Criteri di Accettazione**
+  - [ ] La coda di revisione elenca le proposte in stato "in attesa" (dal registro introdotto in US-040), una riga per proposta, con prodotto, campo, valore proposto, origine e confidenza
+  - [ ] Confermare una proposta la applica al prodotto (stesso effetto dell'applicazione automatica ad alta confidenza) e la rimuove dalla coda; scartarla la rimuove senza modificare il prodotto
+  - [ ] Un prodotto con più proposte in attesa compare più volte in coda, una riga per proposta, non una sola volta per l'intero prodotto
+  - [ ] Le azioni di gruppo già esistenti (conferma/scarta multiplo) restano disponibili sulle proposte selezionate in coda
+  - [ ] Test automatico verifica che un prodotto con marca già applicata da file e un solo attributo in attesa mostri in coda esclusivamente la proposta dell'attributo, non l'intero prodotto
+
+  _Nota: richiede il registro delle proposte introdotto in US-040 (EP-004); la dipendenza cross-epica è tracciata nell'ordine di consegna del backlog, non nel campo Bloccata da._
