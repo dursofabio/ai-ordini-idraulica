@@ -27,6 +27,14 @@ class CatalogEmbedCommandTest extends TestCase
         parent::setUp();
 
         config()->set('services.embedding.model', 'bge-m3');
+
+        // ProductBaseObserver auto-dispatches GenerateProductBaseEmbeddingJob
+        // synchronously (QUEUE_CONNECTION=sync) whenever a ProductBase with a
+        // description_ai is created via factory. Pointing the provider at an
+        // unreachable host makes that job fail harmlessly instead of hitting
+        // the real Ollama service and creating an embedding that collides
+        // with the one created explicitly below.
+        config()->set('services.embedding.base_url', 'https://embedding.test');
     }
 
     public function test_it_queues_only_product_bases_missing_an_embedding(): void

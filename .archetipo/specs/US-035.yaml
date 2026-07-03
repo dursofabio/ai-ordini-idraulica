@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-035
+title: Origine e confidenza per ogni campo nella coda di revisione
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 3
+status: REVIEW
+body: |-
+  #### US-035: Origine e confidenza per ogni campo nella coda di revisione
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-023
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio vedere per ogni prodotto in coda di revisione marca, famiglia, sottofamiglia e attributi tecnici con la relativa origine (AI, dedotta automaticamente, già presente nel file originale o manuale) e il valore di confidenza quando disponibile,
+  così da poter valutare l'affidabilità di ogni singolo valore prima di confermarlo, correggerlo o scartarlo, invece di doverla dedurre da un'unica confidenza complessiva.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, aprendo "Da revisionare" ogni prodotto mostra, oltre alla confidenza già presente, marca/famiglia/sottofamiglia e attributi tecnici ciascuno etichettato con la propria origine; i valori senza confidenza associata (es. origine "Da file" o attributi tecnici) mostrano esplicitamente "N/D" invece di un badge vuoto o fuorviante.
+
+  **Criteri di Accettazione**
+  - [ ] La coda mostra, oltre a marca e famiglia già presenti, anche la sottofamiglia proposta e gli attributi tecnici del prodotto in revisione
+  - [ ] Ogni valore mostrato riporta un'etichetta di origine distinguibile tra "AI", "Dedotta", "Da file" e "Manuale"
+  - [ ] Quando un valore non ha una confidenza associata, la coda mostra esplicitamente "N/D" invece di un badge vuoto o fuorviante
+  - [ ] La colorazione esistente del badge di confidenza (rosso <60, giallo <85, verde ≥85, grigio se assente) resta invariata per i valori che hanno una confidenza
+  - [ ] Le azioni Conferma/Correggi/Scarta esistenti continuano a funzionare senza modifiche di comportamento

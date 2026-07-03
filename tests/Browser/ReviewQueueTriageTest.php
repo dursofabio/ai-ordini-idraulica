@@ -5,6 +5,8 @@ namespace Tests\Browser;
 use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
+use App\Models\ProductAttribute;
+use App\Models\Subfamily;
 use App\Models\User;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -42,19 +44,34 @@ class ReviewQueueTriageTest extends DuskTestCase
 
         $aiBrand = Brand::factory()->create(['name' => 'Marca AI']);
         $aiFamily = Family::factory()->create(['name' => 'Famiglia AI']);
+        $aiSubfamily = Subfamily::factory()->create(['name' => 'Sottofamiglia AI', 'family_id' => $aiFamily->id]);
         $correctedBrand = Brand::factory()->create(['name' => 'Marca Corretta']);
         $correctedFamily = Family::factory()->create(['name' => 'Famiglia Corretta']);
 
+        // US-035: this product carries a proposed subfamily plus a deduced
+        // technical attribute, so the new "Sottofamiglia proposta (AI)" and
+        // "Attributi tecnici" columns have real content to show on screen.
         $toConfirm = Product::factory()->create([
             'codice_articolo' => 'CONFIRM-001',
             'description_raw' => 'Valvola a sfera 1 pollice da confermare',
             'enrichment_status' => 'needs_review',
             'brand_id' => $aiBrand->id,
             'family_id' => $aiFamily->id,
+            'subfamily_id' => $aiSubfamily->id,
             'brand_source' => 'ai',
             'family_source' => 'ai',
+            'subfamily_source' => 'ai',
             'source' => 'ai',
             'confidence' => 70,
+        ]);
+
+        ProductAttribute::factory()->create([
+            'product_id' => $toConfirm->id,
+            'key' => 'kW',
+            'value_num' => 1.5,
+            'value_text' => null,
+            'unit' => 'kW',
+            'source' => 'regex',
         ]);
 
         $toCorrect = Product::factory()->create([
@@ -69,6 +86,9 @@ class ReviewQueueTriageTest extends DuskTestCase
             'confidence' => 50,
         ]);
 
+        // US-035: null confidence, so the "N/D" confidence badge rendering is
+        // visible in the queue. `discard()` always nulls the confidence
+        // anyway, so this doesn't change the outcome of the discard flow.
         $toDiscard = Product::factory()->create([
             'codice_articolo' => 'DISCARD-003',
             'description_raw' => 'Tubo flessibile da scartare',
@@ -78,7 +98,7 @@ class ReviewQueueTriageTest extends DuskTestCase
             'brand_source' => 'ai',
             'family_source' => 'ai',
             'source' => 'ai',
-            'confidence' => 30,
+            'confidence' => null,
         ]);
 
         $this->browse(function (Browser $browser) use ($admin, $toConfirm, $toCorrect, $toDiscard) {
@@ -106,6 +126,19 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->pause(400)
                 ->screenshot('03-queue-before');
 
+            // 2b. (US-035) The admin also inspects the enriched columns:
+            // the proposed subfamily and its origin, the deduced technical
+            // attributes, and the "N/D" badge for the product with no
+            // confidence score yet.
+            $browser->waitForText('Sottofamiglia AI')
+                ->assertSee('Sottofamiglia AI')
+                ->assertSee('Origine: AI')
+                ->assertSee('kW')
+                ->assertSee('Dedotta')
+                ->assertSee('N/D')
+                ->pause(400)
+                ->screenshot('03b-queue-details');
+
             // 3. The admin confirms the AI proposal for the first product;
             // it disappears from the queue and the counter decreases.
             $browser->with($this->rowSelector($toConfirm), function (Browser $row) {
@@ -127,29 +160,38 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->waitForText('Correggi')
                 ->screenshot('05-correct-modal-open');
 
-            $browser->waitFor('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.brand_id"])')
-                ->click('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.brand_id"]) .fi-select-input-btn')
+            $browser->waitFor('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"])')
+                ->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"]) .fi-select-input-btn')
                 ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.brand_id"]) .fi-select-input-search-ctn input', 'Marca Corretta')
-                ->pause(800)
+                ->type('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"]) .fi-select-input-search-ctn input', 'Marca Corretta')
+                ->pause(1500)
                 ->screenshot('06-correct-brand-search');
 
-            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.brand_id"]) li.fi-select-input-option')
+            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"]) li.fi-select-input-option')
                 ->pause(400)
                 ->assertSee('Marca Corretta')
                 ->screenshot('07-correct-brand-selected');
 
-            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.family_id"]) .fi-select-input-btn')
+            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.family_id"]) .fi-select-input-btn')
                 ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.family_id"]) .fi-select-input-search-ctn input', 'Famiglia Corretta')
-                ->pause(800)
-                ->click('.fi-fo-select-wrp:has(label[for="mountedActions.0.data.family_id"]) li.fi-select-input-option')
+                ->type('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.family_id"]) .fi-select-input-search-ctn input', 'Famiglia Corretta')
+                ->pause(1500)
+                ->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.family_id"]) li.fi-select-input-option')
                 ->pause(400)
                 ->assertSee('Famiglia Corretta')
                 ->screenshot('08-correct-family-selected');
 
-            $browser->press('Correggi')
-                ->pause(800)
+            // Scoped to the open modal: the table still has other rows with
+            // their own "Correggi" link underneath the modal overlay, so an
+            // unscoped press() could match the wrong (background) button.
+            // The modal's own submit button uses Filament's default "Submit"
+            // label (the action's own "Correggi" label is only used for the
+            // modal heading and the row trigger, not the submit button).
+            $browser->with('.fi-modal-open', function (Browser $modal) {
+                $modal->press('Submit');
+            });
+
+            $browser->pause(800)
                 ->waitUntilMissingText($toCorrect->description_raw)
                 ->assertSee('1 articoli da revisionare')
                 ->screenshot('09-after-correct');
@@ -165,8 +207,16 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->waitForText('Scarta')
                 ->screenshot('10-discard-confirmation-modal');
 
-            $browser->press('Scarta')
-                ->pause(800)
+            // Scoped to the open modal for the same reason as the Correggi
+            // submit above: the remaining row still shows its own "Scarta"
+            // link underneath the confirmation overlay. A confirmation-only
+            // action (no form) uses Filament's default "Confirm" label for
+            // its button, not the action's own "Scarta" label.
+            $browser->with('.fi-modal-open', function (Browser $modal) {
+                $modal->press('Confirm');
+            });
+
+            $browser->pause(800)
                 ->assertSee($toDiscard->description_raw)
                 ->assertSee('1 articoli da revisionare')
                 ->pause(1500)

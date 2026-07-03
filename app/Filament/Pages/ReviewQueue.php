@@ -4,6 +4,7 @@ namespace App\Filament\Pages;
 
 use App\Filament\Resources\Products\Schemas\ProductForm;
 use App\Models\Product;
+use App\Models\ProductAttribute;
 use App\Models\Subfamily;
 use BackedEnum;
 use Filament\Actions\Action;
@@ -57,6 +58,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->query(
                 Product::query()
                     ->where('enrichment_status', 'needs_review')
+                    ->with('attributes')
                     ->orderByRaw('confidence IS NOT NULL')
                     ->orderBy('confidence')
             )
@@ -66,12 +68,35 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                     ->label('Descrizione originale')
                     ->wrap(),
                 TextColumn::make('brand.name')
-                    ->label('Marca proposta (AI)'),
+                    ->label('Marca proposta (AI)')
+                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->brand_source)),
                 TextColumn::make('family.name')
-                    ->label('Famiglia proposta (AI)'),
+                    ->label('Famiglia proposta (AI)')
+                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->family_source)),
+                TextColumn::make('subfamily.name')
+                    ->label('Sottofamiglia proposta (AI)')
+                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->subfamily_source)),
+                TextColumn::make('attributes')
+                    ->label('Attributi tecnici')
+                    ->listWithLineBreaks()
+                    ->placeholder('—')
+                    ->state(function (Product $record): array {
+                        return $record->attributes
+                            ->map(function (ProductAttribute $attribute): string {
+                                $value = $attribute->value_text ?? rtrim(rtrim((string) $attribute->value_num, '0'), '.');
+                                $unit = filled($attribute->unit) ? ' '.$attribute->unit : '';
+                                $origin = self::originLabel($attribute->source);
+
+                                // product_attributes has no confidence column: this is a
+                                // fixed label, not a placeholder to be filled in later.
+                                return "{$attribute->key}: {$value}{$unit} · {$origin} · Confidenza: N/D";
+                            })
+                            ->all();
+                    }),
                 TextColumn::make('confidence')
                     ->label('Confidenza')
                     ->badge()
+                    ->formatStateUsing(fn (?int $state): string => $state === null ? 'N/D' : "{$state}%")
                     ->color(fn (?int $state): string => match (true) {
                         $state === null => 'gray',
                         $state < 60 => 'danger',
@@ -208,5 +233,20 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                     ->success()
                     ->send();
             });
+    }
+
+    /**
+     * Maps a `*_source` literal to the human-readable origin label shown
+     * alongside each AI-proposed field (brand/family/subfamily/attributes).
+     */
+    private static function originLabel(?string $source): string
+    {
+        return match ($source) {
+            'ai' => 'AI',
+            'regex', 'dictionary', 'propagated' => 'Dedotta',
+            'file' => 'Da file',
+            'manual' => 'Manuale',
+            default => '—',
+        };
     }
 }

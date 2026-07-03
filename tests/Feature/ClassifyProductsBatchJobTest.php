@@ -6,6 +6,7 @@ use App\Jobs\ClassifyProductsBatchJob;
 use App\Models\Brand;
 use App\Models\EnrichmentLog;
 use App\Models\Product;
+use App\Services\Ai\AiClient;
 use App\Services\Ai\ClassificationPromptBuilder;
 use App\Services\Ai\ClassificationResponseValidator;
 use App\Services\Ai\ClassifiedProduct;
@@ -14,6 +15,8 @@ use App\Services\Enrichment\AiSpendGuard;
 use App\Services\Enrichment\EnrichmentCache;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Queue\Middleware\ThrottlesExceptions;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Tests\Concerns\RequiresDatabase;
@@ -39,6 +42,20 @@ use Tests\TestCase;
  *    'needs_review'.
  *  - confidence < 60, even after escalation to the smart model, leaves
  *    brand_id/family_id null and the product 'needs_review'.
+ *
+ * US-034 acceptance criteria — provider abstraction:
+ *  - The job resolves whichever AiClient the container binds
+ *    (config('services.ai_provider')) and produces the same structured
+ *    EnrichmentLog output (brand/family/subfamily/product_type/
+ *    enriched_description/confidence) whether that binding resolves to
+ *    ClaudeClient or OpenRouterClient, differing only in the logged model.
+ *
+ * Rate-limit resilience (added after an OpenRouter free-tier model started
+ * returning HTTP 429 for a real overnight run): a persistent
+ * RequestException must not permanently fail the job into `failed_jobs` —
+ * {@see ClassifyProductsBatchJob::middleware()} throttles it back onto the
+ * queue instead, and {@see ClassifyProductsBatchJob::retryUntil()} keeps it
+ * eligible for retry across the whole run.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
@@ -599,6 +616,112 @@ class ClassifyProductsBatchJobTest extends TestCase
         $this->assertNotNull($secondLog);
         $this->assertSame('claude-fast-test', $secondLog->model);
         $this->assertSame(45, $secondLog->confidence);
+    }
+
+    public function test_job_produces_structured_output_with_the_anthropic_provider(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+        config()->set('services.ai_provider', 'anthropic');
+
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        Http::fake([
+            '*' => Http::response($this->anthropicBody(new EloquentCollection([$product]), confidence: 90)),
+        ]);
+
+        (new ClassifyProductsBatchJob([$product->id]))->handle(
+            app(AiClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        $log = EnrichmentLog::query()->where('product_id', $product->id)->first();
+
+        $this->assertNotNull($log);
+        $this->assertSame('claude-fast-test', $log->model);
+        $this->assertSame(90, $log->confidence);
+        $this->assertSame($this->expectedStructuredOutput(), $log->output);
+    }
+
+    public function test_job_produces_the_same_structured_output_with_the_openrouter_provider(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        config()->set('services.openrouter', [
+            'api_key' => 'test-openrouter-key',
+            'model' => 'openrouter-test-model',
+            'base_url' => 'https://openrouter.test/api/v1',
+            'timeout' => 120,
+            'retry_times' => 1,
+            'retry_delay_ms' => 1,
+        ]);
+        config()->set('services.ai_provider', 'openrouter');
+
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        Http::fake([
+            '*' => Http::response($this->openRouterBody(new EloquentCollection([$product]), confidence: 90)),
+        ]);
+
+        (new ClassifyProductsBatchJob([$product->id]))->handle(
+            app(AiClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        $log = EnrichmentLog::query()->where('product_id', $product->id)->first();
+
+        $this->assertNotNull($log);
+        $this->assertSame('openrouter-test-model', $log->model);
+        $this->assertSame(90, $log->confidence);
+        $this->assertSame($this->expectedStructuredOutput(), $log->output);
+    }
+
+    public function test_job_throttles_on_repeated_request_exceptions_instead_of_failing_permanently(): void
+    {
+        $job = new ClassifyProductsBatchJob([1]);
+
+        $middleware = $job->middleware();
+
+        $this->assertCount(1, $middleware);
+        $this->assertInstanceOf(ThrottlesExceptions::class, $middleware[0]);
+        $this->assertTrue(Carbon::now()->addHours(7)->lt($job->retryUntil()));
+    }
+
+    /**
+     * The structured classification fields expected regardless of which AI
+     * provider produced them (US-034): only `model` is allowed to differ
+     * between the Anthropic and OpenRouter runs.
+     *
+     * @return array<string, mixed>
+     */
+    private function expectedStructuredOutput(): array
+    {
+        return [
+            'brand' => 'Grohe',
+            'family' => null,
+            'subfamily' => null,
+            'product_type' => 'Miscelatore',
+            'enriched_description' => 'Descrizione arricchita',
+        ];
+    }
+
+    /**
+     * @param  EloquentCollection<int, Product>  $products
+     * @return array<string, mixed>
+     */
+    private function openRouterBody(EloquentCollection $products, int $confidence): array
+    {
+        return [
+            'choices' => [[
+                'message' => [
+                    'content' => json_encode([
+                        'results' => $products->map(fn (Product $product) => $this->resultFor($product, $confidence))->all(),
+                    ], JSON_UNESCAPED_UNICODE),
+                ],
+            ]],
+            'usage' => ['prompt_tokens' => 100, 'completion_tokens' => 40],
+        ];
     }
 
     /**

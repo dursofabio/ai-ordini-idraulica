@@ -8,7 +8,9 @@ use App\Models\Family;
 use App\Models\Product;
 use App\Models\Subfamily;
 use App\Models\User;
+use Filament\Tables\Columns\Column;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -253,5 +255,244 @@ class ReviewQueueTest extends TestCase
         $this->assertNull($product->family_id);
         $this->assertNull($product->family_source);
         $this->assertSame('needs_review', $product->enrichment_status);
+    }
+
+    public function test_subfamily_column_shows_proposed_subfamily_name(): void
+    {
+        $admin = User::factory()->create();
+        $family = Family::factory()->create();
+        $subfamily = Subfamily::factory()->create(['family_id' => $family->id, 'name' => 'Sottofamiglia AI']);
+        $product = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'family_id' => $family->id,
+            'subfamily_id' => $subfamily->id,
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('subfamily.name', 'Sottofamiglia AI', $product);
+    }
+
+    public function test_attributes_column_formats_numeric_attribute_with_trimmed_value(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+        $product->attributes()->create([
+            'key' => 'kW',
+            'value_num' => 1.5,
+            'value_text' => null,
+            'unit' => 'kW',
+            'source' => 'regex',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('attributes', ['kW: 1.5 kW · Dedotta · Confidenza: N/D'], $product->fresh());
+    }
+
+    /**
+     * Guards against naive trailing-zero trimming corrupting whole-number
+     * values (e.g. "10" becoming "1"): `value_num` is cast `decimal:3`, so
+     * Eloquent always yields a fixed 3-decimal string ("10.000"), and the
+     * column's rtrim(..., '.') stops exactly at the decimal point.
+     */
+    public function test_attributes_column_does_not_strip_significant_digits_from_whole_number_value(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+        $product->attributes()->create([
+            'key' => 'DN',
+            'value_num' => 100,
+            'value_text' => null,
+            'unit' => null,
+            'source' => 'regex',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('attributes', ['DN: 100 · Dedotta · Confidenza: N/D'], $product->fresh());
+    }
+
+    public function test_attributes_column_lists_multiple_attributes_as_separate_items(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+        $product->attributes()->create([
+            'key' => 'kW',
+            'value_num' => 1.5,
+            'value_text' => null,
+            'unit' => 'kW',
+            'source' => 'regex',
+        ]);
+        $product->attributes()->create([
+            'key' => 'Materiale',
+            'value_num' => null,
+            'value_text' => 'Ottone',
+            'unit' => null,
+            'source' => 'ai',
+        ]);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+        $state = $this->resolveColumn($component, 'attributes', $product)->getState();
+
+        $this->assertCount(2, $state);
+        $this->assertContains('kW: 1.5 kW · Dedotta · Confidenza: N/D', $state);
+        $this->assertContains('Materiale: Ottone · AI · Confidenza: N/D', $state);
+    }
+
+    public function test_attributes_column_shows_dash_when_product_has_no_attributes(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('attributes', null, $product);
+    }
+
+    public function test_brand_family_and_subfamily_descriptions_use_their_own_source_field(): void
+    {
+        $admin = User::factory()->create();
+        $brand = Brand::factory()->create();
+        $family = Family::factory()->create();
+        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
+        $product = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $brand->id,
+            'brand_source' => 'ai',
+            'family_id' => $family->id,
+            'family_source' => 'regex',
+            'subfamily_id' => $subfamily->id,
+            'subfamily_source' => 'file',
+        ]);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $this->assertSame('Origine: AI', $this->columnDescription($component, 'brand.name', $product));
+        $this->assertSame('Origine: Dedotta', $this->columnDescription($component, 'family.name', $product));
+        $this->assertSame('Origine: Da file', $this->columnDescription($component, 'subfamily.name', $product));
+    }
+
+    /**
+     * @return array<int, array{0: ?string, 1: string}>
+     */
+    public static function originSourceProvider(): array
+    {
+        return [
+            'ai' => ['ai', 'AI'],
+            'regex' => ['regex', 'Dedotta'],
+            'dictionary' => ['dictionary', 'Dedotta'],
+            'propagated' => ['propagated', 'Dedotta'],
+            'file' => ['file', 'Da file'],
+            'manual' => ['manual', 'Manuale'],
+            'unknown/null' => [null, '—'],
+        ];
+    }
+
+    public function test_origin_label_maps_each_source_value_to_expected_label(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        foreach (self::originSourceProvider() as [$source, $expectedLabel]) {
+            $brand = Brand::factory()->create();
+            $product = Product::factory()->create([
+                'enrichment_status' => 'needs_review',
+                'brand_id' => $brand->id,
+                'brand_source' => $source,
+            ]);
+
+            $this->assertSame(
+                "Origine: {$expectedLabel}",
+                $this->columnDescription($component, 'brand.name', $product),
+                "Failed asserting origin label for source [{$source}]."
+            );
+        }
+    }
+
+    public function test_confidence_column_formats_null_state_as_nd_and_keeps_percentage_for_values(): void
+    {
+        $admin = User::factory()->create();
+        $withoutConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => null]);
+        $withConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 45]);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $this->assertSame('N/D', $this->formattedColumnState($component, 'confidence', $withoutConfidence));
+        $this->assertSame('45%', $this->formattedColumnState($component, 'confidence', $withConfidence));
+    }
+
+    public function test_confirm_action_still_works_when_product_has_attributes_and_subfamily(): void
+    {
+        $admin = User::factory()->create();
+        $family = Family::factory()->create();
+        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
+        $product = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'family_id' => $family->id,
+            'subfamily_id' => $subfamily->id,
+        ]);
+        $product->attributes()->create([
+            'key' => 'kW',
+            'value_num' => 2,
+            'unit' => 'kW',
+            'source' => 'ai',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('confirm', $product);
+
+        $product->refresh();
+
+        $this->assertSame('enriched', $product->enrichment_status);
+    }
+
+    /**
+     * Reads the rendered `->description()` (below the state) for a table
+     * column, scoped to a single record — mirrors how Filament's own
+     * `assertTableColumnStateSet()` resolves state for a given record.
+     */
+    private function columnDescription(Testable $component, string $columnName, Product $record): ?string
+    {
+        $column = $this->resolveColumn($component, $columnName, $record);
+
+        $description = $column->getDescriptionBelow();
+
+        return $description === null ? null : (string) $description;
+    }
+
+    /**
+     * Reads the fully formatted (post `->formatStateUsing()`) state for a
+     * table column, scoped to a single record.
+     */
+    private function formattedColumnState(Testable $component, string $columnName, Product $record): string
+    {
+        $column = $this->resolveColumn($component, $columnName, $record);
+
+        return (string) $column->formatState($column->getState());
+    }
+
+    private function resolveColumn(Testable $component, string $columnName, Product $record): Column
+    {
+        $column = $component->instance()->getTable()->getColumn($columnName);
+
+        $column->record($record->fresh());
+        $column->clearCachedState();
+
+        return $column;
     }
 }

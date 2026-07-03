@@ -1,0 +1,90 @@
+schema: archetipo/plan/v2
+spec_code: US-035
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  La pagina `App\Filament\Pages\ReviewQueue` (US-023) mostra oggi solo `description_raw`, `brand.name`, `family.name` e un'unica `confidence` complessiva. Mancano: la sottofamiglia proposta (già gestita dall'azione 'Correggi' ma mai mostrata in tabella), gli attributi tecnici dedotti (`product_attributes`, popolati da `AttributeResolver` con `source='regex'`), e soprattutto una distinzione visiva tra le diverse origini di un valore. Ispezionando i resolver esistenti, `brand_source`/`family_source`/`subfamily_source`/`source` su `products` assumono solo questi valori letterali (nessun enum in codebase): `'ai'` (`EnrichmentApplier`), `'regex'`/`'dictionary'` (`BrandResolver`, deduzione automatica), `'file'` (`FileTaxonomyResolver`, valore già presente nel file XLSX importato), `'manual'` (correzioni umane). `product_attributes.source` vale solo `'regex'` oggi (nessun percorso AI scrive attributi tecnici) e la tabella non ha alcuna colonna di confidenza: un attributo tecnico non ha mai un valore di confidenza, per progettazione dello schema attuale, non per un bug. `products.confidence` è invece nullable e diventa `null` sia dopo un'azione 'Scarta' sia per prodotti arricchiti solo da `FileTaxonomyResolver` (il file non genera mai un punteggio di confidenza).
+
+  **Decisioni chiave**
+
+  1. **Helper di etichettatura origine (AC2)**: nuovo metodo privato `ReviewQueue::originLabel(?string $source): string` con un `match` che traduce i valori letterali già in uso in etichette leggibili: `'ai' => 'AI'`, `'regex', 'dictionary' => 'Dedotta'`, `'file' => 'Da file'`, `'manual' => 'Manuale'`, `default => '—'`. Riusa gli stessi valori letterali già consumati da `ProductForm`/`ProductsTable` (nessuna modifica ai resolver, nessuna migration, nessun enum introdotto: sarebbe fuori scope e romperebbe la convenzione a stringa libera già diffusa in tutto il progetto).
+
+  2. **Colonna sottofamiglia (AC1)**: aggiunta `TextColumn::make('subfamily.name')->label('Sottofamiglia proposta (AI)')` subito dopo `family.name`, con `->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->subfamily_source))`, stesso pattern applicato retroattivamente anche alle colonne `brand.name` e `family.name` esistenti (oggi prive di qualunque indicazione di origine in questa pagina, a differenza di `ProductForm`/`ProductsTable` che già la mostrano in altra forma).
+
+  3. **Colonna attributi tecnici (AC1, AC2, AC3)**: nuova `TextColumn::make('attributes')->label('Attributi tecnici')->wrap()->state(fn (Product $record) => $record->attributes->isEmpty() ? '—' : $record->attributes->map(fn (ProductAttribute $a) => sprintf('%s: %s%s · %s · Confidenza: N/D', $a->key, $a->value_text ?? rtrim(rtrim((string) $a->value_num, '0'), '.'), $a->unit ? ' '.$a->unit : '', self::originLabel($a->source)))->implode("\n"))`. La confidenza è sempre 'N/D' per gli attributi perché `product_attributes` non ha (e questa spec non introduce) una colonna di confidenza: è un dato che oggi non esiste, non un difetto di formattazione. Eager loading `Product::with('attributes')` aggiunto alla query della tabella per evitare N+1 (la relazione `attributes()` esiste già su `Product`, nessuna migration necessaria).
+
+  4. **Confidenza complessiva 'N/D' (AC3, AC4)**: la colonna `confidence` esistente riceve `->formatStateUsing(fn (?int $state): string => $state === null ? 'N/D' : "{$state}%")`, mantenendo invariata la `->color()` già presente (grigio se `null`, danger <60, warning <60-84, success ≥85): l'AC4 richiede esplicitamente che questa soglia-colore non cambi, cambia solo il testo mostrato per lo stato nullo (oggi un badge vuoto, fuorviante).
+
+  5. **Nessun impatto sulle azioni esistenti (AC5)**: 'Conferma'/'Correggi'/'Scarta' restano `recordActions` indipendenti dalle colonne aggiunte; nessuna delle tre tocca `product_attributes` o `subfamily_source` in modo diverso da oggi. Verificato che l'azione 'Correggi' già raccoglie `subfamily_id` nel suo form (US-023), quindi la nuova colonna è puramente di sola lettura e non introduce un secondo punto di scrittura per lo stesso dato.
+
+  **Alternative scartate**: introdurre un enum PHP `EnrichmentSource` per marca/famiglia/sottofamiglia/attributi (scartata: nessun precedente nel codebase, i resolver esistenti scrivono stringhe libere in almeno 5 punti diversi — modificarli tutti sarebbe una migrazione di dominio fuori scope per una spec di sola visualizzazione); aggiungere una colonna `confidence` a `product_attributes` per eliminare il caso 'N/D' (scartata: nessun resolver attuale produce mai una confidenza per attributo, aggiungerla ora sarebbe uno schema speculativo senza un produttore di dati, in contrasto con l'AC che chiede esplicitamente di *mostrare* che il valore manca, non di inventarlo); tabella separata/espandibile per gli attributi invece di una colonna testuale multi-riga (scartata: la pagina resta una worklist a singola riga per prodotto coerente con l'impostazione esistente di US-023, e Filament v5 non offre righe espandibili native per `Tables\Contracts\HasTable` senza introdurre una Resource, fuori scope).
+
+  ## Strategia di Test
+
+  - Feature test (`Livewire::test` su `ReviewQueue`): un prodotto con `subfamily_id` valorizzato mostra `subfamily.name` in tabella (AC1).
+  - Feature test: un prodotto con righe in `attributes()` (es. `key='kW'`, `value_num=1.5`, `unit='kW'`, `source='regex'`) mostra la colonna attributi con il valore, l'unità e l'etichetta 'Dedotta'; un prodotto senza attributi mostra '—' (AC1, AC2).
+  - Feature test parametrico sull'helper di origine: per ciascun valore di `*_source` (`ai`, `regex`, `dictionary`, `file`, `manual`, `null`) la colonna corrispondente mostra rispettivamente 'AI', 'Dedotta', 'Dedotta', 'Da file', 'Manuale', '—' (AC2).
+  - Feature test: un prodotto con `confidence = null` mostra il testo 'N/D' nel badge confidenza; un prodotto con `confidence = 45` mostra ancora '45%' con colore invariato rispetto al comportamento pre-esistente (AC3, AC4).
+  - Feature test di regressione: le azioni 'Conferma', 'Correggi', 'Scarta' già coperte da `ReviewQueueTest` (US-023) continuano a passare invariate dopo l'aggiunta delle nuove colonne (AC5) — eseguire la suite esistente senza modifiche alle asserzioni sulle azioni.
+
+  ### E2E Test — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già presente, `tests/Browser/ReviewQueueTriageTest.php` da US-023)
+  **Registrazione screenshot:** estensione dello scenario esistente con nuovi screenshot sui dettagli aggiuntivi, stesso `ARTIFACT_DIR` (`docs/test-results/US-023/`) perché è lo stesso flusso utente arricchito, non un nuovo scenario.
+
+  | Scenario | Descrizione del flusso utente |
+  |---|---|
+  | Ispezione dettagli prima del triage (estensione dello scenario esistente) | L'admin autenticato apre 'Da revisionare' e, prima di agire su ciascun prodotto, verifica a video la sottofamiglia proposta, l'elenco degli attributi tecnici con relativa origine, e — per un prodotto con confidenza assente — il testo 'N/D' al posto del badge vuoto; procede poi con Conferma/Correggi/Scarta come nello scenario già coperto. |
+
+  _Nessuna nuova infrastruttura e2e: si aggiungono passaggi/screenshot allo scenario Dusk già esistente._
+tasks:
+  - id: TASK-01
+    title: Helper di etichettatura origine e colonna sottofamiglia
+    description: 'Aggiungere il metodo privato ReviewQueue::originLabel(?string $source): string (match su ai/regex/dictionary/file/manual/default) e la colonna TextColumn::make(''subfamily.name'') con ->description() che mostra l''origine tradotta; applicare la stessa ->description() anche alle colonne brand.name e family.name esistenti (AC1, AC2).'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Colonna attributi tecnici con origine e confidenza N/D
+    description: 'Aggiungere Product::with(''attributes'') alla query della tabella e la colonna TextColumn::make(''attributes'') che elenca key/valore/unità/origine per ogni ProductAttribute, mostrando sempre ''Confidenza: N/D'' (product_attributes non ha colonna confidenza) e ''—'' quando il prodotto non ha attributi (AC1, AC2, AC3).'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Formattazione 'N/D' sulla confidenza complessiva
+    description: Aggiungere ->formatStateUsing() alla colonna confidence esistente per mostrare 'N/D' quando lo stato è null e '{valore}%' altrimenti, senza modificare la ->color() già presente con le soglie invariate (AC3, AC4).
+    type: Impl
+    status: DONE
+    ref: TASK-03
+  - id: TASK-04
+    title: 'Test: nuove colonne, etichette origine e N/D confidenza'
+    description: 'Feature test su ReviewQueue: colonna subfamily.name visibile con prodotto valorizzato; colonna attributi mostra key/valore/unità/origine per ciascun ProductAttribute e ''—'' se vuota; test parametrico sull''helper originLabel per ogni valore di source; colonna confidence mostra ''N/D'' se null e ''{n}%'' con colore invariato altrimenti (AC1, AC2, AC3, AC4).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Test di regressione sulle azioni esistenti
+    description: Rieseguire/estendere ReviewQueueTest per confermare che Conferma/Correggi/Scarta restano invariate nel comportamento dopo l'aggiunta delle nuove colonne di sola lettura (AC5).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+    ref: TASK-05
+  - id: TASK-06
+    title: 'Estensione e2e Dusk: ispezione dei nuovi dettagli prima del triage'
+    description: Estendere tests/Browser/ReviewQueueTriageTest.php con nuovi screenshot che mostrano sottofamiglia, attributi tecnici con origine e il testo 'N/D' su un prodotto a confidenza assente, prima delle azioni già coperte; stesso ARTIFACT_DIR docs/test-results/US-023/ (AC1, AC2, AC3).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-04
+      - TASK-05
+    ref: TASK-06

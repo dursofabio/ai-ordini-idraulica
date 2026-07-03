@@ -35,6 +35,18 @@ class ProductResourceViewTest extends TestCase
     use RefreshDatabase;
     use RequiresDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // ProductBaseObserver auto-dispatches GenerateProductBaseEmbeddingJob
+        // synchronously (QUEUE_CONNECTION=sync) whenever a ProductBase with a
+        // description_ai is created via factory. Pointing the provider at an
+        // unreachable host makes that job fail harmlessly instead of hitting
+        // the real Ollama service and creating an unwanted embedding row.
+        config()->set('services.embedding.base_url', 'https://embedding.test');
+    }
+
     public function test_list_exposes_the_view_action(): void
     {
         $admin = User::factory()->create();

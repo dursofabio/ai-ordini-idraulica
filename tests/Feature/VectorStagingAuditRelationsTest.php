@@ -27,6 +27,18 @@ class VectorStagingAuditRelationsTest extends TestCase
     use RefreshDatabase;
     use RequiresDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // ProductBaseObserver auto-dispatches GenerateProductBaseEmbeddingJob
+        // synchronously (QUEUE_CONNECTION=sync) whenever a ProductBase with a
+        // description_ai is created via factory. Pointing the provider at an
+        // unreachable host makes that job fail harmlessly instead of hitting
+        // the real Ollama service and creating an unwanted embedding row.
+        config()->set('services.embedding.base_url', 'https://embedding.test');
+    }
+
     public function test_enrichment_log_casts_input_output_json_and_counts_tokens(): void
     {
         $product = Product::factory()->create();
