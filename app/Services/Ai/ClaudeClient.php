@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Http;
  * `config('services.anthropic.*')`; nothing is hardcoded. Requests that
  * exhaust their configured retries throw `Illuminate\Http\Client\RequestException`.
  */
-class ClaudeClient
+class ClaudeClient implements AiClient
 {
     /**
      * Send a request to the Messages API and return the parsed response.
@@ -23,6 +23,16 @@ class ClaudeClient
         $response = $this->pendingRequest()->post('/v1/messages', $payload);
 
         return ClaudeResponse::fromHttpResponse($response);
+    }
+
+    public function modelFast(): string
+    {
+        return (string) config('services.anthropic.model_fast');
+    }
+
+    public function modelSmart(): string
+    {
+        return (string) config('services.anthropic.model_smart');
     }
 
     /**

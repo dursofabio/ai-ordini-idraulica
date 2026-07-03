@@ -1,0 +1,30 @@
+schema: archetipo/spec/v2
+code: US-034
+title: Provider AI alternativo via OpenRouter con modello gratuito/economico
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: MEDIUM
+points: 5
+status: REVIEW
+body: |-
+  #### US-034: Provider AI alternativo via OpenRouter con modello gratuito/economico
+
+  **Epica:** EP-004 | **Priorità:** MEDIUM | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-013
+
+  **User Story**
+  Come sviluppatore del team,
+  voglio poter configurare OpenRouter come provider AI alternativo per le chiamate di arricchimento, con un modello gratuito o molto economico,
+  così da poter ridurre o azzerare i costi di classificazione AI su ambienti di test o su cataloghi meno critici, senza modificare il codice dei job.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, impostando `AI_PROVIDER=openrouter` in `.env` e configurando modello e chiave OpenRouter, il job di classificazione a lotti invia le richieste a OpenRouter invece che a Claude, usando lo stesso formato di output atteso; con `AI_PROVIDER=anthropic` (default) il comportamento resta invariato.
+
+  **Criteri di Accettazione**
+  - [ ] Le chiamate di classificazione AI passano attraverso un'astrazione comune, implementata sia dal client Claude esistente sia da un nuovo client OpenRouter, così da poter cambiare provider senza toccare il codice del job
+  - [ ] Il provider attivo è selezionato tramite la variabile d'ambiente `AI_PROVIDER` (`anthropic` di default, `openrouter` come alternativa)
+  - [ ] Il client OpenRouter legge endpoint, modello e chiave API da `config('services.openrouter.*')`, con un modello gratuito o molto economico configurabile come default e nessun valore hardcodato nel codice
+  - [ ] Il client OpenRouter restituisce contenuto e token utilizzati (`tokens_in`, `tokens_out`) nello stesso formato già prodotto dal client Claude
+  - [ ] Il comportamento su errore o risposta non valida resta quello già previsto (retry configurabile, poi `needs_review`), senza fallback automatico verso un altro provider
+  - [ ] Un test con mock HTTP verifica che il job di classificazione produca lo stesso output strutturato sia con provider `anthropic` sia con provider `openrouter`

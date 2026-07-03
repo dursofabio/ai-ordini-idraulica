@@ -40,4 +40,23 @@ final readonly class ClaudeResponse
             raw: $body,
         );
     }
+
+    /**
+     * Build a ClaudeResponse from a raw OpenRouter (OpenAI-compatible) chat
+     * completions HTTP response, extracting the first choice's message
+     * content and the prompt/completion token usage.
+     */
+    public static function fromOpenRouterResponse(Response $response): self
+    {
+        $body = $response->json() ?? [];
+
+        $content = $body['choices'][0]['message']['content'] ?? '';
+
+        return new self(
+            content: $content,
+            tokensIn: (int) ($body['usage']['prompt_tokens'] ?? 0),
+            tokensOut: (int) ($body['usage']['completion_tokens'] ?? 0),
+            raw: $body,
+        );
+    }
 }

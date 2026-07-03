@@ -35,6 +35,8 @@ return [
         ],
     ],
 
+    'ai_provider' => env('AI_PROVIDER', 'anthropic'),
+
     'anthropic' => [
         'api_key' => env('ANTHROPIC_API_KEY'),
         'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-5'),
@@ -77,6 +79,15 @@ return [
         ],
         'batch_cost_cap' => env('ANTHROPIC_BATCH_COST_CAP'),
         'enrichment_cache_ttl' => env('ANTHROPIC_ENRICHMENT_CACHE_TTL'),
+    ],
+
+    'openrouter' => [
+        'api_key' => env('OPENROUTER_API_KEY'),
+        'model' => env('OPENROUTER_MODEL', 'qwen/qwen3-next-80b-a3b-instruct:free'),
+        'base_url' => env('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+        'timeout' => env('OPENROUTER_TIMEOUT', 120),
+        'retry_times' => env('OPENROUTER_RETRY_TIMES', 2),
+        'retry_delay_ms' => env('OPENROUTER_RETRY_DELAY_MS', 2000),
     ],
 
     'embedding' => [

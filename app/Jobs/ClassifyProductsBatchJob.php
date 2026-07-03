@@ -5,26 +5,30 @@ namespace App\Jobs;
 use App\Exceptions\InvalidClassificationResponseException;
 use App\Models\EnrichmentLog;
 use App\Models\Product;
+use App\Services\Ai\AiClient;
 use App\Services\Ai\ClassificationPromptBuilder;
 use App\Services\Ai\ClassificationResponseValidator;
 use App\Services\Ai\ClassifiedProduct;
-use App\Services\Ai\ClaudeClient;
 use App\Services\Ai\TaxonomyCatalog;
 use App\Services\Ai\ValidatedClassification;
 use App\Services\Enrichment\AiSpendGuard;
 use App\Services\Enrichment\ClassificationBatchDispatcher;
 use App\Services\Enrichment\EnrichmentApplier;
 use App\Services\Enrichment\EnrichmentCache;
+use DateTime;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\Middleware\ThrottlesExceptions;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Throwable;
 
 /**
  * Classifies a batch of products (brand, family, subfamily, product type,
@@ -70,6 +74,12 @@ class ClassifyProductsBatchJob implements ShouldQueue
      */
     private const MAX_TOKENS = 8192;
 
+    /**
+     * Superseded by {@see self::retryUntil()} for actual retry accounting
+     * (Laravel gives retryUntil() precedence when both are defined); kept at
+     * 1 so a job that has never been released by {@see self::middleware()}
+     * still reads, at a glance, as "no job-level retry by default".
+     */
     public int $tries = 1;
 
     /**
@@ -137,8 +147,49 @@ class ClassifyProductsBatchJob implements ShouldQueue
         $this->onQueue('enrich');
     }
 
+    /**
+     * Pauses this job class (shared across every queued instance, since
+     * they all hit the same downstream AI provider) after 2 consecutive
+     * {@see RequestException}s — e.g. HTTP 429 from a rate-limited
+     * free-tier model — instead of letting each one fail permanently into
+     * `failed_jobs`. Other exceptions (validation bugs, etc.) are not
+     * throttled and surface immediately as before.
+     *
+     * @return array<int, object>
+     */
+    public function middleware(): array
+    {
+        return [
+            (new ThrottlesExceptions(2, 90))
+                ->when(fn (Throwable $exception): bool => $exception instanceof RequestException)
+                ->backoff(15),
+        ];
+    }
+
+    /**
+     * Keeps a throttled job eligible for retry for up to 8 hours (an
+     * overnight run) instead of the effectively-single-attempt behavior
+     * {@see self::$tries} would otherwise imply; Laravel gives this
+     * precedence over $tries once both are defined.
+     */
+    public function retryUntil(): DateTime
+    {
+        return Carbon::now()->addHours(8);
+    }
+
+    /**
+     * Fallback delay for any release not already paced by
+     * {@see self::middleware()} (e.g. a worker restart mid-attempt), so a
+     * persistent failure doesn't hammer the provider in a tight loop for
+     * the remainder of the {@see self::retryUntil()} window.
+     */
+    public function backoff(): int
+    {
+        return 30;
+    }
+
     public function handle(
-        ClaudeClient $client,
+        AiClient $client,
         ClassificationPromptBuilder $promptBuilder,
         ClassificationResponseValidator $validator,
     ): void {
@@ -152,7 +203,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         }
 
         $taxonomy = new TaxonomyCatalog;
-        $modelFast = (string) config('services.anthropic.model_fast');
+        $modelFast = $client->modelFast();
         $cache = new EnrichmentCache;
         $spendGuard = new AiSpendGuard;
 
@@ -171,7 +222,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
             // what this batch would have cost had it been allowed to run.
             $estimatedCost = $spendGuard->estimateCost($modelFast, $this->promptInputTokenEstimate($toClassify), self::MAX_TOKENS);
 
-            $this->handleCapExceeded($notCached, $spendGuard, $estimatedCost);
+            $this->handleCapExceeded($notCached, $spendGuard, $modelFast, $estimatedCost);
 
             return;
         }
@@ -181,7 +232,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         $validated = $this->classifyWithRetry($client, $promptBuilder, $validator, $toClassify, $taxonomy, $modelFast, $expectedCodici);
 
         if ($validated === null) {
-            $this->markNeedsReview($notCached, $this->lastValidationError ?? 'Risposta AI non valida dopo un retry.');
+            $this->markNeedsReview($notCached, $this->lastValidationError ?? 'Risposta AI non valida dopo un retry.', $modelFast);
 
             return;
         }
@@ -311,9 +362,9 @@ class ClassifyProductsBatchJob implements ShouldQueue
      *
      * @param  EloquentCollection<int, Product>  $products
      */
-    private function handleCapExceeded(EloquentCollection $products, AiSpendGuard $spendGuard, ?float $estimatedCost = null): void
+    private function handleCapExceeded(EloquentCollection $products, AiSpendGuard $spendGuard, string $modelFast, ?float $estimatedCost = null): void
     {
-        $this->markNeedsReview($products, 'Tetto di spesa AI raggiunto per questo run.');
+        $this->markNeedsReview($products, 'Tetto di spesa AI raggiunto per questo run.', $modelFast);
 
         if (! $this->capExceededLogged) {
             $this->capExceededLogged = true;
@@ -336,7 +387,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
      * @return array{0: ValidatedClassification, 1: int, 2: int}|null
      */
     private function classifyWithRetry(
-        ClaudeClient $client,
+        AiClient $client,
         ClassificationPromptBuilder $promptBuilder,
         ClassificationResponseValidator $validator,
         EloquentCollection $products,
@@ -374,7 +425,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
      * @param  EloquentCollection<int, Product>  $products
      */
     private function escalateLowConfidenceResults(
-        ClaudeClient $client,
+        AiClient $client,
         ClassificationPromptBuilder $promptBuilder,
         ClassificationResponseValidator $validator,
         EloquentCollection $products,
@@ -382,7 +433,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         ValidatedClassification $classification,
         AiSpendGuard $spendGuard,
     ): void {
-        $modelSmart = (string) config('services.anthropic.model_smart');
+        $modelSmart = $client->modelSmart();
 
         foreach ($products as $product) {
             $result = $classification->for($product->codice_articolo);
@@ -559,7 +610,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
      *
      * @param  EloquentCollection<int, Product>  $products
      */
-    private function markNeedsReview(EloquentCollection $products, string $reason): void
+    private function markNeedsReview(EloquentCollection $products, string $reason, string $modelFast): void
     {
         $now = Carbon::now();
         $rows = [];
@@ -571,7 +622,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 'input' => json_encode(['codice_articolo' => $product->codice_articolo], JSON_UNESCAPED_UNICODE),
                 'output' => json_encode(['error' => $reason], JSON_UNESCAPED_UNICODE),
                 'confidence' => null,
-                'model' => (string) config('services.anthropic.model_fast'),
+                'model' => $modelFast,
                 'tokens_in' => null,
                 'tokens_out' => null,
                 'created_at' => $now,
