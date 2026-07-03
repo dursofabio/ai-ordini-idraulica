@@ -462,6 +462,168 @@ class ReviewQueueTest extends TestCase
     }
 
     /**
+     * US-036 AC1/AC2: `codice_articolo` and the raw file-imported taxonomy
+     * (marca/famiglia/sottofamiglia) plus `costo`/`giacenza` are shown
+     * alongside the existing AI-proposed columns for comparison.
+     */
+    public function test_queue_shows_codice_articolo_raw_file_taxonomy_costo_and_giacenza(): void
+    {
+        $admin = User::factory()->create();
+        $family = Family::factory()->create();
+        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
+        $product = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'codice_articolo' => 'ART-12345',
+            'descrizione_marca' => 'Marca da file SPA',
+            'fam_descrizione' => 'Famiglia da file',
+            'subfam_descrizione' => 'Sottofamiglia da file',
+            'family_id' => $family->id,
+            'subfamily_id' => $subfamily->id,
+            'costo' => 42.5,
+            'giacenza' => 17,
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('codice_articolo', 'ART-12345', $product)
+            ->assertTableColumnStateSet('descrizione_marca', 'Marca da file SPA', $product)
+            ->assertTableColumnStateSet('fam_descrizione', 'Famiglia da file', $product)
+            ->assertTableColumnStateSet('subfam_descrizione', 'Sottofamiglia da file', $product)
+            ->assertTableColumnStateSet('costo', '42.50', $product)
+            ->assertTableColumnStateSet('giacenza', '17.00', $product);
+    }
+
+    /**
+     * US-036 AC3: brand/family/subfamily/confidence columns are sortable by
+     * clicking their header, overriding the table's default confidence-based
+     * ordering.
+     */
+    public function test_brand_family_subfamily_and_confidence_columns_are_sortable(): void
+    {
+        $admin = User::factory()->create();
+        $brandA = Brand::factory()->create(['name' => 'Alfa Marca']);
+        $brandB = Brand::factory()->create(['name' => 'Beta Marca']);
+        $familyA = Family::factory()->create(['name' => 'Alfa Famiglia']);
+        $familyB = Family::factory()->create(['name' => 'Beta Famiglia']);
+        $subfamilyA = Subfamily::factory()->create(['name' => 'Alfa Sottofamiglia', 'family_id' => $familyA->id]);
+        $subfamilyB = Subfamily::factory()->create(['name' => 'Beta Sottofamiglia', 'family_id' => $familyB->id]);
+
+        $first = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $brandA->id,
+            'family_id' => $familyA->id,
+            'subfamily_id' => $subfamilyA->id,
+            'confidence' => 20,
+        ]);
+        $second = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $brandB->id,
+            'family_id' => $familyB->id,
+            'subfamily_id' => $subfamilyB->id,
+            'confidence' => 80,
+        ]);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $component->sortTable('brand.name')
+            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
+        $component->sortTable('brand.name', 'desc')
+            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
+
+        $component->sortTable('family.name')
+            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
+        $component->sortTable('family.name', 'desc')
+            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
+
+        $component->sortTable('subfamily.name')
+            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
+        $component->sortTable('subfamily.name', 'desc')
+            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
+
+        $component->sortTable('confidence')
+            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
+        $component->sortTable('confidence', 'desc')
+            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
+    }
+
+    /**
+     * US-036 AC4: SelectFilter on brand/family/subfamily narrows the queue to
+     * products with the selected relationship.
+     */
+    public function test_brand_family_and_subfamily_filters_narrow_the_queue(): void
+    {
+        $admin = User::factory()->create();
+        $brand = Brand::factory()->create();
+        $otherBrand = Brand::factory()->create();
+        $family = Family::factory()->create();
+        $otherFamily = Family::factory()->create();
+        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
+        $otherSubfamily = Subfamily::factory()->create(['family_id' => $otherFamily->id]);
+
+        $matching = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $brand->id,
+            'family_id' => $family->id,
+            'subfamily_id' => $subfamily->id,
+        ]);
+        $other = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $otherBrand->id,
+            'family_id' => $otherFamily->id,
+            'subfamily_id' => $otherSubfamily->id,
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('brand', $brand->id)
+            ->assertCanSeeTableRecords([$matching])
+            ->assertCanNotSeeTableRecords([$other])
+            ->resetTableFilters()
+            ->filterTable('family', $family->id)
+            ->assertCanSeeTableRecords([$matching])
+            ->assertCanNotSeeTableRecords([$other])
+            ->resetTableFilters()
+            ->filterTable('subfamily', $subfamily->id)
+            ->assertCanSeeTableRecords([$matching])
+            ->assertCanNotSeeTableRecords([$other]);
+    }
+
+    /**
+     * US-036 AC4: the `confidence_band` filter applies the bassa (<60),
+     * media (60-84) and alta (>=85) thresholds, with edge cases exactly on
+     * the 59/60 and 84/85 boundaries and a null-confidence product excluded
+     * from every band.
+     */
+    public function test_confidence_band_filter_applies_low_medium_and_high_thresholds(): void
+    {
+        $admin = User::factory()->create();
+        $justBelowLow = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 59]);
+        $justAtMedium = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 60]);
+        $justAtMediumEnd = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 84]);
+        $justAtHigh = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 85]);
+        $noConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => null]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('confidence_band', 'bassa')
+            ->assertCanSeeTableRecords([$justBelowLow])
+            ->assertCanNotSeeTableRecords([$justAtMedium, $justAtMediumEnd, $justAtHigh, $noConfidence])
+            ->resetTableFilters()
+            ->filterTable('confidence_band', 'media')
+            ->assertCanSeeTableRecords([$justAtMedium, $justAtMediumEnd])
+            ->assertCanNotSeeTableRecords([$justBelowLow, $justAtHigh, $noConfidence])
+            ->resetTableFilters()
+            ->filterTable('confidence_band', 'alta')
+            ->assertCanSeeTableRecords([$justAtHigh])
+            ->assertCanNotSeeTableRecords([$justBelowLow, $justAtMedium, $justAtMediumEnd, $noConfidence]);
+    }
+
+    /**
      * Reads the rendered `->description()` (below the state) for a table
      * column, scoped to a single record — mirrors how Filament's own
      * `assertTableColumnStateSet()` resolves state for a given record.

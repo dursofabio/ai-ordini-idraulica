@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-036
+title: Colonne aggiuntive, filtri e ordinamento nella coda di revisione
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 3
+status: REVIEW
+body: |-
+  #### US-036: Colonne aggiuntive, filtri e ordinamento nella coda di revisione
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-035
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio vedere in coda di revisione anche codice articolo, valori originali da file, costo e giacenza del prodotto, e poter ordinare e filtrare la lista per marca, famiglia, sottofamiglia e fascia di confidenza,
+  così da valutare e selezionare più rapidamente gli articoli su cui intervenire, senza doverli aprire uno per uno o scorrere l'intera coda.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, aprendo "Da revisionare" l'amministratore vede in tabella anche codice articolo, marca/famiglia/sottofamiglia come da file originale, costo e giacenza; può ordinare la lista cliccando sulle colonne marca, famiglia, sottofamiglia o confidenza, e filtrare per marca, famiglia, sottofamiglia o fascia di confidenza (bassa/media/alta).
+
+  **Criteri di Accettazione**
+  - [ ] La coda mostra, oltre alle colonne esistenti, codice articolo e i valori originali da file (marca, famiglia, sottofamiglia come importati dal file XLSX)
+  - [ ] La coda mostra costo e giacenza del prodotto
+  - [ ] Le colonne marca, famiglia, sottofamiglia e confidenza sono ordinabili cliccando sull'intestazione
+  - [ ] Sono disponibili filtri per marca, famiglia, sottofamiglia e fascia di confidenza (bassa <60, media <85, alta ≥85)
+  - [ ] Il filtro `enrichment_status = 'needs_review'` e le azioni Conferma/Correggi/Scarta esistenti restano invariati

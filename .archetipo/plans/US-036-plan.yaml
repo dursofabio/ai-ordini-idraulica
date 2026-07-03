@@ -1,0 +1,107 @@
+schema: archetipo/plan/v2
+spec_code: US-036
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  La pagina `App\Filament\Pages\ReviewQueue` (US-023, arricchita da US-035) mostra oggi `description_raw`, `brand.name`/`family.name`/`subfamily.name` con etichetta di origine, l'elenco `attributes` e `confidence`. Mancano quattro cose richieste da questa spec: (1) `codice_articolo`, già presente come colonna in `ProductsTable` ma non qui; (2) i valori grezzi importati dal file XLSX per marca/famiglia/sottofamiglia — colonne `descrizione_marca`, `fam_descrizione`, `subfam_descrizione` già esistenti su `products` (popolate verbatim da `PromoteStagingToProductsJob::extractRawTaxonomy()` a partire da `staging_articoli.raw_row`, e già consumate in lettura da `FileTaxonomyResolver` per il matching `source = 'file'`, ma mai mostrate in UI); (3) `costo` e `giacenza`, colonne `decimal:2` già su `products` ma non esposte in nessuna Resource/Page Filament del progetto (nessun precedente di formattazione `->money()` o numerica da riusare); (4) ordinamento e filtri sulle colonne marca/famiglia/sottofamiglia/confidenza, oggi assenti sulla pagina (la query ha solo un ordinamento di default per confidenza crescente).
+
+  **Decisioni chiave**
+
+  1. **Colonne aggiuntive senza migration (AC1, AC2)**: tutte le colonne richieste esistono già sullo schema `products`, popolate dalla pipeline di import/promozione (`ImportXlsxJob` → `PromoteStagingToProductsJob`) o dalla factory nei test. Si aggiungono quindi solo `TextColumn` nel metodo `ReviewQueue::table()`, senza toccare migrazioni o model: `codice_articolo` (subito dopo `description_raw`, stesso ruolo identificativo che ha in `ProductsTable`); tre colonne 'da file' — `descrizione_marca` (label 'Marca da file'), `fam_descrizione` ('Famiglia da file'), `subfam_descrizione` ('Sottofamiglia da file') — posizionate accanto alle rispettive colonne AI-proposte (`brand.name`, `family.name`, `subfamily.name`) per confronto visivo diretto; `costo` (`->money('EUR')`, primo precedente di formattazione valuta nel progetto) e `giacenza` (`->numeric()`), in coda alle colonne esistenti.
+  2. **Ordinamento nativo Filament (AC3)**: `->sortable()` aggiunto alle quattro colonne esistenti `brand.name`, `family.name`, `subfamily.name` e `confidence`. Per le colonne in dot-notation su relazione `BelongsTo`, Filament gestisce automaticamente il join/orderBy (comportamento documentato, nessuna query custom necessaria); per `confidence` è una colonna diretta sulla tabella. Il click su un'intestazione sovrascrive l'ordinamento di default (`orderByRaw('confidence IS NOT NULL')->orderBy('confidence')`) impostato in `->query()`, comportamento coerente con l'uso standard di Filament Tables e non richiede modifiche alla query iniziale.
+  3. **Filtri marca/famiglia/sottofamiglia (AC4)**: tre `SelectFilter` con `->relationship('brand', 'name')` / `->relationship('family', 'name')` / `->relationship('subfamily', 'name')`, stesso pattern già in uso in `ProductsTable::configure()` (riuso diretto, nessuna nuova convenzione introdotta).
+  4. **Filtro fascia di confidenza (AC4)**: `confidence` non ha una colonna 'fascia' persistita, quindi si introduce `SelectFilter::make('confidence_band')` con opzioni `bassa`/`media`/`alta` (etichette 'Bassa (<60)', 'Media (60-84)', 'Alta (≥85)') e `->query()` custom che applica `where('confidence', '<', 60)` / `whereBetween('confidence', [60, 84])` / `where('confidence', '>=', 85)` in base al valore selezionato, senza toccare lo schema. I filtri si combinano in AND con la query di base (`enrichment_status = 'needs_review'`) tramite il meccanismo standard di composizione dei filtri di Filament: nessuna modifica al `->query()` iniziale della tabella.
+  5. **Nessun impatto sul filtro di base e sulle azioni esistenti (AC5)**: il filtro `enrichment_status = 'needs_review'` resta nella `->query()` iniziale della tabella (non è un `SelectFilter` rimovibile dall'utente); `confirmAction()`, `correctAction()`, `discardAction()` non vengono toccate — le nuove colonne sono di sola lettura e i nuovi filtri agiscono solo sulla query, non sui `recordActions`.
+
+  **Alternative scartate**: colonna `confidence_band` persistita/calcolata in DB con trigger o accessor cache (scartata: richiederebbe sincronizzazione ad ogni scrittura di `confidence` in `EnrichmentApplier`/azioni della coda, mentre una fascia calcolata al volo nel filtro non richiede storage aggiuntivo ed è già sufficiente per il volume di righe della coda); `QueryBuilder` generico di Filament al posto di filtri singoli (scartato: over-engineering per 4 filtri statici già ben modellati da `SelectFilter`, romperebbe la coerenza con il pattern già usato in `ProductsTable`); mostrare marca/famiglia/sottofamiglia 'da file' tramite i soli codici (`marca_codice`/`fam_codice`/`subfam_codice`) invece delle descrizioni (scartata: le colonne `*_codice` sono identificativi non sempre leggibili a colpo d'occhio, mentre le colonne `*_descrizione` sono il testo umano dello stesso valore importato e soddisfano meglio l'obiettivo AC1 di 'valutare rapidamente' il prodotto).
+
+  ## Strategia di Test
+
+  - Feature test (`Livewire::test` su `ReviewQueue`): un prodotto con `codice_articolo`, `descrizione_marca`, `fam_descrizione`, `subfam_descrizione`, `costo` e `giacenza` valorizzati mostra tutte queste colonne in tabella con i valori attesi (AC1, AC2).
+  - Feature test di ordinamento: usando l'helper di test delle tabelle Filament (`sortTable`), verificare che ordinare per `brand.name`, `family.name`, `subfamily.name` e `confidence` produca l'ordine atteso su un set di prodotti con valori distinti (AC3).
+  - Feature test sui filtri: usando l'helper `filterTable`, verificare che il filtro `brand` (e allo stesso modo `family`, `subfamily`) mostri solo i prodotti con quella relazione; verificare che il filtro `confidence_band` con valore `bassa` mostri solo prodotti con `confidence < 60`, `media` quelli con `confidence` tra 60 e 84, `alta` quelli con `confidence >= 85`, includendo un caso limite esattamente sulle soglie (59/60, 84/85) e un prodotto con `confidence = null` escluso da tutte le fasce (AC4).
+  - Feature test di regressione: la suite esistente `ReviewQueueTest` (US-023/US-035) — filtro base `enrichment_status = 'needs_review'`, azioni Conferma/Correggi/Scarta, colonne ed etichette di origine già coperte — continua a passare invariata dopo l'aggiunta di colonne e filtri (AC5).
+
+  ### E2E Test — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già presente, `tests/Browser/ReviewQueueTriageTest.php`, esteso da US-023 e US-035)
+  **Registrazione screenshot:** estensione dello stesso scenario esistente con nuovi screenshot sulle colonne aggiuntive e sull'uso di un filtro/ordinamento, stesso `ARTIFACT_DIR` (`docs/test-results/US-023/`) perché resta lo stesso flusso utente di triage arricchito con più informazioni e strumenti di selezione, non un nuovo scenario indipendente — stessa decisione già presa e documentata in US-035.
+
+  | Scenario | Descrizione del flusso utente |
+  |---|---|
+  | Ispezione colonne aggiuntive e uso di filtro/ordinamento prima del triage (estensione dello scenario esistente) | L'admin autenticato apre 'Da revisionare' e vede a video codice articolo, valori marca/famiglia/sottofamiglia da file, costo e giacenza; ordina la lista cliccando sull'intestazione 'Confidenza'; applica il filtro per fascia di confidenza e verifica che la lista si aggiorni di conseguenza; procede poi con Conferma/Correggi/Scarta come negli scenari già coperti. |
+
+  _Nessuna nuova infrastruttura e2e: si aggiungono passaggi/screenshot allo scenario Dusk già esistente._
+tasks:
+  - id: TASK-01
+    title: Colonne codice articolo e valori originali da file
+    description: Aggiungere a ReviewQueue::table() le colonne TextColumn::make('codice_articolo'), TextColumn::make('descrizione_marca')->label('Marca da file'), TextColumn::make('fam_descrizione')->label('Famiglia da file') e TextColumn::make('subfam_descrizione')->label('Sottofamiglia da file'), posizionate accanto alle rispettive colonne AI-proposte esistenti (AC1).
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Colonne costo e giacenza
+    description: Aggiungere TextColumn::make('costo')->money('EUR') e TextColumn::make('giacenza')->numeric() a ReviewQueue::table(), in coda alle colonne esistenti (AC2).
+    type: Impl
+    status: DONE
+    ref: TASK-02
+  - id: TASK-03
+    title: Ordinamento su marca, famiglia, sottofamiglia e confidenza
+    description: Aggiungere ->sortable() alle colonne esistenti brand.name, family.name, subfamily.name e confidence, senza modificare l'ordinamento di default definito nella ->query() della tabella (AC3).
+    type: Impl
+    status: DONE
+    ref: TASK-03
+  - id: TASK-04
+    title: Filtri per marca, famiglia, sottofamiglia e fascia di confidenza
+    description: Aggiungere a ReviewQueue::table()->filters() tre SelectFilter con ->relationship() per brand/family/subfamily (stesso pattern di ProductsTable) e un SelectFilter::make('confidence_band') con opzioni bassa/media/alta e ->query() custom che applica le soglie <60, 60-84, >=85 su confidence (AC4).
+    type: Impl
+    status: DONE
+    ref: TASK-04
+  - id: TASK-05
+    title: 'Test: nuove colonne codice articolo, valori da file, costo e giacenza'
+    description: Feature test su ReviewQueue che verifica la presenza e i valori delle colonne codice_articolo, descrizione_marca, fam_descrizione, subfam_descrizione, costo e giacenza per un prodotto valorizzato (AC1, AC2).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+    ref: TASK-05
+  - id: TASK-06
+    title: 'Test: ordinamento su marca, famiglia, sottofamiglia e confidenza'
+    description: Feature test su ReviewQueue con sortTable() che verifica l'ordine atteso dei record per ciascuna delle quattro colonne rese ordinabili (AC3).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-06
+  - id: TASK-07
+    title: 'Test: filtri marca, famiglia, sottofamiglia e fascia di confidenza'
+    description: Feature test su ReviewQueue con filterTable() per i filtri brand/family/subfamily e per confidence_band (bassa/media/alta), incluso un caso limite sulle soglie 59/60 e 84/85 e un prodotto con confidence null escluso da tutte le fasce (AC4).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-04
+    ref: TASK-07
+  - id: TASK-08
+    title: Test di regressione su filtro base e azioni esistenti
+    description: Rieseguire la suite ReviewQueueTest esistente (filtro enrichment_status='needs_review', azioni Conferma/Correggi/Scarta, colonne di origine) per confermare che restano invariate dopo l'aggiunta di colonne e filtri (AC5).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+      - TASK-04
+    ref: TASK-08
+  - id: TASK-09
+    title: 'Estensione e2e Dusk: colonne aggiuntive, ordinamento e filtro'
+    description: Estendere tests/Browser/ReviewQueueTriageTest.php con nuovi screenshot che mostrano codice articolo, valori da file, costo e giacenza, l'ordinamento per confidenza e l'uso del filtro per fascia di confidenza, prima delle azioni già coperte; stesso ARTIFACT_DIR docs/test-results/US-023/ (AC1, AC2, AC3, AC4).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+      - TASK-06
+      - TASK-07
+      - TASK-08
+    ref: TASK-09

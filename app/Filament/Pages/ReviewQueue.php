@@ -20,7 +20,9 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * US-023: work queue for products flagged `enrichment_status = 'needs_review'`
@@ -59,23 +61,40 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                 Product::query()
                     ->where('enrichment_status', 'needs_review')
                     ->with('attributes')
-                    ->orderByRaw('confidence IS NOT NULL')
-                    ->orderBy('confidence')
             )
+            // US-036: kept as a `->defaultSort()` closure (applied by Filament
+            // *after* any explicit column sort chosen via `->sortable()`) so
+            // clicking a sortable header actually overrides the ordering,
+            // while this confidence-ascending/nulls-first order still applies
+            // as a tie-breaker and as the initial queue order (AC3).
+            ->defaultSort(fn (Builder $query): Builder => $query
+                ->orderByRaw('confidence IS NOT NULL')
+                ->orderBy('confidence'))
             ->heading(fn (): string => $this->queueHeading())
             ->columns([
+                TextColumn::make('codice_articolo')
+                    ->label('Codice articolo'),
                 TextColumn::make('description_raw')
                     ->label('Descrizione originale')
                     ->wrap(),
+                TextColumn::make('descrizione_marca')
+                    ->label('Marca da file'),
                 TextColumn::make('brand.name')
                     ->label('Marca proposta (AI)')
-                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->brand_source)),
+                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->brand_source))
+                    ->sortable(),
+                TextColumn::make('fam_descrizione')
+                    ->label('Famiglia da file'),
                 TextColumn::make('family.name')
                     ->label('Famiglia proposta (AI)')
-                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->family_source)),
+                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->family_source))
+                    ->sortable(),
+                TextColumn::make('subfam_descrizione')
+                    ->label('Sottofamiglia da file'),
                 TextColumn::make('subfamily.name')
                     ->label('Sottofamiglia proposta (AI)')
-                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->subfamily_source)),
+                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->subfamily_source))
+                    ->sortable(),
                 TextColumn::make('attributes')
                     ->label('Attributi tecnici')
                     ->listWithLineBreaks()
@@ -96,12 +115,42 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                 TextColumn::make('confidence')
                     ->label('Confidenza')
                     ->badge()
+                    ->sortable()
                     ->formatStateUsing(fn (?int $state): string => $state === null ? 'N/D' : "{$state}%")
                     ->color(fn (?int $state): string => match (true) {
                         $state === null => 'gray',
                         $state < 60 => 'danger',
                         $state < 85 => 'warning',
                         default => 'success',
+                    }),
+                TextColumn::make('costo')
+                    ->label('Costo')
+                    ->money('EUR'),
+                TextColumn::make('giacenza')
+                    ->label('Giacenza')
+                    ->numeric(),
+            ])
+            ->filters([
+                SelectFilter::make('brand')
+                    ->relationship('brand', 'name'),
+                SelectFilter::make('family')
+                    ->relationship('family', 'name'),
+                SelectFilter::make('subfamily')
+                    ->relationship('subfamily', 'name'),
+                SelectFilter::make('confidence_band')
+                    ->label('Fascia di confidenza')
+                    ->options([
+                        'bassa' => 'Bassa (<60)',
+                        'media' => 'Media (60-84)',
+                        'alta' => 'Alta (≥85)',
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        return match ($data['value'] ?? null) {
+                            'bassa' => $query->where('confidence', '<', 60),
+                            'media' => $query->whereBetween('confidence', [60, 84]),
+                            'alta' => $query->where('confidence', '>=', 85),
+                            default => $query,
+                        };
                     }),
             ])
             ->recordActions([

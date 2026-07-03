@@ -51,9 +51,17 @@ class ReviewQueueTriageTest extends DuskTestCase
         // US-035: this product carries a proposed subfamily plus a deduced
         // technical attribute, so the new "Sottofamiglia proposta (AI)" and
         // "Attributi tecnici" columns have real content to show on screen.
+        // US-036: it also carries the raw file-imported taxonomy plus
+        // costo/giacenza, so the additional read-only columns have real
+        // content to show on screen.
         $toConfirm = Product::factory()->create([
             'codice_articolo' => 'CONFIRM-001',
             'description_raw' => 'Valvola a sfera 1 pollice da confermare',
+            'descrizione_marca' => 'Marca da file SPA',
+            'fam_descrizione' => 'Famiglia da file',
+            'subfam_descrizione' => 'Sottofamiglia da file',
+            'costo' => 42.5,
+            'giacenza' => 17,
             'enrichment_status' => 'needs_review',
             'brand_id' => $aiBrand->id,
             'family_id' => $aiFamily->id,
@@ -138,6 +146,57 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->assertSee('N/D')
                 ->pause(400)
                 ->screenshot('03b-queue-details');
+
+            // 2c. (US-036) The admin also sees the additional read-only
+            // columns: codice articolo, the raw file-imported taxonomy
+            // (marca/famiglia/sottofamiglia "da file") next to the AI
+            // proposals, and costo/giacenza.
+            $browser->assertSee($toConfirm->codice_articolo)
+                ->assertSee('Marca da file SPA')
+                ->assertSee('Famiglia da file')
+                ->assertSee('Sottofamiglia da file')
+                ->pause(400)
+                ->screenshot('03c-queue-additional-columns');
+
+            // 2d. (US-036) The admin orders the queue by clicking the
+            // "Confidenza" header, which becomes marked as actively sorted.
+            $browser->click('.fi-ta-header-cell-sort-btn[aria-label="Confidenza"]')
+                ->pause(500)
+                ->assertPresent('th.fi-ta-header-cell-sorted')
+                ->screenshot('03d-queue-sorted-by-confidence');
+
+            // 2e. (US-036) The admin filters the queue by confidence band
+            // ("Bassa (<60)"): only the product with confidence 50 remains
+            // visible, the others are hidden.
+            $browser->click('.fi-ta-filters-dropdown button[aria-label="Filter"]')
+                ->pause(400)
+                ->waitFor('#tableFiltersForm\.confidence_band\.value')
+                ->select('#tableFiltersForm\.confidence_band\.value', 'bassa')
+                ->pause(300)
+                ->press('Apply filters')
+                ->pause(600)
+                ->waitUntilMissingText($toConfirm->description_raw)
+                ->assertSee($toCorrect->description_raw)
+                ->assertDontSee($toConfirm->description_raw)
+                ->assertDontSee($toDiscard->description_raw)
+                // Closes the filters dropdown panel (via the non-sortable
+                // "Codice articolo" header cell, an uninvolved element safely
+                // below the sticky topbar) so the resulting filtered table is
+                // fully visible in the screenshot instead of being covered by
+                // the still-open panel.
+                ->click('.fi-ta-header-cell-codice-articolo')
+                ->pause(400)
+                ->screenshot('03e-queue-filtered-by-confidence-band');
+
+            // The confidence-band filter is reset (via its active-filter
+            // badge) before continuing with the triage actions below, which
+            // act on all three seeded products.
+            $browser->click('button[wire\\:click="removeTableFilter(\'confidence_band\')"]')
+                ->pause(600)
+                ->waitForText($toConfirm->description_raw)
+                ->assertSee($toConfirm->description_raw)
+                ->assertSee($toCorrect->description_raw)
+                ->assertSee($toDiscard->description_raw);
 
             // 3. The admin confirms the AI proposal for the first product;
             // it disappears from the queue and the counter decreases.
