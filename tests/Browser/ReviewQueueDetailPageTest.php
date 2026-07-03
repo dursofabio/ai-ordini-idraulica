@@ -3,6 +3,7 @@
 namespace Tests\Browser;
 
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
@@ -75,10 +76,43 @@ class ReviewQueueDetailPageTest extends DuskTestCase
             'source' => 'regex',
         ]);
 
+        // US-041: the "Da revisionare" queue now lists individual pending
+        // {@see EnrichmentProposal} rows instead of whole products, so a
+        // product with no proposal rows at all would no longer appear in the
+        // queue. These three pending proposals (matching the AI-sourced
+        // brand/family/subfamily already set on the product above) are what
+        // makes this product show up — as three rows — before the detail
+        // page correction below resolves them all in one save.
+        $brandProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'value_id' => $aiBrand->id,
+            'origin' => 'ai',
+            'confidence' => 70,
+            'status' => 'pending',
+        ]);
+        EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'family',
+            'value_id' => $aiFamily->id,
+            'origin' => 'ai',
+            'confidence' => 70,
+            'status' => 'pending',
+        ]);
+        EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'subfamily',
+            'value_id' => $aiSubfamily->id,
+            'origin' => 'ai',
+            'confidence' => 70,
+            'status' => 'pending',
+        ]);
+
         $this->browse(function (Browser $browser) use (
             $admin,
             $product,
             $attribute,
+            $brandProposal,
         ) {
             // 1. The admin logs in to the Filament backoffice.
             $browser->visit('/admin/login')
@@ -96,14 +130,16 @@ class ReviewQueueDetailPageTest extends DuskTestCase
             // the seeded product awaiting triage.
             $browser->visit('/admin/review-queue')
                 ->waitForText('articoli da revisionare')
-                ->assertSee('1 articoli da revisionare')
+                ->assertSee('3 articoli da revisionare')
                 ->assertSee($product->description_raw)
                 ->pause(400)
                 ->screenshot('02-queue-before');
 
-            // 3. The admin clicks "Dettagli" on the product's row: this is a
-            // real navigation link to a dedicated URL, not a modal.
-            $browser->with($this->rowSelector($product), function (Browser $row) {
+            // 3. The admin clicks "Dettagli" on one of the product's three
+            // proposal rows (any of them link to the same product detail
+            // page): this is a real navigation link to a dedicated URL, not
+            // a modal.
+            $browser->with($this->rowSelector($brandProposal), function (Browser $row) {
                 $row->clickLink('Dettagli');
             });
 
@@ -131,38 +167,46 @@ class ReviewQueueDetailPageTest extends DuskTestCase
                 ->screenshot('04-detail-page-information');
 
             // 5. The admin corrects the brand from the editable form.
-            $browser->click('.fi-fo-select-wrp:has(label[for="data.brand_id"]) .fi-select-input-btn')
+            //
+            // Note: the schema's `id`/`for` attributes are always prefixed
+            // with the schema's registration key ("form", from the
+            // `form(Schema $schema)` method below), not the `->statePath()`
+            // configured inside it ("data") — the latter only drives
+            // `wire:model` bindings. Mirrors {@see ReviewQueueTriageTest}'s
+            // `mountedActionSchema0.*` convention (also not literally the
+            // form's own field name).
+            $browser->click('.fi-fo-select-wrp:has(label[for="form.brand_id"]) .fi-select-input-btn')
                 ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="data.brand_id"]) .fi-select-input-search-ctn input', 'Marca Corretta')
+                ->type('.fi-fo-select-wrp:has(label[for="form.brand_id"]) .fi-select-input-search-ctn input', 'Marca Corretta')
                 ->pause(1500)
-                ->click('.fi-fo-select-wrp:has(label[for="data.brand_id"]) li.fi-select-input-option')
+                ->click('.fi-fo-select-wrp:has(label[for="form.brand_id"]) li.fi-select-input-option')
                 ->pause(400)
                 ->assertSee('Marca Corretta')
                 ->screenshot('05-brand-corrected');
 
             // 6. The admin corrects the family, which resets the subfamily
             // options to the new family's children.
-            $browser->click('.fi-fo-select-wrp:has(label[for="data.family_id"]) .fi-select-input-btn')
+            $browser->click('.fi-fo-select-wrp:has(label[for="form.family_id"]) .fi-select-input-btn')
                 ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="data.family_id"]) .fi-select-input-search-ctn input', 'Famiglia Corretta')
+                ->type('.fi-fo-select-wrp:has(label[for="form.family_id"]) .fi-select-input-search-ctn input', 'Famiglia Corretta')
                 ->pause(1500)
-                ->click('.fi-fo-select-wrp:has(label[for="data.family_id"]) li.fi-select-input-option')
+                ->click('.fi-fo-select-wrp:has(label[for="form.family_id"]) li.fi-select-input-option')
                 ->pause(400)
                 ->assertSee('Famiglia Corretta')
                 ->screenshot('06-family-corrected');
 
             // 7. The admin corrects the subfamily.
-            $browser->click('.fi-fo-select-wrp:has(label[for="data.subfamily_id"]) .fi-select-input-btn')
+            $browser->click('.fi-fo-select-wrp:has(label[for="form.subfamily_id"]) .fi-select-input-btn')
                 ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="data.subfamily_id"]) .fi-select-input-search-ctn input', 'Sottofamiglia Corretta')
+                ->type('.fi-fo-select-wrp:has(label[for="form.subfamily_id"]) .fi-select-input-search-ctn input', 'Sottofamiglia Corretta')
                 ->pause(1500)
-                ->click('.fi-fo-select-wrp:has(label[for="data.subfamily_id"]) li.fi-select-input-option')
+                ->click('.fi-fo-select-wrp:has(label[for="form.subfamily_id"]) li.fi-select-input-option')
                 ->pause(400)
                 ->assertSee('Sottofamiglia Corretta')
                 ->screenshot('07-subfamily-corrected');
 
             // 8. The admin corrects the value of the technical attribute.
-            $valueFieldId = 'data.attributes.record-'.$attribute->id.'.value_num';
+            $valueFieldId = 'form.attributes.record-'.$attribute->id.'.value_num';
             $browser->clear('input[id="'.$valueFieldId.'"]')
                 ->type('input[id="'.$valueFieldId.'"]', '3.2')
                 ->pause(400)
@@ -200,15 +244,16 @@ class ReviewQueueDetailPageTest extends DuskTestCase
     }
 
     /**
-     * Builds a CSS selector for the table row of the given product, so the
-     * "Dettagli" link click is scoped to the correct record instead of
-     * matching the first row on the page. Filament keys every table row with
-     * a `wire:key` ending in `table.records.{recordKey}`, which is a stable,
-     * unique attribute to scope on (Dusk's resolver only supports CSS
+     * Builds a CSS selector for the table row of the given proposal, so the
+     * "Dettagli" link click is scoped to a known row instead of matching the
+     * first row on the page. Filament keys every table row with a `wire:key`
+     * ending in `table.records.{recordKey}` — under US-041 the table's
+     * record is the {@see EnrichmentProposal}, not the product, which is a
+     * stable, unique attribute to scope on (Dusk's resolver only supports CSS
      * selectors, not XPath). Mirrors {@see ReviewQueueTriageTest::rowSelector()}.
      */
-    private function rowSelector(Product $product): string
+    private function rowSelector(EnrichmentProposal $proposal): string
     {
-        return 'tr[wire\\:key$=".table.records.'.$product->getKey().'"]';
+        return 'tr[wire\\:key$=".table.records.'.$proposal->getKey().'"]';
     }
 }

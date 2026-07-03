@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Filament\Pages\ReviewQueue;
 use App\Filament\Pages\ReviewQueueDetail;
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\Subfamily;
 use App\Models\User;
+use App\Services\Enrichment\EnrichmentApplier;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\Concerns\RequiresDatabase;
@@ -235,5 +237,96 @@ class ReviewQueueDetailTest extends TestCase
         $this->assertSame('Materiale', $newAttribute->key);
         $this->assertSame('Ottone', $newAttribute->value_text);
         $this->assertSame('manual', $newAttribute->source);
+    }
+
+    /**
+     * US-041 regression: brand/family/subfamily are always resolved by a
+     * full save (the form always submits a value for them), so any
+     * `pending` proposal for those fields must be marked `applied` —
+     * otherwise it would linger as a ghost row in the rewritten,
+     * per-proposal {@see ReviewQueue}. A pending attribute proposal whose
+     * key already has a `product_attributes` row is also resolved, since the
+     * admin had a chance to see and review that row on this page even
+     * without editing it.
+     */
+    public function test_save_marks_still_pending_taxonomy_and_resolved_attribute_proposals_as_applied(): void
+    {
+        $admin = User::factory()->create();
+        $correctedBrand = Brand::factory()->create();
+        $correctedFamily = Family::factory()->create();
+        $correctedSubfamily = Subfamily::factory()->create(['family_id' => $correctedFamily->id]);
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+        $product->attributes()->create([
+            'key' => 'kW',
+            'value_num' => 1.5,
+            'value_text' => null,
+            'unit' => 'kW',
+            'source' => 'regex',
+        ]);
+
+        $pendingFamilyProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'family',
+            'status' => 'pending',
+        ]);
+        $pendingAttributeProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'status' => 'pending',
+        ]);
+        $otherProductProposal = EnrichmentProposal::factory()->create(['status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueueDetail::class, ['record' => $product->getRouteKey()])
+            ->fillForm([
+                'brand_id' => $correctedBrand->id,
+                'family_id' => $correctedFamily->id,
+                'subfamily_id' => $correctedSubfamily->id,
+            ])
+            ->call('save')
+            ->assertRedirect(ReviewQueue::getUrl());
+
+        $pendingFamilyProposal->refresh();
+        $pendingAttributeProposal->refresh();
+        $otherProductProposal->refresh();
+
+        $this->assertSame('applied', $pendingFamilyProposal->status);
+        $this->assertSame('applied', $pendingAttributeProposal->status);
+        $this->assertSame('pending', $otherProductProposal->status);
+    }
+
+    /**
+     * Regression guard: a `pending` attribute proposal whose confidence was
+     * too low to ever be written to `product_attributes` (see
+     * {@see EnrichmentApplier}) never materializes a
+     * row in the repeater, so the admin never actually saw or reviewed it on
+     * this page. A full-page save must NOT silently mark it `applied` — that
+     * would make the proposed value permanently disappear from the queue
+     * without ever having been applied anywhere.
+     */
+    public function test_save_does_not_apply_a_pending_attribute_proposal_that_was_never_materialized(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $neverWrittenAttributeProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'Materiale',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueueDetail::class, ['record' => $product->getRouteKey()])
+            ->call('save')
+            ->assertRedirect(ReviewQueue::getUrl());
+
+        $neverWrittenAttributeProposal->refresh();
+
+        $this->assertSame('pending', $neverWrittenAttributeProposal->status);
+        $this->assertSame(0, $product->attributes()->count());
     }
 }

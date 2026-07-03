@@ -26,54 +26,62 @@ tasks:
     title: Riscrivere query, colonne e filtri della coda sul registro proposte
     description: Sostituire la query di ReviewQueue::table() con EnrichmentProposal::where('status','pending')->with('product'); sostituire le colonne con codice_articolo/description_raw del prodotto, campo (etichetta Marca/Famiglia/Sottofamiglia/Attributo), valore proposto (risolto da value_id per i campi di tassonomia o da value_text/value_num/unit per gli attributi), origine (riuso di originLabel) e confidenza (stesso badge/soglie); sostituire i filtri brand/family/subfamily con un filtro 'field' e adattare confidence_band alla colonna confidence della proposta; aggiornare defaultSort e queueHeading() al conteggio delle proposte pendenti.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Riscrivere i test di listing, colonne, filtri e heading della coda
     description: Riscrivere in tests/Feature/ReviewQueueTest.php gli scenari di listing (una riga per proposta pendente, un prodotto con più proposte pendenti compare più volte), lo scenario cardine AC5 (marca già applicata da file + un solo attributo pendente mostra in coda esclusivamente la proposta dell'attributo), le colonne per ciascun tipo di campo, i nuovi filtri e l'heading basato sul conteggio delle proposte.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Riscrivere le azioni confirm/correct/discard sulla singola proposta
     description: 'Riscrivere applyConfirm()/applyDiscard() perché operino su EnrichmentProposal: confirm scrive il valore proposto sul prodotto con {field}_source/source = proposal->origin (o crea/aggiorna l''attributo con source = proposal->origin) e marca la proposta ''applied''; discard marca la proposta ''discarded'' senza toccare il prodotto. Riscrivere correctAction() con uno schema dinamico basato su $record->field (Select prevalorizzato con value_id per marca/famiglia/sottofamiglia, input testo/numero/unità prevalorizzati per gli attributi) che scrive con source=''manual'' e marca la proposta ''applied''. Adattare le bulk action a Collection<EnrichmentProposal> riusando gli stessi helper.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Riscrivere i test di confirm/correct/discard e delle bulk action
     description: Riscrivere in tests/Feature/ReviewQueueTest.php gli scenari di confirm (per marca/famiglia/sottofamiglia/attributo, verificando il valore scritto e il source=origin della proposta), correct (almeno marca e attributo, verificando source='manual'), discard (prodotto invariato, proposta 'discarded', riga rimossa dalla coda) e le rispettive bulk action su proposte selezionate.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-04
   - id: TASK-05
     title: Aggiornare il link Dettagli e la risoluzione delle proposte pendenti al salvataggio
     description: Aggiornare viewDetailAction()->url() perché risolva $record->product (il record di riga è ora una proposta). Aggiornare ReviewQueueDetail::save() perché, dopo l'update del prodotto, marchi 'applied' tutte le proposte ancora 'pending' di quel prodotto, evitando righe fantasma nella coda dopo una correzione completa dal dettaglio.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
+    ref: TASK-05
   - id: TASK-06
     title: Test di non-regressione per il link Dettagli e la risoluzione delle proposte dal dettaglio
     description: Estendere ReviewQueueTest per verificare che il link 'Dettagli' risolva verso il prodotto sottostante alla proposta. Estendere ReviewQueueDetailTest verificando che salvare dal dettaglio marchi 'applied' le proposte pendenti del prodotto, che quindi non compaiono più nella coda riscritta.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06
   - id: TASK-07
     title: Riscrivere lo scenario e2e Dusk della coda per la grana a proposta
     description: 'Riscrivere tests/Browser/ReviewQueueTriageTest.php: un amministratore apre la coda e vede righe per singola proposta (marca/famiglia/sottofamiglia/attributo), conferma una proposta, ne corregge un''altra con un valore diverso, ne scarta una terza; verificare gli effetti sul prodotto sottostante e che eventuali altre proposte pendenti dello stesso prodotto restino visibili in coda. Salvare gli screenshot per-step in docs/test-results/US-041/, stessa convenzione già adottata in docs/test-results/US-023/ (Dusk non registra video in questo progetto).'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: Regressione completa su coda, dettaglio e pipeline di arricchimento
     description: Rieseguire ReviewQueueTest, ReviewQueueDetailTest, ReviewQueueDetailPageTest, ReviewQueueTriageTest e la suite EnrichmentApplierTest/resolver (US-040) per confermare che la creazione delle proposte non sia stata alterata e che la coda riscritta non introduca regressioni nella pipeline di classificazione.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-07
+    ref: TASK-08

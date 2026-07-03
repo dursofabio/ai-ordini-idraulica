@@ -3,9 +3,11 @@
 namespace App\Filament\Pages;
 
 use App\Filament\Resources\Products\Schemas\ProductForm;
+use App\Models\EnrichmentProposal;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\Subfamily;
+use App\Services\Enrichment\EnrichmentApplier;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\Concerns\InteractsWithActions;
@@ -22,6 +24,7 @@ use Filament\Schemas\Concerns\InteractsWithSchemas;
 use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
+use Illuminate\Database\Eloquent\Builder;
 use Livewire\Attributes\Locked;
 
 /**
@@ -263,6 +266,18 @@ class ReviewQueueDetail extends Page implements HasActions, HasSchemas
      * (also forced to `source = 'manual'` per row above) via the automatic
      * relationship-save that `Schema::getState()` performs for an
      * already-existing record — then redirects back to the queue.
+     *
+     * US-041: brand/family/subfamily are always resolved by this save (the
+     * form always submits a value for them, whether the admin changed it or
+     * just reviewed and kept it), so any `pending` proposal for those fields
+     * is now moot and marked `applied` to avoid a ghost row surviving in the
+     * rewritten, per-proposal queue. Technical attributes are different: the
+     * repeater only round-trips attribute rows that already exist in
+     * `product_attributes` — a `pending` attribute proposal whose confidence
+     * was too low to write (see {@see EnrichmentApplier})
+     * never materializes a row, so it is never shown or reviewed here. Such a
+     * proposal must stay `pending` instead of silently vanishing from the
+     * queue with its value never applied anywhere.
      */
     public function save(): void
     {
@@ -279,6 +294,17 @@ class ReviewQueueDetail extends Page implements HasActions, HasSchemas
             'confidence' => 100,
             'enrichment_status' => 'enriched',
         ]);
+
+        $resolvedAttributeKeys = $this->product->attributes()->pluck('key');
+
+        EnrichmentProposal::query()
+            ->where('product_id', $this->product->id)
+            ->where('status', 'pending')
+            ->where(function (Builder $query) use ($resolvedAttributeKeys): void {
+                $query->where('field', '!=', 'attribute')
+                    ->orWhereIn('attribute_key', $resolvedAttributeKeys);
+            })
+            ->update(['status' => 'applied']);
 
         Notification::make()
             ->title('Correzione salvata')

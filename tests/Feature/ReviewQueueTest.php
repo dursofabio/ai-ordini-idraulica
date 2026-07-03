@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Filament\Pages\ReviewQueue;
 use App\Filament\Pages\ReviewQueueDetail;
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\Subfamily;
@@ -19,46 +20,53 @@ use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
 /**
- * US-023 acceptance criteria for the "Da revisionare" review queue:
- *  - AC1: the queue lists only `enrichment_status = 'needs_review'` products,
- *    ordered by ascending confidence (NULL first), showing
- *    description_raw/brand.name/family.name/confidence.
- *  - AC2: "Confirm" promotes the AI proposal as-is
- *    (`enrichment_status = 'enriched'`) without touching
- *    brand_id/family_id/subfamily_id or any `*_source`/`source`.
- *  - AC3: "Correct" saves the submitted values with `*_source = 'manual'`,
- *    `source = 'manual'`, `confidence = 100`, `enrichment_status = 'enriched'`,
- *    with the form precompiled from the record's current values.
- *  - AC4: "Discard" clears any non-manual AI proposal while preserving
- *    fields already `*_source = 'manual'`, and keeps `needs_review`.
- *  - AC5: the page heading shows the current queue count and reflects it
- *    after an action changes the queue.
+ * US-041 acceptance criteria for the proposal-level "Da revisionare" review
+ * queue: the queue now lists individual pending {@see EnrichmentProposal}
+ * rows (from the US-040 register) instead of whole products, so a product
+ * appears once per pending proposal rather than once overall.
+ *
+ *  - AC1: the queue lists only `status = 'pending'` proposals, ordered by
+ *    ascending confidence (NULL first), showing the underlying product's
+ *    codice_articolo/description_raw plus the proposal's own field/proposed
+ *    value/origin/confidence.
+ *  - AC2: "Confirm" writes the proposed value to the product (the specific
+ *    field/attribute only) with the proposal's own `origin` as the source,
+ *    and marks the proposal `applied` — without touching the product's
+ *    overall source/confidence/enrichment_status.
+ *  - AC3: "Correct" saves the admin-submitted value with `source = 'manual'`
+ *    for the specific field/attribute, with the form precompiled from the
+ *    proposal's current value, and marks the proposal `applied`.
+ *  - AC4: "Discard" only marks the proposal `discarded`, without touching the
+ *    product at all.
+ *  - AC5: a product whose other fields are already resolved keeps only its
+ *    remaining pending proposals in the queue (one row per proposal, not one
+ *    per product).
  */
 class ReviewQueueTest extends TestCase
 {
     use RefreshDatabase;
     use RequiresDatabase;
 
-    public function test_queue_only_lists_needs_review_products(): void
+    public function test_queue_only_lists_pending_proposals(): void
     {
         $admin = User::factory()->create();
-        $needsReview = Product::factory()->create(['enrichment_status' => 'needs_review']);
-        $pending = Product::factory()->create(['enrichment_status' => 'pending']);
-        $enriched = Product::factory()->create(['enrichment_status' => 'enriched']);
+        $pending = EnrichmentProposal::factory()->create(['status' => 'pending']);
+        $applied = EnrichmentProposal::factory()->create(['status' => 'applied']);
+        $discarded = EnrichmentProposal::factory()->create(['status' => 'discarded']);
 
         $this->actingAs($admin);
 
         Livewire::test(ReviewQueue::class)
-            ->assertCanSeeTableRecords([$needsReview])
-            ->assertCanNotSeeTableRecords([$pending, $enriched]);
+            ->assertCanSeeTableRecords([$pending])
+            ->assertCanNotSeeTableRecords([$applied, $discarded]);
     }
 
     public function test_queue_is_ordered_by_ascending_confidence_with_null_first(): void
     {
         $admin = User::factory()->create();
-        $highConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 80]);
-        $lowConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 20]);
-        $noConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => null]);
+        $highConfidence = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => 80]);
+        $lowConfidence = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => 20]);
+        $noConfidence = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => null]);
 
         $this->actingAs($admin);
 
@@ -66,33 +74,346 @@ class ReviewQueueTest extends TestCase
             ->assertCanSeeTableRecords([$noConfidence, $lowConfidence, $highConfidence], inOrder: true);
     }
 
-    public function test_queue_columns_show_description_brand_family_and_confidence(): void
+    /**
+     * US-041: a product with several pending proposals must appear once per
+     * proposal, not once overall.
+     */
+    public function test_product_with_multiple_pending_proposals_appears_once_per_proposal(): void
     {
         $admin = User::factory()->create();
-        $brand = Brand::factory()->create(['name' => 'Marca AI']);
-        $family = Family::factory()->create(['name' => 'Famiglia AI']);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'description_raw' => 'Raccordo a T da 3/4 pollici',
-            'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'confidence' => 45,
+        $product = Product::factory()->create();
+        $familyProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'family',
+            'status' => 'pending',
+        ]);
+        $attributeProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'status' => 'pending',
         ]);
 
         $this->actingAs($admin);
 
         Livewire::test(ReviewQueue::class)
-            ->assertTableColumnStateSet('description_raw', 'Raccordo a T da 3/4 pollici', $product)
-            ->assertTableColumnStateSet('brand.name', 'Marca AI', $product)
-            ->assertTableColumnStateSet('family.name', 'Famiglia AI', $product)
-            ->assertTableColumnStateSet('confidence', 45, $product);
+            ->assertCanSeeTableRecords([$familyProposal, $attributeProposal])
+            ->assertCountTableRecords(2);
+    }
+
+    /**
+     * US-041 AC5 cardinal scenario: a product whose brand is already applied
+     * from file (no pending brand proposal) but has exactly one pending
+     * low-confidence attribute proposal must show up in the queue with
+     * exactly one row — not a row for the whole product, and not extra rows
+     * for family/subfamily since those have no pending proposals either.
+     */
+    public function test_product_with_resolved_brand_and_one_pending_attribute_shows_exactly_one_row(): void
+    {
+        $admin = User::factory()->create();
+        $brand = Brand::factory()->create();
+        $product = Product::factory()->create([
+            'brand_id' => $brand->id,
+            'brand_source' => 'file',
+        ]);
+        $pendingAttribute = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_num' => 1.5,
+            'value_text' => null,
+            'unit' => 'kW',
+            'origin' => 'regex',
+            'confidence' => 40,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertCanSeeTableRecords([$pendingAttribute])
+            ->assertCountTableRecords(1);
+    }
+
+    public function test_queue_columns_show_the_underlying_products_codice_articolo_and_description(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create([
+            'codice_articolo' => 'ART-12345',
+            'description_raw' => 'Raccordo a T da 3/4 pollici',
+        ]);
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('product.codice_articolo', 'ART-12345', $proposal)
+            ->assertTableColumnStateSet('product.description_raw', 'Raccordo a T da 3/4 pollici', $proposal);
+    }
+
+    public function test_field_column_shows_label_including_attribute_key_for_attribute_proposals(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $brandProposal = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+        $familyProposal = EnrichmentProposal::factory()->create(['field' => 'family', 'status' => 'pending']);
+        $subfamilyProposal = EnrichmentProposal::factory()->create(['field' => 'subfamily', 'status' => 'pending']);
+        $attributeProposal = EnrichmentProposal::factory()->create([
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'status' => 'pending',
+        ]);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $this->assertSame('Marca', $this->formattedColumnState($component, 'field', $brandProposal));
+        $this->assertSame('Famiglia', $this->formattedColumnState($component, 'field', $familyProposal));
+        $this->assertSame('Sottofamiglia', $this->formattedColumnState($component, 'field', $subfamilyProposal));
+        $this->assertSame('Attributo: kW', $this->formattedColumnState($component, 'field', $attributeProposal));
+    }
+
+    public function test_proposed_value_column_resolves_taxonomy_names_for_brand_family_and_subfamily(): void
+    {
+        $admin = User::factory()->create();
+        $brand = Brand::factory()->create(['name' => 'Marca AI']);
+        $family = Family::factory()->create(['name' => 'Famiglia AI']);
+        $subfamily = Subfamily::factory()->create(['name' => 'Sottofamiglia AI', 'family_id' => $family->id]);
+
+        $brandProposal = EnrichmentProposal::factory()->create(['field' => 'brand', 'value_id' => $brand->id, 'status' => 'pending']);
+        $familyProposal = EnrichmentProposal::factory()->create(['field' => 'family', 'value_id' => $family->id, 'status' => 'pending']);
+        $subfamilyProposal = EnrichmentProposal::factory()->create(['field' => 'subfamily', 'value_id' => $subfamily->id, 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('proposed_value', 'Marca AI', $brandProposal)
+            ->assertTableColumnStateSet('proposed_value', 'Famiglia AI', $familyProposal)
+            ->assertTableColumnStateSet('proposed_value', 'Sottofamiglia AI', $subfamilyProposal);
+    }
+
+    public function test_proposed_value_column_shows_dash_when_taxonomy_value_id_is_not_found(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'brand',
+            'value_id' => 999999,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('proposed_value', '—', $proposal);
+    }
+
+    /**
+     * Mirrors the trailing-zero trimming convention used elsewhere for
+     * technical attributes: `value_num` is cast `decimal:3`, so a whole
+     * number like 100 must not be corrupted into "1" by naive trimming.
+     */
+    public function test_proposed_value_column_formats_attribute_values_with_text_numeric_and_unit(): void
+    {
+        $admin = User::factory()->create();
+        $textProposal = EnrichmentProposal::factory()->create([
+            'field' => 'attribute',
+            'attribute_key' => 'Materiale',
+            'value_text' => 'Ottone',
+            'value_num' => null,
+            'unit' => null,
+            'status' => 'pending',
+        ]);
+        $numericProposal = EnrichmentProposal::factory()->create([
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_text' => null,
+            'value_num' => 1.5,
+            'unit' => 'kW',
+            'status' => 'pending',
+        ]);
+        $wholeNumberProposal = EnrichmentProposal::factory()->create([
+            'field' => 'attribute',
+            'attribute_key' => 'DN',
+            'value_text' => null,
+            'value_num' => 100,
+            'unit' => null,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('proposed_value', 'Ottone', $textProposal)
+            ->assertTableColumnStateSet('proposed_value', '1.5 kW', $numericProposal)
+            ->assertTableColumnStateSet('proposed_value', '100', $wholeNumberProposal);
+    }
+
+    /**
+     * @return array<int, array{0: string, 1: string}>
+     */
+    public static function originSourceProvider(): array
+    {
+        return [
+            'ai' => ['ai', 'AI'],
+            'regex' => ['regex', 'Dedotta'],
+            'dictionary' => ['dictionary', 'Dedotta'],
+            'propagated' => ['propagated', 'Dedotta'],
+            'file' => ['file', 'Da file'],
+            'manual' => ['manual', 'Manuale'],
+        ];
+    }
+
+    public function test_origin_column_maps_each_origin_value_to_expected_label(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        foreach (self::originSourceProvider() as [$origin, $expectedLabel]) {
+            $proposal = EnrichmentProposal::factory()->create(['origin' => $origin, 'status' => 'pending']);
+
+            $this->assertSame(
+                $expectedLabel,
+                $this->formattedColumnState($component, 'origin', $proposal),
+                "Failed asserting origin label for origin [{$origin}]."
+            );
+        }
+    }
+
+    /**
+     * `enrichment_proposals.origin` is NOT NULL at the database level (unlike
+     * the product's own `*_source`/attribute `source` columns, which reuse
+     * this same {@see ReviewQueue::originLabel()} mapping and can be null),
+     * so the unknown/null branch is exercised directly against the shared
+     * static mapping instead of through a persisted proposal.
+     */
+    public function test_origin_label_maps_null_and_unknown_values_to_dash(): void
+    {
+        $this->assertSame('—', ReviewQueue::originLabel(null));
+        $this->assertSame('—', ReviewQueue::originLabel('unknown'));
+    }
+
+    public function test_confidence_column_formats_null_state_as_nd_and_keeps_percentage_for_values(): void
+    {
+        $admin = User::factory()->create();
+        $withoutConfidence = EnrichmentProposal::factory()->create(['confidence' => null, 'status' => 'pending']);
+        $withConfidence = EnrichmentProposal::factory()->create(['confidence' => 45, 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $this->assertSame('N/D', $this->formattedColumnState($component, 'confidence', $withoutConfidence));
+        $this->assertSame('45%', $this->formattedColumnState($component, 'confidence', $withConfidence));
+    }
+
+    public function test_confidence_column_color_reflects_thresholds(): void
+    {
+        $admin = User::factory()->create();
+        $none = EnrichmentProposal::factory()->create(['confidence' => null, 'status' => 'pending']);
+        $danger = EnrichmentProposal::factory()->create(['confidence' => 59, 'status' => 'pending']);
+        $warning = EnrichmentProposal::factory()->create(['confidence' => 84, 'status' => 'pending']);
+        $success = EnrichmentProposal::factory()->create(['confidence' => 85, 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        // `getColumn()` returns the same cached Column instance on every
+        // call, so each color must be read immediately after binding its
+        // record — resolving all four records first and reading their
+        // colors afterwards would make every assertion read the color of
+        // whichever record was bound last.
+        $this->assertSame('gray', $this->confidenceColumnColor($component, $none));
+        $this->assertSame('danger', $this->confidenceColumnColor($component, $danger));
+        $this->assertSame('warning', $this->confidenceColumnColor($component, $warning));
+        $this->assertSame('success', $this->confidenceColumnColor($component, $success));
+    }
+
+    private function confidenceColumnColor(Testable $component, EnrichmentProposal $record): string|array|null
+    {
+        $column = $this->resolveColumn($component, 'confidence', $record);
+
+        return $column->getColor($column->getState());
+    }
+
+    public function test_confidence_column_is_sortable(): void
+    {
+        $admin = User::factory()->create();
+        $low = EnrichmentProposal::factory()->create(['confidence' => 20, 'status' => 'pending']);
+        $high = EnrichmentProposal::factory()->create(['confidence' => 80, 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $component->sortTable('confidence')
+            ->assertCanSeeTableRecords([$low, $high], inOrder: true);
+        $component->sortTable('confidence', 'desc')
+            ->assertCanSeeTableRecords([$high, $low], inOrder: true);
+    }
+
+    /**
+     * US-041: `field` is a plain column filter (no relationship), matching
+     * the `enrichment_status` filter pattern already used elsewhere.
+     */
+    public function test_field_filter_narrows_the_queue(): void
+    {
+        $admin = User::factory()->create();
+        $brandProposal = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+        $attributeProposal = EnrichmentProposal::factory()->create([
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('field', 'brand')
+            ->assertCanSeeTableRecords([$brandProposal])
+            ->assertCanNotSeeTableRecords([$attributeProposal]);
+    }
+
+    /**
+     * The `confidence_band` filter applies the bassa (<60), media (60-84) and
+     * alta (>=85) thresholds, with edge cases exactly on the 59/60 and 84/85
+     * boundaries and a null-confidence proposal excluded from every band.
+     */
+    public function test_confidence_band_filter_applies_low_medium_and_high_thresholds(): void
+    {
+        $admin = User::factory()->create();
+        $justBelowLow = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => 59]);
+        $justAtMedium = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => 60]);
+        $justAtMediumEnd = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => 84]);
+        $justAtHigh = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => 85]);
+        $noConfidence = EnrichmentProposal::factory()->create(['status' => 'pending', 'confidence' => null]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('confidence_band', 'bassa')
+            ->assertCanSeeTableRecords([$justBelowLow])
+            ->assertCanNotSeeTableRecords([$justAtMedium, $justAtMediumEnd, $justAtHigh, $noConfidence])
+            ->resetTableFilters()
+            ->filterTable('confidence_band', 'media')
+            ->assertCanSeeTableRecords([$justAtMedium, $justAtMediumEnd])
+            ->assertCanNotSeeTableRecords([$justBelowLow, $justAtHigh, $noConfidence])
+            ->resetTableFilters()
+            ->filterTable('confidence_band', 'alta')
+            ->assertCanSeeTableRecords([$justAtHigh])
+            ->assertCanNotSeeTableRecords([$justBelowLow, $justAtMedium, $justAtMediumEnd, $noConfidence]);
     }
 
     public function test_heading_shows_queue_count_and_updates_after_an_action(): void
     {
         $admin = User::factory()->create();
-        $first = Product::factory()->create(['enrichment_status' => 'needs_review']);
-        Product::factory()->create(['enrichment_status' => 'needs_review']);
+        $first = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+        EnrichmentProposal::factory()->create(['status' => 'pending']);
 
         $this->actingAs($admin);
 
@@ -105,244 +426,336 @@ class ReviewQueueTest extends TestCase
         $component->assertSee('1 articoli da revisionare');
     }
 
-    public function test_confirm_action_promotes_ai_proposal_and_removes_record_from_queue(): void
+    /**
+     * US-041 AC2: confirming a brand proposal writes `brand_id` and
+     * `brand_source` (set to the proposal's own `origin`) to the product,
+     * marks the proposal `applied`, and — crucially, the narrower behavior
+     * introduced by this rewrite — leaves the product's overall
+     * source/confidence/enrichment_status completely untouched.
+     */
+    public function test_confirm_action_writes_brand_value_without_touching_the_products_overall_fields(): void
     {
         $admin = User::factory()->create();
         $brand = Brand::factory()->create();
-        $family = Family::factory()->create();
         $product = Product::factory()->create([
+            'source' => 'file',
+            'confidence' => 77,
             'enrichment_status' => 'needs_review',
-            'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 70,
         ]);
-
-        $this->actingAs($admin);
-
-        $component = Livewire::test(ReviewQueue::class);
-        $component->callTableAction('confirm', $product);
-
-        $product->refresh();
-
-        $this->assertSame('enriched', $product->enrichment_status);
-        $this->assertSame($brand->id, $product->brand_id);
-        $this->assertSame($family->id, $product->family_id);
-        $this->assertSame('ai', $product->brand_source);
-        $this->assertSame('ai', $product->family_source);
-        $this->assertSame('ai', $product->source);
-        $this->assertSame(70, $product->confidence);
-
-        $component->assertCanNotSeeTableRecords([$product]);
-    }
-
-    public function test_correct_action_form_is_prefilled_with_current_values(): void
-    {
-        $admin = User::factory()->create();
-        $brand = Brand::factory()->create();
-        $family = Family::factory()->create();
-        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'subfamily_id' => $subfamily->id,
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'value_id' => $brand->id,
+            'origin' => 'ai',
+            'status' => 'pending',
         ]);
 
         $this->actingAs($admin);
 
         Livewire::test(ReviewQueue::class)
-            ->mountTableAction('correct', $product)
-            ->assertTableActionDataSet([
-                'brand_id' => $brand->id,
-                'family_id' => $family->id,
-                'subfamily_id' => $subfamily->id,
-            ]);
+            ->callTableAction('confirm', $proposal);
+
+        $product->refresh();
+        $proposal->refresh();
+
+        $this->assertSame($brand->id, $product->brand_id);
+        $this->assertSame('ai', $product->brand_source);
+        $this->assertSame('applied', $proposal->status);
+
+        $this->assertSame('file', $product->source);
+        $this->assertSame(77, $product->confidence);
+        $this->assertSame('needs_review', $product->enrichment_status);
     }
 
-    public function test_correct_action_saves_submitted_values_as_manual(): void
+    /**
+     * US-041 AC2: confirming an attribute proposal writes the technical
+     * attribute row (creating it if missing) with `source` set to the
+     * proposal's own `origin`, and marks the proposal `applied`.
+     */
+    public function test_confirm_action_writes_attribute_value_and_marks_proposal_applied(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_num' => 1.5,
+            'value_text' => null,
+            'unit' => 'kW',
+            'origin' => 'regex',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('confirm', $proposal);
+
+        $proposal->refresh();
+        $attribute = $product->attributes()->where('key', 'kW')->first();
+
+        $this->assertNotNull($attribute);
+        $this->assertSame('1.500', $attribute->value_num);
+        $this->assertSame('kW', $attribute->unit);
+        $this->assertSame('regex', $attribute->source);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    public function test_confirm_selected_bulk_action_promotes_every_selected_proposal(): void
+    {
+        $admin = User::factory()->create();
+        $firstBrand = Brand::factory()->create();
+        $secondBrand = Brand::factory()->create();
+        $firstProposal = EnrichmentProposal::factory()->create([
+            'field' => 'brand',
+            'value_id' => $firstBrand->id,
+            'origin' => 'ai',
+            'confidence' => 70,
+            'status' => 'pending',
+        ]);
+        $secondProposal = EnrichmentProposal::factory()->create([
+            'field' => 'brand',
+            'value_id' => $secondBrand->id,
+            'origin' => 'file',
+            'confidence' => 40,
+            'status' => 'pending',
+        ]);
+        $untouched = EnrichmentProposal::factory()->create(['status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->selectTableRecords([$firstProposal->getKey(), $secondProposal->getKey()])
+            ->callAction(TestAction::make('confirmSelected')->table()->bulk())
+            ->assertNotified('2 proposte confermate');
+
+        $firstProposal->refresh();
+        $secondProposal->refresh();
+        $untouched->refresh();
+
+        $this->assertSame('applied', $firstProposal->status);
+        $this->assertSame($firstBrand->id, $firstProposal->product->brand_id);
+        $this->assertSame('ai', $firstProposal->product->brand_source);
+
+        $this->assertSame('applied', $secondProposal->status);
+        $this->assertSame($secondBrand->id, $secondProposal->product->brand_id);
+        $this->assertSame('file', $secondProposal->product->brand_source);
+
+        $this->assertSame('pending', $untouched->status);
+    }
+
+    public function test_correct_action_brand_form_is_prefilled_with_the_proposals_current_value_id(): void
+    {
+        $admin = User::factory()->create();
+        $brand = Brand::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'brand',
+            'value_id' => $brand->id,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet(['value_id' => $brand->id]);
+    }
+
+    /**
+     * US-041 AC3: correcting a brand proposal writes the submitted value to
+     * the product with `brand_source = 'manual'` (regardless of the
+     * proposal's own origin), and marks the proposal `applied`.
+     */
+    public function test_correct_action_saves_submitted_brand_value_as_manual(): void
     {
         $admin = User::factory()->create();
         $originalBrand = Brand::factory()->create();
         $correctedBrand = Brand::factory()->create();
-        $correctedFamily = Family::factory()->create();
-        $correctedSubfamily = Subfamily::factory()->create(['family_id' => $correctedFamily->id]);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $originalBrand->id,
-            'brand_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 50,
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'brand',
+            'value_id' => $originalBrand->id,
+            'origin' => 'ai',
+            'status' => 'pending',
         ]);
 
         $this->actingAs($admin);
 
         Livewire::test(ReviewQueue::class)
-            ->callTableAction('correct', $product, [
-                'brand_id' => $correctedBrand->id,
-                'family_id' => $correctedFamily->id,
-                'subfamily_id' => $correctedSubfamily->id,
+            ->callTableAction('correct', $proposal, ['value_id' => $correctedBrand->id]);
+
+        $proposal->refresh();
+
+        $this->assertSame($correctedBrand->id, $proposal->product->brand_id);
+        $this->assertSame('manual', $proposal->product->brand_source);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    public function test_correct_action_family_form_is_prefilled_and_saves_submitted_value_as_manual(): void
+    {
+        $admin = User::factory()->create();
+        $originalFamily = Family::factory()->create();
+        $correctedFamily = Family::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'family',
+            'value_id' => $originalFamily->id,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet(['value_id' => $originalFamily->id])
+            ->setTableActionData(['value_id' => $correctedFamily->id])
+            ->callMountedTableAction();
+
+        $proposal->refresh();
+
+        $this->assertSame($correctedFamily->id, $proposal->product->family_id);
+        $this->assertSame('manual', $proposal->product->family_source);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    public function test_correct_action_subfamily_form_is_prefilled_and_saves_submitted_value_as_manual(): void
+    {
+        $admin = User::factory()->create();
+        $family = Family::factory()->create();
+        $originalSubfamily = Subfamily::factory()->create(['family_id' => $family->id]);
+        $correctedSubfamily = Subfamily::factory()->create(['family_id' => $family->id]);
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'subfamily',
+            'value_id' => $originalSubfamily->id,
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet(['value_id' => $originalSubfamily->id])
+            ->setTableActionData(['value_id' => $correctedSubfamily->id])
+            ->callMountedTableAction();
+
+        $proposal->refresh();
+
+        $this->assertSame($correctedSubfamily->id, $proposal->product->subfamily_id);
+        $this->assertSame('manual', $proposal->product->subfamily_source);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    public function test_correct_action_attribute_form_is_prefilled_with_current_value(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_text' => null,
+            'value_num' => 1.5,
+            'unit' => 'kW',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet([
+                'value_text' => null,
+                'value_num' => 1.5,
+                'unit' => 'kW',
+            ]);
+    }
+
+    /**
+     * US-041 AC3: correcting an attribute proposal writes the submitted
+     * value/unit to the product's attribute row with `source = 'manual'`.
+     */
+    public function test_correct_action_saves_submitted_attribute_value_as_manual(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_text' => null,
+            'value_num' => 1.5,
+            'unit' => 'kW',
+            'origin' => 'regex',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('correct', $proposal, [
+                'value_text' => null,
+                'value_num' => 3.2,
+                'unit' => 'kW',
             ]);
 
-        $product->refresh();
+        $proposal->refresh();
+        $attribute = $product->attributes()->where('key', 'kW')->first();
 
-        $this->assertSame($correctedBrand->id, $product->brand_id);
-        $this->assertSame($correctedFamily->id, $product->family_id);
-        $this->assertSame($correctedSubfamily->id, $product->subfamily_id);
-        $this->assertSame('manual', $product->brand_source);
-        $this->assertSame('manual', $product->family_source);
-        $this->assertSame('manual', $product->subfamily_source);
-        $this->assertSame('manual', $product->source);
-        $this->assertSame(100, $product->confidence);
-        $this->assertSame('enriched', $product->enrichment_status);
-    }
-
-    public function test_discard_action_clears_non_manual_ai_fields_and_keeps_needs_review(): void
-    {
-        $admin = User::factory()->create();
-        $brand = Brand::factory()->create();
-        $family = Family::factory()->create();
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 30,
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->callTableAction('discard', $product)
-            ->assertCanSeeTableRecords([$product]);
-
-        $product->refresh();
-
-        $this->assertNull($product->brand_id);
-        $this->assertNull($product->family_id);
-        $this->assertNull($product->brand_source);
-        $this->assertNull($product->family_source);
-        $this->assertNull($product->source);
-        $this->assertNull($product->confidence);
-        $this->assertSame('needs_review', $product->enrichment_status);
-    }
-
-    public function test_discard_action_preserves_fields_already_manual(): void
-    {
-        $admin = User::factory()->create();
-        $manualBrand = Brand::factory()->create();
-        $aiFamily = Family::factory()->create();
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $manualBrand->id,
-            'brand_source' => 'manual',
-            'family_id' => $aiFamily->id,
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 40,
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->callTableAction('discard', $product);
-
-        $product->refresh();
-
-        $this->assertSame($manualBrand->id, $product->brand_id);
-        $this->assertSame('manual', $product->brand_source);
-        $this->assertNull($product->family_id);
-        $this->assertNull($product->family_source);
-        $this->assertSame('needs_review', $product->enrichment_status);
+        $this->assertNotNull($attribute);
+        $this->assertSame('3.200', $attribute->value_num);
+        $this->assertSame('manual', $attribute->source);
+        $this->assertSame('applied', $proposal->status);
     }
 
     /**
-     * US-037 AC1/AC2/AC4: selecting multiple needs_review products and
-     * running the "Conferma selezionati" bulk action applies the exact same
-     * logic as the single "Conferma" action to every selected record, with
-     * one summary notification for the whole batch.
+     * US-041 AC4: discarding a proposal only marks it `discarded` — the
+     * product is never touched, since the pending value was never applied in
+     * the first place.
      */
-    public function test_confirm_selected_bulk_action_promotes_every_selected_record(): void
+    public function test_discard_action_only_marks_the_proposal_discarded_and_leaves_the_product_untouched(): void
     {
         $admin = User::factory()->create();
         $brand = Brand::factory()->create();
-        $family = Family::factory()->create();
-        $first = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
+        $product = Product::factory()->create([
             'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 70,
-        ]);
-        $second = Product::factory()->create([
+            'brand_source' => 'file',
+            'source' => 'file',
+            'confidence' => 90,
             'enrichment_status' => 'needs_review',
-            'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 40,
         ]);
-        $untouched = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_num' => 1.5,
+            'unit' => 'kW',
+            'status' => 'pending',
+        ]);
 
         $this->actingAs($admin);
 
         Livewire::test(ReviewQueue::class)
-            ->selectTableRecords([$first->getKey(), $second->getKey()])
-            ->callAction(TestAction::make('confirmSelected')->table()->bulk())
-            ->assertNotified('2 proposte confermate');
+            ->callTableAction('discard', $proposal)
+            ->assertCanNotSeeTableRecords([$proposal]);
 
-        foreach ([$first, $second] as $product) {
-            $product->refresh();
-            $this->assertSame('enriched', $product->enrichment_status);
-            $this->assertSame($brand->id, $product->brand_id);
-            $this->assertSame($family->id, $product->family_id);
-            $this->assertSame('ai', $product->brand_source);
-            $this->assertSame('ai', $product->family_source);
-            $this->assertSame('ai', $product->source);
-        }
+        $proposal->refresh();
+        $product->refresh();
 
-        $untouched->refresh();
-        $this->assertSame('needs_review', $untouched->enrichment_status);
+        $this->assertSame('discarded', $proposal->status);
+        $this->assertSame($brand->id, $product->brand_id);
+        $this->assertSame('file', $product->brand_source);
+        $this->assertNull($product->family_id);
+        $this->assertNull($product->subfamily_id);
+        $this->assertSame('file', $product->source);
+        $this->assertSame(90, $product->confidence);
+        $this->assertSame('needs_review', $product->enrichment_status);
+        $this->assertSame(0, $product->attributes()->count());
     }
 
-    /**
-     * US-037 AC1/AC3/AC4: selecting multiple needs_review products and
-     * running the "Scarta selezionati" bulk action (with its single
-     * confirmation modal for the whole selection) applies the exact same
-     * logic as the single "Scarta" action to every selected record,
-     * including preserving fields already `*_source = 'manual'`.
-     */
-    public function test_discard_selected_bulk_action_clears_every_selected_record(): void
+    public function test_discard_selected_bulk_action_discards_every_selected_proposal(): void
     {
         $admin = User::factory()->create();
-        $aiBrand = Brand::factory()->create();
-        $aiFamily = Family::factory()->create();
-        $manualBrand = Brand::factory()->create();
-        $first = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $aiBrand->id,
-            'family_id' => $aiFamily->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 30,
-        ]);
-        $second = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $manualBrand->id,
-            'brand_source' => 'manual',
-            'family_id' => $aiFamily->id,
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 50,
-        ]);
+        $first = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+        $second = EnrichmentProposal::factory()->create(['field' => 'family', 'status' => 'pending']);
+        $untouched = EnrichmentProposal::factory()->create(['status' => 'pending']);
 
         $this->actingAs($admin);
 
@@ -352,20 +765,15 @@ class ReviewQueueTest extends TestCase
             ->assertNotified('2 proposte scartate');
 
         $first->refresh();
-        $this->assertNull($first->brand_id);
-        $this->assertNull($first->brand_source);
-        $this->assertNull($first->family_id);
-        $this->assertNull($first->family_source);
-        $this->assertNull($first->source);
-        $this->assertNull($first->confidence);
-        $this->assertSame('needs_review', $first->enrichment_status);
-
         $second->refresh();
-        $this->assertSame($manualBrand->id, $second->brand_id);
-        $this->assertSame('manual', $second->brand_source);
-        $this->assertNull($second->family_id);
-        $this->assertNull($second->family_source);
-        $this->assertSame('needs_review', $second->enrichment_status);
+        $untouched->refresh();
+
+        $this->assertSame('discarded', $first->status);
+        $this->assertSame('discarded', $second->status);
+        $this->assertSame('pending', $untouched->status);
+
+        $this->assertNull($first->product->fresh()->brand_id);
+        $this->assertNull($second->product->fresh()->family_id);
     }
 
     /**
@@ -389,450 +797,42 @@ class ReviewQueueTest extends TestCase
         $this->assertNotContains('correct', $toolbarActionNames);
     }
 
-    public function test_subfamily_column_shows_proposed_subfamily_name(): void
-    {
-        $admin = User::factory()->create();
-        $family = Family::factory()->create();
-        $subfamily = Subfamily::factory()->create(['family_id' => $family->id, 'name' => 'Sottofamiglia AI']);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'family_id' => $family->id,
-            'subfamily_id' => $subfamily->id,
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->assertTableColumnStateSet('subfamily.name', 'Sottofamiglia AI', $product);
-    }
-
-    public function test_attributes_column_formats_numeric_attribute_with_trimmed_value(): void
-    {
-        $admin = User::factory()->create();
-        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
-        $product->attributes()->create([
-            'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
-            'unit' => 'kW',
-            'source' => 'regex',
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->assertTableColumnStateSet('attributes', ['kW: 1.5 kW · Dedotta · Confidenza: N/D'], $product->fresh());
-    }
-
     /**
-     * Guards against naive trailing-zero trimming corrupting whole-number
-     * values (e.g. "10" becoming "1"): `value_num` is cast `decimal:3`, so
-     * Eloquent always yields a fixed 3-decimal string ("10.000"), and the
-     * column's rtrim(..., '.') stops exactly at the decimal point.
+     * US-038/US-041: each row exposes a "Dettagli" link action resolving to
+     * the standalone {@see ReviewQueueDetail} page for the proposal's
+     * underlying PRODUCT, not for the proposal itself.
      */
-    public function test_attributes_column_does_not_strip_significant_digits_from_whole_number_value(): void
+    public function test_view_detail_action_links_to_the_review_queue_detail_page_of_the_underlying_product(): void
     {
         $admin = User::factory()->create();
-        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
-        $product->attributes()->create([
-            'key' => 'DN',
-            'value_num' => 100,
-            'value_text' => null,
-            'unit' => null,
-            'source' => 'regex',
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'status' => 'pending',
         ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->assertTableColumnStateSet('attributes', ['DN: 100 · Dedotta · Confidenza: N/D'], $product->fresh());
-    }
-
-    public function test_attributes_column_lists_multiple_attributes_as_separate_items(): void
-    {
-        $admin = User::factory()->create();
-        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
-        $product->attributes()->create([
-            'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
-            'unit' => 'kW',
-            'source' => 'regex',
-        ]);
-        $product->attributes()->create([
-            'key' => 'Materiale',
-            'value_num' => null,
-            'value_text' => 'Ottone',
-            'unit' => null,
-            'source' => 'ai',
-        ]);
-
-        $this->actingAs($admin);
-
-        $component = Livewire::test(ReviewQueue::class);
-        $state = $this->resolveColumn($component, 'attributes', $product)->getState();
-
-        $this->assertCount(2, $state);
-        $this->assertContains('kW: 1.5 kW · Dedotta · Confidenza: N/D', $state);
-        $this->assertContains('Materiale: Ottone · AI · Confidenza: N/D', $state);
-    }
-
-    public function test_attributes_column_shows_dash_when_product_has_no_attributes(): void
-    {
-        $admin = User::factory()->create();
-        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->assertTableColumnStateSet('attributes', null, $product);
-    }
-
-    public function test_brand_family_and_subfamily_descriptions_use_their_own_source_field(): void
-    {
-        $admin = User::factory()->create();
-        $brand = Brand::factory()->create();
-        $family = Family::factory()->create();
-        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $brand->id,
-            'brand_source' => 'ai',
-            'family_id' => $family->id,
-            'family_source' => 'regex',
-            'subfamily_id' => $subfamily->id,
-            'subfamily_source' => 'file',
-        ]);
-
-        $this->actingAs($admin);
-
-        $component = Livewire::test(ReviewQueue::class);
-
-        $this->assertSame('Origine: AI', $this->columnDescription($component, 'brand.name', $product));
-        $this->assertSame('Origine: Dedotta', $this->columnDescription($component, 'family.name', $product));
-        $this->assertSame('Origine: Da file', $this->columnDescription($component, 'subfamily.name', $product));
-    }
-
-    /**
-     * US-038 AC1: each row exposes a "Dettagli" link action resolving to the
-     * standalone {@see ReviewQueueDetail} page for that record (a real
-     * navigation link, not a modal).
-     */
-    public function test_view_detail_action_links_to_the_review_queue_detail_page(): void
-    {
-        $admin = User::factory()->create();
-        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
 
         $this->actingAs($admin);
 
         $component = Livewire::test(ReviewQueue::class);
 
         $action = $component->instance()->getTable()->getAction('viewDetail');
-        $action->record($product);
+        $action->record($proposal);
 
         $this->assertSame(ReviewQueueDetail::getUrl(['record' => $product]), $action->getUrl());
     }
 
     /**
-     * US-038 AC5 (non-regression): the "Correggi" modal action added before
-     * this spec must remain untouched by the new "Dettagli" link action, and
-     * keep saving corrections exactly as before.
-     */
-    public function test_correct_action_still_works_unchanged_alongside_the_new_view_detail_action(): void
-    {
-        $admin = User::factory()->create();
-        $correctedBrand = Brand::factory()->create();
-        $correctedFamily = Family::factory()->create();
-        $correctedSubfamily = Subfamily::factory()->create(['family_id' => $correctedFamily->id]);
-        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->callTableAction('correct', $product, [
-                'brand_id' => $correctedBrand->id,
-                'family_id' => $correctedFamily->id,
-                'subfamily_id' => $correctedSubfamily->id,
-            ]);
-
-        $product->refresh();
-
-        $this->assertSame($correctedBrand->id, $product->brand_id);
-        $this->assertSame($correctedFamily->id, $product->family_id);
-        $this->assertSame($correctedSubfamily->id, $product->subfamily_id);
-        $this->assertSame('manual', $product->source);
-        $this->assertSame(100, $product->confidence);
-        $this->assertSame('enriched', $product->enrichment_status);
-    }
-
-    /**
-     * @return array<int, array{0: ?string, 1: string}>
-     */
-    public static function originSourceProvider(): array
-    {
-        return [
-            'ai' => ['ai', 'AI'],
-            'regex' => ['regex', 'Dedotta'],
-            'dictionary' => ['dictionary', 'Dedotta'],
-            'propagated' => ['propagated', 'Dedotta'],
-            'file' => ['file', 'Da file'],
-            'manual' => ['manual', 'Manuale'],
-            'unknown/null' => [null, '—'],
-        ];
-    }
-
-    public function test_origin_label_maps_each_source_value_to_expected_label(): void
-    {
-        $admin = User::factory()->create();
-        $this->actingAs($admin);
-
-        $component = Livewire::test(ReviewQueue::class);
-
-        foreach (self::originSourceProvider() as [$source, $expectedLabel]) {
-            $brand = Brand::factory()->create();
-            $product = Product::factory()->create([
-                'enrichment_status' => 'needs_review',
-                'brand_id' => $brand->id,
-                'brand_source' => $source,
-            ]);
-
-            $this->assertSame(
-                "Origine: {$expectedLabel}",
-                $this->columnDescription($component, 'brand.name', $product),
-                "Failed asserting origin label for source [{$source}]."
-            );
-        }
-    }
-
-    public function test_confidence_column_formats_null_state_as_nd_and_keeps_percentage_for_values(): void
-    {
-        $admin = User::factory()->create();
-        $withoutConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => null]);
-        $withConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 45]);
-
-        $this->actingAs($admin);
-
-        $component = Livewire::test(ReviewQueue::class);
-
-        $this->assertSame('N/D', $this->formattedColumnState($component, 'confidence', $withoutConfidence));
-        $this->assertSame('45%', $this->formattedColumnState($component, 'confidence', $withConfidence));
-    }
-
-    public function test_confirm_action_still_works_when_product_has_attributes_and_subfamily(): void
-    {
-        $admin = User::factory()->create();
-        $family = Family::factory()->create();
-        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'family_id' => $family->id,
-            'subfamily_id' => $subfamily->id,
-        ]);
-        $product->attributes()->create([
-            'key' => 'kW',
-            'value_num' => 2,
-            'unit' => 'kW',
-            'source' => 'ai',
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->callTableAction('confirm', $product);
-
-        $product->refresh();
-
-        $this->assertSame('enriched', $product->enrichment_status);
-    }
-
-    /**
-     * US-036 AC1/AC2: `codice_articolo` and the raw file-imported taxonomy
-     * (marca/famiglia/sottofamiglia) plus `costo`/`giacenza` are shown
-     * alongside the existing AI-proposed columns for comparison.
-     */
-    public function test_queue_shows_codice_articolo_raw_file_taxonomy_costo_and_giacenza(): void
-    {
-        $admin = User::factory()->create();
-        $family = Family::factory()->create();
-        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
-        $product = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'codice_articolo' => 'ART-12345',
-            'descrizione_marca' => 'Marca da file SPA',
-            'fam_descrizione' => 'Famiglia da file',
-            'subfam_descrizione' => 'Sottofamiglia da file',
-            'family_id' => $family->id,
-            'subfamily_id' => $subfamily->id,
-            'costo' => 42.5,
-            'giacenza' => 17,
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->assertTableColumnStateSet('codice_articolo', 'ART-12345', $product)
-            ->assertTableColumnStateSet('descrizione_marca', 'Marca da file SPA', $product)
-            ->assertTableColumnStateSet('fam_descrizione', 'Famiglia da file', $product)
-            ->assertTableColumnStateSet('subfam_descrizione', 'Sottofamiglia da file', $product)
-            ->assertTableColumnStateSet('costo', '42.50', $product)
-            ->assertTableColumnStateSet('giacenza', '17.00', $product);
-    }
-
-    /**
-     * US-036 AC3: brand/family/subfamily/confidence columns are sortable by
-     * clicking their header, overriding the table's default confidence-based
-     * ordering.
-     */
-    public function test_brand_family_subfamily_and_confidence_columns_are_sortable(): void
-    {
-        $admin = User::factory()->create();
-        $brandA = Brand::factory()->create(['name' => 'Alfa Marca']);
-        $brandB = Brand::factory()->create(['name' => 'Beta Marca']);
-        $familyA = Family::factory()->create(['name' => 'Alfa Famiglia']);
-        $familyB = Family::factory()->create(['name' => 'Beta Famiglia']);
-        $subfamilyA = Subfamily::factory()->create(['name' => 'Alfa Sottofamiglia', 'family_id' => $familyA->id]);
-        $subfamilyB = Subfamily::factory()->create(['name' => 'Beta Sottofamiglia', 'family_id' => $familyB->id]);
-
-        $first = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $brandA->id,
-            'family_id' => $familyA->id,
-            'subfamily_id' => $subfamilyA->id,
-            'confidence' => 20,
-        ]);
-        $second = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $brandB->id,
-            'family_id' => $familyB->id,
-            'subfamily_id' => $subfamilyB->id,
-            'confidence' => 80,
-        ]);
-
-        $this->actingAs($admin);
-
-        $component = Livewire::test(ReviewQueue::class);
-
-        $component->sortTable('brand.name')
-            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
-        $component->sortTable('brand.name', 'desc')
-            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
-
-        $component->sortTable('family.name')
-            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
-        $component->sortTable('family.name', 'desc')
-            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
-
-        $component->sortTable('subfamily.name')
-            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
-        $component->sortTable('subfamily.name', 'desc')
-            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
-
-        $component->sortTable('confidence')
-            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
-        $component->sortTable('confidence', 'desc')
-            ->assertCanSeeTableRecords([$second, $first], inOrder: true);
-    }
-
-    /**
-     * US-036 AC4: SelectFilter on brand/family/subfamily narrows the queue to
-     * products with the selected relationship.
-     */
-    public function test_brand_family_and_subfamily_filters_narrow_the_queue(): void
-    {
-        $admin = User::factory()->create();
-        $brand = Brand::factory()->create();
-        $otherBrand = Brand::factory()->create();
-        $family = Family::factory()->create();
-        $otherFamily = Family::factory()->create();
-        $subfamily = Subfamily::factory()->create(['family_id' => $family->id]);
-        $otherSubfamily = Subfamily::factory()->create(['family_id' => $otherFamily->id]);
-
-        $matching = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $brand->id,
-            'family_id' => $family->id,
-            'subfamily_id' => $subfamily->id,
-        ]);
-        $other = Product::factory()->create([
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $otherBrand->id,
-            'family_id' => $otherFamily->id,
-            'subfamily_id' => $otherSubfamily->id,
-        ]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->filterTable('brand', $brand->id)
-            ->assertCanSeeTableRecords([$matching])
-            ->assertCanNotSeeTableRecords([$other])
-            ->resetTableFilters()
-            ->filterTable('family', $family->id)
-            ->assertCanSeeTableRecords([$matching])
-            ->assertCanNotSeeTableRecords([$other])
-            ->resetTableFilters()
-            ->filterTable('subfamily', $subfamily->id)
-            ->assertCanSeeTableRecords([$matching])
-            ->assertCanNotSeeTableRecords([$other]);
-    }
-
-    /**
-     * US-036 AC4: the `confidence_band` filter applies the bassa (<60),
-     * media (60-84) and alta (>=85) thresholds, with edge cases exactly on
-     * the 59/60 and 84/85 boundaries and a null-confidence product excluded
-     * from every band.
-     */
-    public function test_confidence_band_filter_applies_low_medium_and_high_thresholds(): void
-    {
-        $admin = User::factory()->create();
-        $justBelowLow = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 59]);
-        $justAtMedium = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 60]);
-        $justAtMediumEnd = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 84]);
-        $justAtHigh = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => 85]);
-        $noConfidence = Product::factory()->create(['enrichment_status' => 'needs_review', 'confidence' => null]);
-
-        $this->actingAs($admin);
-
-        Livewire::test(ReviewQueue::class)
-            ->filterTable('confidence_band', 'bassa')
-            ->assertCanSeeTableRecords([$justBelowLow])
-            ->assertCanNotSeeTableRecords([$justAtMedium, $justAtMediumEnd, $justAtHigh, $noConfidence])
-            ->resetTableFilters()
-            ->filterTable('confidence_band', 'media')
-            ->assertCanSeeTableRecords([$justAtMedium, $justAtMediumEnd])
-            ->assertCanNotSeeTableRecords([$justBelowLow, $justAtHigh, $noConfidence])
-            ->resetTableFilters()
-            ->filterTable('confidence_band', 'alta')
-            ->assertCanSeeTableRecords([$justAtHigh])
-            ->assertCanNotSeeTableRecords([$justBelowLow, $justAtMedium, $justAtMediumEnd, $noConfidence]);
-    }
-
-    /**
-     * Reads the rendered `->description()` (below the state) for a table
-     * column, scoped to a single record — mirrors how Filament's own
-     * `assertTableColumnStateSet()` resolves state for a given record.
-     */
-    private function columnDescription(Testable $component, string $columnName, Product $record): ?string
-    {
-        $column = $this->resolveColumn($component, $columnName, $record);
-
-        $description = $column->getDescriptionBelow();
-
-        return $description === null ? null : (string) $description;
-    }
-
-    /**
      * Reads the fully formatted (post `->formatStateUsing()`) state for a
-     * table column, scoped to a single record.
+     * table column, scoped to a single proposal record.
      */
-    private function formattedColumnState(Testable $component, string $columnName, Product $record): string
+    private function formattedColumnState(Testable $component, string $columnName, EnrichmentProposal $record): string
     {
         $column = $this->resolveColumn($component, $columnName, $record);
 
         return (string) $column->formatState($column->getState());
     }
 
-    private function resolveColumn(Testable $component, string $columnName, Product $record): Column
+    private function resolveColumn(Testable $component, string $columnName, EnrichmentProposal $record): Column
     {
         $column = $component->instance()->getTable()->getColumn($columnName);
 

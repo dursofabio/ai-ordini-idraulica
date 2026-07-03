@@ -6,7 +6,7 @@ epic:
   title: Backoffice Filament
 priority: MEDIUM
 points: 5
-status: PLANNED
+status: REVIEW
 body: |-
   #### US-041: Coda di revisione a livello di singola proposta invece che di intero prodotto
 

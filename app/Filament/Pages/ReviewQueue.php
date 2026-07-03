@@ -2,19 +2,20 @@
 
 namespace App\Filament\Pages;
 
-use App\Filament\Resources\Products\Schemas\ProductForm;
-use App\Models\Product;
-use App\Models\ProductAttribute;
+use App\Models\Brand;
+use App\Models\EnrichmentProposal;
+use App\Models\Family;
 use App\Models\Subfamily;
+use App\Services\Enrichment\EnrichmentApplier;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\Concerns\InteractsWithActions;
 use Filament\Actions\Contracts\HasActions;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
-use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
 use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Support\Icons\Heroicon;
@@ -27,20 +28,25 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
 /**
- * US-023: work queue for products flagged `enrichment_status = 'needs_review'`
- * (low AI confidence), so an admin can triage the AI proposal per record
- * without opening the full product edit page:
- *  - Confirm: promotes the current AI proposal as-is (`enrichment_status =
- *    'enriched'`), leaving brand_id/family_id/subfamily_id/*_source/source
- *    untouched.
- *  - Correct: opens an inline form (same brand/family/subfamily pattern as
- *    {@see ProductForm}) and saves
- *    the submitted values with `*_source = 'manual'`, `source = 'manual'`,
- *    `confidence = 100`, `enrichment_status = 'enriched'`.
- *  - Discard: clears any non-manual AI proposal (brand/family/subfamily and
- *    their `*_source`) plus `source`/`confidence`, and keeps the record in
- *    `needs_review` for a future re-classification pass. Fields already
- *    `*_source = 'manual'` are preserved.
+ * US-041: work queue for individual pending proposals from the
+ * `enrichment_proposals` register (US-040), so an admin triages exactly the
+ * proposal that needs a decision (e.g. a single uncertain attribute) instead
+ * of the whole product, even when the rest of the product's taxonomy is
+ * already certain. One row = one pending {@see EnrichmentProposal}; a
+ * product with several pending proposals appears once per proposal.
+ *
+ *  - Confirm: writes the proposed value to the product (brand/family/
+ *    subfamily field + its own `*_source`, or the technical attribute row)
+ *    with the field's source set to the proposal's `origin`, and marks the
+ *    proposal `applied`. This is the exact same effect as the automatic
+ *    high-confidence application performed by
+ *    {@see EnrichmentApplier}.
+ *  - Correct: opens an inline form — a taxonomy `Select` or attribute value
+ *    inputs, depending on the proposal's field — prevalorized with the
+ *    proposal's current value, and saves the submitted value with
+ *    `source = 'manual'`, marking the proposal `applied`.
+ *  - Discard: marks the proposal `discarded` without touching the product at
+ *    all, since the pending value was never applied in the first place.
  */
 class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
 {
@@ -60,60 +66,35 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     {
         return $table
             ->query(
-                Product::query()
-                    ->where('enrichment_status', 'needs_review')
-                    ->with('attributes')
+                EnrichmentProposal::query()
+                    ->where('status', 'pending')
+                    ->with('product')
             )
-            // US-036: kept as a `->defaultSort()` closure (applied by Filament
-            // *after* any explicit column sort chosen via `->sortable()`) so
-            // clicking a sortable header actually overrides the ordering,
-            // while this confidence-ascending/nulls-first order still applies
-            // as a tie-breaker and as the initial queue order (AC3).
+            // US-036/US-041: kept as a `->defaultSort()` closure (applied by
+            // Filament *after* any explicit column sort chosen via
+            // `->sortable()`) so clicking a sortable header actually
+            // overrides the ordering, while this confidence-ascending/
+            // nulls-first order still applies as a tie-breaker and as the
+            // initial queue order.
             ->defaultSort(fn (Builder $query): Builder => $query
                 ->orderByRaw('confidence IS NOT NULL')
                 ->orderBy('confidence'))
             ->heading(fn (): string => $this->queueHeading())
             ->columns([
-                TextColumn::make('codice_articolo')
+                TextColumn::make('product.codice_articolo')
                     ->label('Codice articolo'),
-                TextColumn::make('description_raw')
+                TextColumn::make('product.description_raw')
                     ->label('Descrizione originale')
                     ->wrap(),
-                TextColumn::make('descrizione_marca')
-                    ->label('Marca da file'),
-                TextColumn::make('brand.name')
-                    ->label('Marca proposta (AI)')
-                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->brand_source))
-                    ->sortable(),
-                TextColumn::make('fam_descrizione')
-                    ->label('Famiglia da file'),
-                TextColumn::make('family.name')
-                    ->label('Famiglia proposta (AI)')
-                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->family_source))
-                    ->sortable(),
-                TextColumn::make('subfam_descrizione')
-                    ->label('Sottofamiglia da file'),
-                TextColumn::make('subfamily.name')
-                    ->label('Sottofamiglia proposta (AI)')
-                    ->description(fn (Product $record): string => 'Origine: '.self::originLabel($record->subfamily_source))
-                    ->sortable(),
-                TextColumn::make('attributes')
-                    ->label('Attributi tecnici')
-                    ->listWithLineBreaks()
-                    ->placeholder('—')
-                    ->state(function (Product $record): array {
-                        return $record->attributes
-                            ->map(function (ProductAttribute $attribute): string {
-                                $value = $attribute->value_text ?? rtrim(rtrim((string) $attribute->value_num, '0'), '.');
-                                $unit = filled($attribute->unit) ? ' '.$attribute->unit : '';
-                                $origin = self::originLabel($attribute->source);
-
-                                // product_attributes has no confidence column: this is a
-                                // fixed label, not a placeholder to be filled in later.
-                                return "{$attribute->key}: {$value}{$unit} · {$origin} · Confidenza: N/D";
-                            })
-                            ->all();
-                    }),
+                TextColumn::make('field')
+                    ->label('Campo')
+                    ->formatStateUsing(fn (EnrichmentProposal $record): string => self::fieldLabel($record)),
+                TextColumn::make('proposed_value')
+                    ->label('Valore proposto')
+                    ->state(fn (EnrichmentProposal $record): string => self::proposedValueLabel($record)),
+                TextColumn::make('origin')
+                    ->label('Origine')
+                    ->formatStateUsing(fn (?string $state): string => self::originLabel($state)),
                 TextColumn::make('confidence')
                     ->label('Confidenza')
                     ->badge()
@@ -125,20 +106,16 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                         $state < 85 => 'warning',
                         default => 'success',
                     }),
-                TextColumn::make('costo')
-                    ->label('Costo')
-                    ->money('EUR'),
-                TextColumn::make('giacenza')
-                    ->label('Giacenza')
-                    ->numeric(),
             ])
             ->filters([
-                SelectFilter::make('brand')
-                    ->relationship('brand', 'name'),
-                SelectFilter::make('family')
-                    ->relationship('family', 'name'),
-                SelectFilter::make('subfamily')
-                    ->relationship('subfamily', 'name'),
+                SelectFilter::make('field')
+                    ->label('Campo')
+                    ->options([
+                        'brand' => 'Marca',
+                        'family' => 'Famiglia',
+                        'subfamily' => 'Sottofamiglia',
+                        'attribute' => 'Attributo',
+                    ]),
                 SelectFilter::make('confidence_band')
                     ->label('Fascia di confidenza')
                     ->options([
@@ -169,19 +146,21 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
 
     /**
      * Computes the "N articoli da revisionare" heading on every render, so it
-     * always reflects the current queue size (AC5) even right after an
-     * action removes or keeps a record in the queue.
+     * always reflects the current queue size even right after an action
+     * removes or keeps a proposal in the queue.
      */
     private function queueHeading(): string
     {
-        $count = Product::query()->where('enrichment_status', 'needs_review')->count();
+        $count = EnrichmentProposal::query()->where('status', 'pending')->count();
 
         return "{$count} articoli da revisionare";
     }
 
     /**
-     * AC2: promotes the AI proposal as-is, without touching
-     * brand_id/family_id/subfamily_id or any *_source/source field.
+     * Promotes the pending proposal as-is (AC2), the same effect as the
+     * automatic high-confidence application: writes the proposed value with
+     * the proposal's own `origin` as the field's source, and marks the
+     * proposal `applied`.
      */
     private function confirmAction(): Action
     {
@@ -189,7 +168,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->label('Conferma')
             ->color('success')
             ->icon(Heroicon::OutlinedCheck)
-            ->action(function (Product $record): void {
+            ->action(function (EnrichmentProposal $record): void {
                 $this->applyConfirm($record);
 
                 Notification::make()
@@ -200,9 +179,9 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     }
 
     /**
-     * US-037: bulk counterpart of {@see confirmAction()} (AC1, AC2, AC4).
-     * Filament automatically enables the row-selection checkbox column as
-     * soon as the table defines at least one bulk action here.
+     * US-037/US-041: bulk counterpart of {@see confirmAction()}. Filament
+     * automatically enables the row-selection checkbox column as soon as the
+     * table defines at least one bulk action here.
      */
     private function confirmSelectedBulkAction(): BulkAction
     {
@@ -211,7 +190,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->color('success')
             ->icon(Heroicon::OutlinedCheck)
             ->action(function (Collection $records): void {
-                $records->each(fn (Product $record) => $this->applyConfirm($record));
+                $records->each(fn (EnrichmentProposal $record) => $this->applyConfirm($record));
 
                 Notification::make()
                     ->title("{$records->count()} proposte confermate")
@@ -221,9 +200,9 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     }
 
     /**
-     * US-038 AC1: real navigation link (not a modal) to the standalone
-     * {@see ReviewQueueDetail} page for this record, positioned before the
-     * quick-triage actions.
+     * US-038/US-041: real navigation link (not a modal) to the standalone
+     * {@see ReviewQueueDetail} page for the proposal's underlying product,
+     * positioned before the quick-triage actions.
      */
     private function viewDetailAction(): Action
     {
@@ -231,14 +210,16 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->label('Dettagli')
             ->color('gray')
             ->icon(Heroicon::OutlinedEye)
-            ->url(fn (Product $record): string => ReviewQueueDetail::getUrl(['record' => $record]));
+            ->url(fn (EnrichmentProposal $record): string => ReviewQueueDetail::getUrl(['record' => $record->product]));
     }
 
     /**
-     * AC3: inline correction form, precompiled with the record's current
-     * brand/family/subfamily (pattern from ProductForm, US-021). Every
-     * submitted field is treated as a manual override regardless of whether
-     * it changed, since the admin explicitly reviewed and submitted it.
+     * AC3: inline correction form, whose schema depends on the proposal's
+     * `field` — a taxonomy `Select` prevalorized with the proposal's
+     * `value_id` for brand/family/subfamily, or the raw value inputs
+     * prevalorized with `value_text`/`value_num`/`unit` for a technical
+     * attribute. The submitted value is always treated as a manual override,
+     * since the admin explicitly reviewed and submitted it.
      */
     private function correctAction(): Action
     {
@@ -246,42 +227,45 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->label('Correggi')
             ->color('primary')
             ->icon(Heroicon::OutlinedPencilSquare)
-            ->schema([
-                Select::make('brand_id')
-                    ->label('Marca')
-                    ->relationship('brand', 'name')
-                    ->searchable()
-                    ->preload(),
-                Select::make('family_id')
-                    ->label('Famiglia')
-                    ->relationship('family', 'name')
-                    ->searchable()
-                    ->preload()
-                    ->live(),
-                Select::make('subfamily_id')
-                    ->label('Sottofamiglia')
-                    ->options(fn (Get $get) => Subfamily::query()
-                        ->where('family_id', $get('family_id'))
-                        ->pluck('name', 'id'))
-                    ->searchable(),
-            ])
-            ->fillForm(fn (Product $record): array => [
-                'brand_id' => $record->brand_id,
-                'family_id' => $record->family_id,
-                'subfamily_id' => $record->subfamily_id,
-            ])
-            ->action(function (array $data, Product $record): void {
-                $record->update([
-                    'brand_id' => $data['brand_id'],
-                    'family_id' => $data['family_id'],
-                    'subfamily_id' => $data['subfamily_id'],
-                    'brand_source' => 'manual',
-                    'family_source' => 'manual',
-                    'subfamily_source' => 'manual',
-                    'source' => 'manual',
-                    'confidence' => 100,
-                    'enrichment_status' => 'enriched',
-                ]);
+            ->schema(fn (EnrichmentProposal $record): array => match ($record->field) {
+                'brand' => [
+                    Select::make('value_id')
+                        ->label('Marca')
+                        ->options(fn (): array => Brand::query()->orderBy('name')->pluck('name', 'id')->all())
+                        ->searchable(),
+                ],
+                'family' => [
+                    Select::make('value_id')
+                        ->label('Famiglia')
+                        ->options(fn (): array => Family::query()->orderBy('name')->pluck('name', 'id')->all())
+                        ->searchable(),
+                ],
+                'subfamily' => [
+                    Select::make('value_id')
+                        ->label('Sottofamiglia')
+                        ->options(fn (): array => Subfamily::query()->orderBy('name')->pluck('name', 'id')->all())
+                        ->searchable(),
+                ],
+                default => [
+                    TextInput::make('value_text')
+                        ->label('Valore testuale'),
+                    TextInput::make('value_num')
+                        ->label('Valore numerico')
+                        ->numeric(),
+                    TextInput::make('unit')
+                        ->label('Unità'),
+                ],
+            })
+            ->fillForm(fn (EnrichmentProposal $record): array => match ($record->field) {
+                'attribute' => [
+                    'value_text' => $record->value_text,
+                    'value_num' => $record->value_num,
+                    'unit' => $record->unit,
+                ],
+                default => ['value_id' => $record->value_id],
+            })
+            ->action(function (array $data, EnrichmentProposal $record): void {
+                $this->applyCorrection($record, $data);
 
                 Notification::make()
                     ->title('Correzione salvata')
@@ -291,11 +275,9 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     }
 
     /**
-     * AC4: discards the AI proposal. Only fields that are not already
-     * `*_source = 'manual'` are cleared, so a prior manual correction on one
-     * field (e.g. brand) survives a discard triggered by a bad AI value on
-     * another field (e.g. family). The record explicitly stays
-     * `needs_review` for a future re-classification pass.
+     * AC4: discards the pending proposal without touching the product — the
+     * proposed value was never applied in the first place, so there is
+     * nothing to roll back on the product itself.
      */
     private function discardAction(): Action
     {
@@ -304,7 +286,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->color('danger')
             ->icon(Heroicon::OutlinedTrash)
             ->requiresConfirmation()
-            ->action(function (Product $record): void {
+            ->action(function (EnrichmentProposal $record): void {
                 $this->applyDiscard($record);
 
                 Notification::make()
@@ -315,7 +297,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     }
 
     /**
-     * US-037: bulk counterpart of {@see discardAction()} (AC1, AC3, AC4).
+     * US-037/US-041: bulk counterpart of {@see discardAction()}.
      * `->requiresConfirmation()` on the bulk action itself shows a single
      * confirmation modal for the whole selection, not one per record.
      */
@@ -327,7 +309,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->icon(Heroicon::OutlinedTrash)
             ->requiresConfirmation()
             ->action(function (Collection $records): void {
-                $records->each(fn (Product $record) => $this->applyDiscard($record));
+                $records->each(fn (EnrichmentProposal $record) => $this->applyDiscard($record));
 
                 Notification::make()
                     ->title("{$records->count()} proposte scartate")
@@ -337,47 +319,135 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     }
 
     /**
-     * AC2: promotes the AI proposal as-is, without touching
-     * brand_id/family_id/subfamily_id or any *_source/source field. Shared
-     * by the single {@see confirmAction()} and the bulk
+     * AC2: writes the proposed value to the product with the proposal's own
+     * `origin` as the field's source (taxonomy fields) or the attribute
+     * row's `source` (technical attributes), then marks the proposal
+     * `applied`. Shared by the single {@see confirmAction()} and the bulk
      * {@see confirmSelectedBulkAction()} so both variants can never diverge.
      */
-    private function applyConfirm(Product $record): void
+    private function applyConfirm(EnrichmentProposal $proposal): void
     {
-        $record->update(['enrichment_status' => 'enriched']);
+        $this->writeProposalValue($proposal, $proposal->origin, [
+            'value_id' => $proposal->value_id,
+            'value_text' => $proposal->value_text,
+            'value_num' => $proposal->value_num,
+            'unit' => $proposal->unit,
+        ], $proposal->confidence);
+
+        $proposal->update(['status' => 'applied']);
     }
 
     /**
-     * AC4: discards the AI proposal. Only fields that are not already
-     * `*_source = 'manual'` are cleared, so a prior manual correction on one
-     * field (e.g. brand) survives a discard triggered by a bad AI value on
-     * another field (e.g. family). The record explicitly stays
-     * `needs_review` for a future re-classification pass. Shared by the
+     * AC3: writes the admin-submitted value to the product with
+     * `source = 'manual'`, then marks the proposal `applied`.
+     */
+    private function applyCorrection(EnrichmentProposal $proposal, array $data): void
+    {
+        $this->writeProposalValue($proposal, 'manual', [
+            'value_id' => $data['value_id'] ?? null,
+            'value_text' => $data['value_text'] ?? null,
+            'value_num' => $data['value_num'] ?? null,
+            'unit' => $data['unit'] ?? null,
+        ]);
+
+        $proposal->update(['status' => 'applied']);
+    }
+
+    /**
+     * Writes `$values` to the proposal's underlying product: for brand/
+     * family/subfamily, sets `{field}_id` and `{field}_source = $source`;
+     * for a technical attribute, creates or updates the
+     * `product_attributes` row for `attribute_key` with `source = $source`
+     * (and `confidence = $confidence`, mirroring
+     * {@see EnrichmentApplier::writeAttribute()} —
+     * only passed by {@see applyConfirm()}, since a manual correction has no
+     * meaningful confidence score to carry over).
+     *
+     * @param  array{value_id: ?int, value_text: ?string, value_num: ?float, unit: ?string}  $values
+     */
+    private function writeProposalValue(EnrichmentProposal $proposal, string $source, array $values, ?int $confidence = null): void
+    {
+        if ($proposal->field === 'attribute') {
+            $proposal->product->attributes()->updateOrCreate(
+                ['key' => $proposal->attribute_key],
+                [
+                    'value_text' => $values['value_text'],
+                    'value_num' => $values['value_num'],
+                    'unit' => $values['unit'],
+                    'source' => $source,
+                    'confidence' => $confidence,
+                ],
+            );
+
+            return;
+        }
+
+        $proposal->product->update([
+            "{$proposal->field}_id" => $values['value_id'],
+            "{$proposal->field}_source" => $source,
+        ]);
+    }
+
+    /**
+     * AC4: discards the proposal without touching the product. Shared by the
      * single {@see discardAction()} and the bulk
      * {@see discardSelectedBulkAction()} so both variants can never diverge.
      */
-    private function applyDiscard(Product $record): void
+    private function applyDiscard(EnrichmentProposal $proposal): void
     {
-        $attributes = ['enrichment_status' => 'needs_review'];
-
-        foreach (['brand', 'family', 'subfamily'] as $field) {
-            if ($record->{"{$field}_source"} !== 'manual') {
-                $attributes["{$field}_id"] = null;
-                $attributes["{$field}_source"] = null;
-            }
-        }
-
-        $attributes['source'] = null;
-        $attributes['confidence'] = null;
-
-        $record->update($attributes);
+        $proposal->update(['status' => 'discarded']);
     }
 
     /**
-     * Maps a `*_source` literal to the human-readable origin label shown
-     * alongside each AI-proposed field (brand/family/subfamily/attributes).
-     * Public so {@see ReviewQueueDetail} can reuse the exact same mapping
-     * (US-038) instead of duplicating it.
+     * Human-readable label for the proposal's field, appending the
+     * attribute key for `attribute` proposals so multiple pending attribute
+     * proposals on the same product remain distinguishable in the queue.
+     */
+    private static function fieldLabel(EnrichmentProposal $proposal): string
+    {
+        return match ($proposal->field) {
+            'brand' => 'Marca',
+            'family' => 'Famiglia',
+            'subfamily' => 'Sottofamiglia',
+            'attribute' => "Attributo: {$proposal->attribute_key}",
+            default => $proposal->field,
+        };
+    }
+
+    /**
+     * Resolves the human-readable proposed value: the taxonomy record's name
+     * for brand/family/subfamily proposals, or the formatted value/unit for
+     * attribute proposals.
+     */
+    private static function proposedValueLabel(EnrichmentProposal $proposal): string
+    {
+        return match ($proposal->field) {
+            'brand' => Brand::query()->find($proposal->value_id)?->name ?? '—',
+            'family' => Family::query()->find($proposal->value_id)?->name ?? '—',
+            'subfamily' => Subfamily::query()->find($proposal->value_id)?->name ?? '—',
+            'attribute' => self::attributeValueLabel($proposal),
+            default => '—',
+        };
+    }
+
+    /**
+     * Formats an attribute proposal's value the same way as the technical
+     * attributes shown elsewhere (e.g. {@see ReviewQueueDetail}): the text
+     * value when present, otherwise the trimmed numeric value, plus the unit
+     * when present.
+     */
+    private static function attributeValueLabel(EnrichmentProposal $proposal): string
+    {
+        $value = $proposal->value_text ?? rtrim(rtrim((string) $proposal->value_num, '0'), '.');
+        $unit = filled($proposal->unit) ? ' '.$proposal->unit : '';
+
+        return "{$value}{$unit}";
+    }
+
+    /**
+     * Maps a `*_source`/`origin` literal to the human-readable origin label
+     * shown alongside each proposal. Public so {@see ReviewQueueDetail} can
+     * reuse the exact same mapping (US-038) instead of duplicating it.
      */
     public static function originLabel(?string $source): string
     {

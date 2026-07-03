@@ -3,10 +3,9 @@
 namespace Tests\Browser;
 
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Product;
-use App\Models\ProductAttribute;
-use App\Models\Subfamily;
 use App\Models\User;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -15,26 +14,26 @@ use Laravel\Dusk\Browser;
 use Tests\DuskTestCase;
 
 /**
- * US-023 demo scenario (spec "Dimostra"):
- * an admin opens the "Da revisionare" review queue and sees the products
- * with `enrichment_status='needs_review'` ordered by ascending confidence;
- * clicking "Conferma" promotes the AI proposal and the record disappears
- * from the queue; clicking "Correggi" opens an inline form to enter
- * corrected values; clicking "Scarta" (after confirming) clears the AI
- * proposal and keeps the record in the queue for future re-processing.
+ * US-041 demo scenario (spec "Dimostra"): the "Da revisionare" review queue
+ * now lists individual pending {@see EnrichmentProposal} rows (US-040
+ * register) instead of whole products, so a product with several pending
+ * proposals appears once per proposal. An admin opens the queue, confirms one
+ * proposal, corrects another, and discards a third — and, crucially, a
+ * product carrying two pending proposals keeps showing its second proposal
+ * once the first one is resolved, proving the proposals are triaged
+ * independently of each other.
  *
- * Per-step screenshots are stored in docs/test-results/US-023/ as the visual
- * artifact of the run (Dusk does not record video). Actions are paced with
- * explicit visibility assertions and short holds so the artifacts are
- * readable by a non-technical reviewer.
+ * Per-step screenshots are stored in docs/test-results/US-041/ as the visual
+ * artifact of the run (Dusk does not record video, same convention as
+ * US-023's original version of this test).
  */
 class ReviewQueueTriageTest extends DuskTestCase
 {
     use DatabaseMigrations;
 
-    protected const ARTIFACT_DIR = __DIR__.'/../../docs/test-results/US-023';
+    protected const ARTIFACT_DIR = __DIR__.'/../../docs/test-results/US-041';
 
-    public function test_admin_triages_the_review_queue_via_confirm_correct_and_discard(): void
+    public function test_admin_triages_individual_proposals_and_a_products_other_pending_proposal_survives(): void
     {
         $admin = User::factory()->create([
             'name' => 'Admin',
@@ -44,84 +43,91 @@ class ReviewQueueTriageTest extends DuskTestCase
 
         $aiBrand = Brand::factory()->create(['name' => 'Marca AI']);
         $aiFamily = Family::factory()->create(['name' => 'Famiglia AI']);
-        $aiSubfamily = Subfamily::factory()->create(['name' => 'Sottofamiglia AI', 'family_id' => $aiFamily->id]);
-        $correctedBrand = Brand::factory()->create(['name' => 'Marca Corretta']);
         $correctedFamily = Family::factory()->create(['name' => 'Famiglia Corretta']);
 
-        // US-035: this product carries a proposed subfamily plus a deduced
-        // technical attribute, so the new "Sottofamiglia proposta (AI)" and
-        // "Attributi tecnici" columns have real content to show on screen.
-        // US-036: it also carries the raw file-imported taxonomy plus
-        // costo/giacenza, so the additional read-only columns have real
-        // content to show on screen.
+        // Single pending BRAND proposal: confirmed as-is below.
         $toConfirm = Product::factory()->create([
             'codice_articolo' => 'CONFIRM-001',
             'description_raw' => 'Valvola a sfera 1 pollice da confermare',
-            'descrizione_marca' => 'Marca da file SPA',
-            'fam_descrizione' => 'Famiglia da file',
-            'subfam_descrizione' => 'Sottofamiglia da file',
-            'costo' => 42.5,
-            'giacenza' => 17,
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $aiBrand->id,
-            'family_id' => $aiFamily->id,
-            'subfamily_id' => $aiSubfamily->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'subfamily_source' => 'ai',
-            'source' => 'ai',
+        ]);
+        $brandProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $toConfirm->id,
+            'field' => 'brand',
+            'attribute_key' => null,
+            'value_id' => $aiBrand->id,
+            'value_num' => null,
+            'value_text' => null,
+            'unit' => null,
+            'origin' => 'ai',
             'confidence' => 70,
+            'status' => 'pending',
         ]);
 
-        ProductAttribute::factory()->create([
-            'product_id' => $toConfirm->id,
-            'key' => 'kW',
+        // US-041 cardinal scenario: this product carries TWO pending
+        // proposals (a family taxonomy proposal and a technical attribute
+        // proposal). Only the family one is corrected below — the attribute
+        // one must remain visible in the queue afterwards, proving proposals
+        // are triaged independently rather than the whole product being
+        // resolved at once.
+        $toCorrect = Product::factory()->create([
+            'codice_articolo' => 'CORRECT-002',
+            'description_raw' => 'Raccordo a T da correggere, con due proposte in sospeso',
+        ]);
+        $familyProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $toCorrect->id,
+            'field' => 'family',
+            'attribute_key' => null,
+            'value_id' => $aiFamily->id,
+            'value_num' => null,
+            'value_text' => null,
+            'unit' => null,
+            'origin' => 'ai',
+            'confidence' => 50,
+            'status' => 'pending',
+        ]);
+        $attributeProposalOnToCorrect = EnrichmentProposal::factory()->create([
+            'product_id' => $toCorrect->id,
+            'field' => 'attribute',
+            'attribute_key' => 'kW',
+            'value_id' => null,
             'value_num' => 1.5,
             'value_text' => null,
             'unit' => 'kW',
-            'source' => 'regex',
+            'origin' => 'regex',
+            'confidence' => 40,
+            'status' => 'pending',
         ]);
 
-        $toCorrect = Product::factory()->create([
-            'codice_articolo' => 'CORRECT-002',
-            'description_raw' => 'Raccordo a T da correggere',
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $aiBrand->id,
-            'family_id' => $aiFamily->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => 50,
-        ]);
-
-        // US-035: null confidence, so the "N/D" confidence badge rendering is
-        // visible in the queue. `discard()` always nulls the confidence
-        // anyway, so this doesn't change the outcome of the discard flow.
+        // Single pending ATTRIBUTE proposal: discarded below.
         $toDiscard = Product::factory()->create([
             'codice_articolo' => 'DISCARD-003',
             'description_raw' => 'Tubo flessibile da scartare',
-            'enrichment_status' => 'needs_review',
-            'brand_id' => $aiBrand->id,
-            'family_id' => $aiFamily->id,
-            'brand_source' => 'ai',
-            'family_source' => 'ai',
-            'source' => 'ai',
-            'confidence' => null,
+        ]);
+        $discardProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $toDiscard->id,
+            'field' => 'attribute',
+            'attribute_key' => 'Materiale',
+            'value_id' => null,
+            'value_num' => null,
+            'value_text' => 'Ottone',
+            'unit' => null,
+            'origin' => 'dictionary',
+            'confidence' => 20,
+            'status' => 'pending',
         ]);
 
-        // US-037: brand reused by the bulk discard step below to verify a
-        // field already `*_source = 'manual'` is preserved in a bulk discard
-        // exactly like it is for the single "Scarta" action (AC3 of US-023).
-        $manualBrand = Brand::factory()->create(['name' => 'Marca Manuale']);
-
-        // US-037: the four products for the bulk triage steps are created
-        // by reference *inside* the closure (after the single-record flow
-        // asserts "1 articoli da revisionare"), not here, so they don't
-        // inflate the initial "3 articoli da revisionare" counter assertion.
-        $bulkConfirmFirst = null;
-        $bulkConfirmSecond = null;
-        $bulkDiscardFirst = null;
-        $bulkDiscardSecond = null;
+        // The four products for the bulk triage steps are created by
+        // reference *inside* the closure (after the single-record flow
+        // asserts the queue is down to the one surviving proposal), so they
+        // don't inflate the initial "4 articoli da revisionare" assertion.
+        /** @var EnrichmentProposal|null $bulkConfirmFirstProposal */
+        $bulkConfirmFirstProposal = null;
+        /** @var EnrichmentProposal|null $bulkConfirmSecondProposal */
+        $bulkConfirmSecondProposal = null;
+        /** @var EnrichmentProposal|null $bulkDiscardFirstProposal */
+        $bulkDiscardFirstProposal = null;
+        /** @var EnrichmentProposal|null $bulkDiscardSecondProposal */
+        $bulkDiscardSecondProposal = null;
 
         $this->browse(function (Browser $browser) use (
             $admin,
@@ -129,12 +135,14 @@ class ReviewQueueTriageTest extends DuskTestCase
             $toCorrect,
             $toDiscard,
             $aiBrand,
-            $aiFamily,
-            $manualBrand,
-            &$bulkConfirmFirst,
-            &$bulkConfirmSecond,
-            &$bulkDiscardFirst,
-            &$bulkDiscardSecond,
+            $brandProposal,
+            $familyProposal,
+            $attributeProposalOnToCorrect,
+            $discardProposal,
+            &$bulkConfirmFirstProposal,
+            &$bulkConfirmSecondProposal,
+            &$bulkDiscardFirstProposal,
+            &$bulkDiscardSecondProposal,
         ) {
             // 1. The admin logs in to the Filament backoffice.
             $browser->visit('/admin/login')
@@ -150,94 +158,33 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->screenshot('02-dashboard');
 
             // 2. The admin opens the "Da revisionare" review queue and sees
-            // the queue counter and the three products awaiting triage.
+            // the queue counter (4 pending proposals across 3 products, since
+            // $toCorrect carries two of them) and the proposal rows.
             $browser->visit('/admin/review-queue')
                 ->waitForText('articoli da revisionare')
-                ->assertSee('3 articoli da revisionare')
+                ->assertSee('4 articoli da revisionare')
                 ->assertSee($toConfirm->description_raw)
                 ->assertSee($toCorrect->description_raw)
                 ->assertSee($toDiscard->description_raw)
+                ->assertSee('Famiglia')
+                ->assertSee('Attributo: kW')
                 ->pause(400)
                 ->screenshot('03-queue-before');
 
-            // 2b. (US-035) The admin also inspects the enriched columns:
-            // the proposed subfamily and its origin, the deduced technical
-            // attributes, and the "N/D" badge for the product with no
-            // confidence score yet.
-            $browser->waitForText('Sottofamiglia AI')
-                ->assertSee('Sottofamiglia AI')
-                ->assertSee('Origine: AI')
-                ->assertSee('kW')
-                ->assertSee('Dedotta')
-                ->assertSee('N/D')
-                ->pause(400)
-                ->screenshot('03b-queue-details');
-
-            // 2c. (US-036) The admin also sees the additional read-only
-            // columns: codice articolo, the raw file-imported taxonomy
-            // (marca/famiglia/sottofamiglia "da file") next to the AI
-            // proposals, and costo/giacenza.
-            $browser->assertSee($toConfirm->codice_articolo)
-                ->assertSee('Marca da file SPA')
-                ->assertSee('Famiglia da file')
-                ->assertSee('Sottofamiglia da file')
-                ->pause(400)
-                ->screenshot('03c-queue-additional-columns');
-
-            // 2d. (US-036) The admin orders the queue by clicking the
-            // "Confidenza" header, which becomes marked as actively sorted.
-            $browser->click('.fi-ta-header-cell-sort-btn[aria-label="Confidenza"]')
-                ->pause(500)
-                ->assertPresent('th.fi-ta-header-cell-sorted')
-                ->screenshot('03d-queue-sorted-by-confidence');
-
-            // 2e. (US-036) The admin filters the queue by confidence band
-            // ("Bassa (<60)"): only the product with confidence 50 remains
-            // visible, the others are hidden.
-            $browser->click('.fi-ta-filters-dropdown button[aria-label="Filter"]')
-                ->pause(400)
-                ->waitFor('#tableFiltersForm\.confidence_band\.value')
-                ->select('#tableFiltersForm\.confidence_band\.value', 'bassa')
-                ->pause(300)
-                ->press('Apply filters')
-                ->pause(600)
-                ->waitUntilMissingText($toConfirm->description_raw)
-                ->assertSee($toCorrect->description_raw)
-                ->assertDontSee($toConfirm->description_raw)
-                ->assertDontSee($toDiscard->description_raw)
-                // Closes the filters dropdown panel (via the non-sortable
-                // "Codice articolo" header cell, an uninvolved element safely
-                // below the sticky topbar) so the resulting filtered table is
-                // fully visible in the screenshot instead of being covered by
-                // the still-open panel.
-                ->click('.fi-ta-header-cell-codice-articolo')
-                ->pause(400)
-                ->screenshot('03e-queue-filtered-by-confidence-band');
-
-            // The confidence-band filter is reset (via its active-filter
-            // badge) before continuing with the triage actions below, which
-            // act on all three seeded products.
-            $browser->click('button[wire\\:click="removeTableFilter(\'confidence_band\')"]')
-                ->pause(600)
-                ->waitForText($toConfirm->description_raw)
-                ->assertSee($toConfirm->description_raw)
-                ->assertSee($toCorrect->description_raw)
-                ->assertSee($toDiscard->description_raw);
-
-            // 3. The admin confirms the AI proposal for the first product;
-            // it disappears from the queue and the counter decreases.
-            $browser->with($this->rowSelector($toConfirm), function (Browser $row) {
+            // 3. The admin confirms the brand proposal for the first product;
+            // its row disappears from the queue and the counter decreases.
+            $browser->with($this->rowSelector($brandProposal), function (Browser $row) {
                 $row->press('Conferma');
             });
 
             $browser->pause(800)
-                ->waitUntilMissingText($toConfirm->description_raw)
-                ->assertSee('2 articoli da revisionare')
+                ->waitUntilMissing($this->rowSelector($brandProposal))
+                ->assertSee('3 articoli da revisionare')
                 ->screenshot('04-after-confirm');
 
-            // 4. The admin opens "Correggi" on the second product, picks a
-            // corrected brand and family from the inline form, and saves.
-            $browser->with($this->rowSelector($toCorrect), function (Browser $row) {
+            // 4. The admin opens "Correggi" on the FAMILY proposal of the
+            // two-proposal product and picks a different family.
+            $browser->with($this->rowSelector($familyProposal), function (Browser $row) {
                 $row->press('Correggi');
             });
 
@@ -245,251 +192,297 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->waitForText('Correggi')
                 ->screenshot('05-correct-modal-open');
 
-            $browser->waitFor('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"])')
-                ->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"]) .fi-select-input-btn')
+            $browser->waitFor('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.value_id"])')
+                ->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.value_id"]) .fi-select-input-btn')
                 ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"]) .fi-select-input-search-ctn input', 'Marca Corretta')
+                ->type('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.value_id"]) .fi-select-input-search-ctn input', 'Famiglia Corretta')
                 ->pause(1500)
-                ->screenshot('06-correct-brand-search');
+                ->screenshot('06-correct-family-search');
 
-            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.brand_id"]) li.fi-select-input-option')
-                ->pause(400)
-                ->assertSee('Marca Corretta')
-                ->screenshot('07-correct-brand-selected');
-
-            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.family_id"]) .fi-select-input-btn')
-                ->pause(400)
-                ->type('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.family_id"]) .fi-select-input-search-ctn input', 'Famiglia Corretta')
-                ->pause(1500)
-                ->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.family_id"]) li.fi-select-input-option')
+            $browser->click('.fi-fo-select-wrp:has(label[for="mountedActionSchema0.value_id"]) li.fi-select-input-option')
                 ->pause(400)
                 ->assertSee('Famiglia Corretta')
-                ->screenshot('08-correct-family-selected');
+                ->screenshot('07-correct-family-selected');
 
             // Scoped to the open modal: the table still has other rows with
             // their own "Correggi" link underneath the modal overlay, so an
             // unscoped press() could match the wrong (background) button.
-            // The modal's own submit button uses Filament's default "Submit"
-            // label (the action's own "Correggi" label is only used for the
-            // modal heading and the row trigger, not the submit button).
             $browser->with('.fi-modal-open', function (Browser $modal) {
                 $modal->press('Submit');
             });
 
+            // 5. The family proposal's row disappears, but the attribute
+            // proposal for the SAME product must still be visible: proposals
+            // are triaged independently, so resolving one never removes the
+            // product's other pending proposals wholesale.
             $browser->pause(800)
-                ->waitUntilMissingText($toCorrect->description_raw)
-                ->assertSee('1 articoli da revisionare')
-                ->screenshot('09-after-correct');
+                ->waitUntilMissing($this->rowSelector($familyProposal))
+                ->assertSee('2 articoli da revisionare')
+                ->assertPresent($this->rowSelector($attributeProposalOnToCorrect))
+                ->assertSee($toCorrect->description_raw)
+                ->assertSee('Attributo: kW')
+                ->screenshot('08-after-correct-other-proposal-still-visible');
 
-            // 5. The admin discards the AI proposal on the third product;
-            // a confirmation modal appears before the discard is applied,
-            // and the record stays in the queue (still needs_review).
-            $browser->with($this->rowSelector($toDiscard), function (Browser $row) {
+            // 6. The admin discards the attribute proposal on the third
+            // product; a confirmation modal appears before the discard is
+            // applied, and — unlike confirm/correct — the product itself is
+            // never touched, since the pending value was never applied.
+            $browser->with($this->rowSelector($discardProposal), function (Browser $row) {
                 $row->press('Scarta');
             });
 
             $browser->pause(500)
-                ->waitForText('Scarta')
-                ->screenshot('10-discard-confirmation-modal');
+                ->waitFor('.fi-modal-open')
+                ->screenshot('09-discard-confirmation-modal');
 
-            // Scoped to the open modal for the same reason as the Correggi
-            // submit above: the remaining row still shows its own "Scarta"
-            // link underneath the confirmation overlay. A confirmation-only
-            // action (no form) uses Filament's default "Confirm" label for
-            // its button, not the action's own "Scarta" label.
             $browser->with('.fi-modal-open', function (Browser $modal) {
                 $modal->press('Confirm');
             });
 
+            // The one remaining pending proposal (the attribute proposal on
+            // $toCorrect) is still visible: it was never touched by any of
+            // the three actions above, so the queue count settles back to 1.
             $browser->pause(800)
-                ->assertSee($toDiscard->description_raw)
+                ->waitUntilMissing($this->rowSelector($discardProposal))
                 ->assertSee('1 articoli da revisionare')
-                ->pause(1500)
-                ->screenshot('11-after-discard');
+                ->assertPresent($this->rowSelector($attributeProposalOnToCorrect))
+                ->screenshot('10-after-discard');
 
-            // 6. (US-037) Four more products enter the queue (e.g. from a
-            // later import), two for the bulk "Conferma selezionati" step
-            // and two for the bulk "Scarta selezionati" step below. The
-            // admin reloads the queue and sees them alongside the counter.
-            $bulkConfirmFirst = Product::factory()->create([
+            // 7. (bulk coverage) Two more products enter the queue for the
+            // bulk "Conferma selezionati" step and two more for the bulk
+            // "Scarta selezionati" step below.
+            $bulkConfirmFirstProduct = Product::factory()->create([
                 'codice_articolo' => 'BULK-CONFIRM-004',
                 'description_raw' => 'Miscelatore da confermare in blocco (1 di 2)',
-                'enrichment_status' => 'needs_review',
-                'brand_id' => $aiBrand->id,
-                'family_id' => $aiFamily->id,
-                'brand_source' => 'ai',
-                'family_source' => 'ai',
-                'source' => 'ai',
-                'confidence' => 65,
             ]);
-            $bulkConfirmSecond = Product::factory()->create([
+            $bulkConfirmFirstProposal = EnrichmentProposal::factory()->create([
+                'product_id' => $bulkConfirmFirstProduct->id,
+                'field' => 'brand',
+                'attribute_key' => null,
+                'value_id' => $aiBrand->id,
+                'value_num' => null,
+                'value_text' => null,
+                'unit' => null,
+                'origin' => 'ai',
+                'confidence' => 65,
+                'status' => 'pending',
+            ]);
+            $bulkConfirmSecondProduct = Product::factory()->create([
                 'codice_articolo' => 'BULK-CONFIRM-005',
                 'description_raw' => 'Miscelatore da confermare in blocco (2 di 2)',
-                'enrichment_status' => 'needs_review',
-                'brand_id' => $aiBrand->id,
-                'family_id' => $aiFamily->id,
-                'brand_source' => 'ai',
-                'family_source' => 'ai',
-                'source' => 'ai',
-                'confidence' => 68,
             ]);
-            $bulkDiscardFirst = Product::factory()->create([
+            $bulkConfirmSecondProposal = EnrichmentProposal::factory()->create([
+                'product_id' => $bulkConfirmSecondProduct->id,
+                'field' => 'brand',
+                'attribute_key' => null,
+                'value_id' => $aiBrand->id,
+                'value_num' => null,
+                'value_text' => null,
+                'unit' => null,
+                'origin' => 'file',
+                'confidence' => 68,
+                'status' => 'pending',
+            ]);
+            $bulkDiscardFirstProduct = Product::factory()->create([
                 'codice_articolo' => 'BULK-DISCARD-006',
                 'description_raw' => 'Rubinetto da scartare in blocco (1 di 2)',
-                'enrichment_status' => 'needs_review',
-                'brand_id' => $aiBrand->id,
-                'family_id' => $aiFamily->id,
-                'brand_source' => 'ai',
-                'family_source' => 'ai',
-                'source' => 'ai',
-                'confidence' => 25,
             ]);
-            // Carries a brand already `brand_source = 'manual'`, so the test
-            // can verify the bulk discard preserves it exactly like the
-            // single "Scarta" action does (AC3 of US-023, reused here).
-            $bulkDiscardSecond = Product::factory()->create([
+            $bulkDiscardFirstProposal = EnrichmentProposal::factory()->create([
+                'product_id' => $bulkDiscardFirstProduct->id,
+                'field' => 'attribute',
+                'attribute_key' => 'DN',
+                'value_id' => null,
+                'value_num' => 25,
+                'value_text' => null,
+                'unit' => 'mm',
+                'origin' => 'regex',
+                'confidence' => 25,
+                'status' => 'pending',
+            ]);
+            $bulkDiscardSecondProduct = Product::factory()->create([
                 'codice_articolo' => 'BULK-DISCARD-007',
                 'description_raw' => 'Rubinetto da scartare in blocco (2 di 2)',
-                'enrichment_status' => 'needs_review',
-                'brand_id' => $manualBrand->id,
-                'brand_source' => 'manual',
-                'family_id' => $aiFamily->id,
-                'family_source' => 'ai',
-                'source' => 'ai',
+            ]);
+            $bulkDiscardSecondProposal = EnrichmentProposal::factory()->create([
+                'product_id' => $bulkDiscardSecondProduct->id,
+                'field' => 'attribute',
+                'attribute_key' => 'DN',
+                'value_id' => null,
+                'value_num' => 32,
+                'value_text' => null,
+                'unit' => 'mm',
+                'origin' => 'regex',
                 'confidence' => 35,
+                'status' => 'pending',
             ]);
 
             $browser->visit('/admin/review-queue')
                 ->waitForText('articoli da revisionare')
-                ->assertSee($bulkConfirmFirst->description_raw)
-                ->assertSee($bulkConfirmSecond->description_raw)
-                ->assertSee($bulkDiscardFirst->description_raw)
-                ->assertSee($bulkDiscardSecond->description_raw)
+                ->assertSee('5 articoli da revisionare')
+                ->assertSee($bulkConfirmFirstProduct->description_raw)
+                ->assertSee($bulkConfirmSecondProduct->description_raw)
+                ->assertSee($bulkDiscardFirstProduct->description_raw)
+                ->assertSee($bulkDiscardSecondProduct->description_raw)
                 ->pause(400)
-                ->screenshot('12-bulk-queue-before');
+                ->screenshot('11-bulk-queue-before');
 
-            // 7. The admin selects the two products via their row checkboxes;
-            // the "Conferma selezionati"/"Scarta selezionati" bulk actions
-            // become visible in the toolbar as soon as a row is selected.
-            $browser->with($this->rowSelector($bulkConfirmFirst), function (Browser $row) {
+            // 8. The admin selects the two brand proposals via their row
+            // checkboxes; the bulk actions become visible in the toolbar as
+            // soon as a row is selected.
+            $browser->with($this->rowSelector($bulkConfirmFirstProposal), function (Browser $row) {
                 $row->click('input.fi-ta-record-checkbox');
             });
 
             $browser->pause(300);
 
-            $browser->with($this->rowSelector($bulkConfirmSecond), function (Browser $row) {
+            $browser->with($this->rowSelector($bulkConfirmSecondProposal), function (Browser $row) {
                 $row->click('input.fi-ta-record-checkbox');
             });
 
             $browser->pause(400)
                 ->assertSee('Conferma selezionati')
-                ->screenshot('13-bulk-confirm-rows-selected');
+                ->screenshot('12-bulk-confirm-rows-selected');
 
-            // 8. Clicking "Conferma selezionati" applies the confirm logic to
-            // both selected records in one go, with a single notification.
-            // The toolbar bulk-action buttons stick right below the fixed
-            // topbar, so WebDriver's native click sometimes reports them as
-            // obscured by it; a direct DOM click (still dispatching a real
-            // "click" event, which is all Alpine's `x-on:click` listens for)
-            // sidesteps that false-positive interception.
+            // 9. Clicking "Conferma selezionati" applies the confirm logic to
+            // both selected proposals in one go. The toolbar bulk-action
+            // buttons stick right below the fixed topbar, so WebDriver's
+            // native click sometimes reports them as obscured by it; a
+            // direct DOM click sidesteps that false-positive interception.
             $this->clickButtonByLabel($browser, 'Conferma selezionati');
 
             $browser->pause(800)
-                ->waitUntilMissingText($bulkConfirmFirst->description_raw)
-                ->assertDontSee($bulkConfirmSecond->description_raw)
-                ->screenshot('14-after-bulk-confirm');
+                ->waitUntilMissing($this->rowSelector($bulkConfirmFirstProposal))
+                ->assertMissing($this->rowSelector($bulkConfirmSecondProposal))
+                ->assertSee('3 articoli da revisionare')
+                ->screenshot('13-after-bulk-confirm');
 
-            // 9. The admin selects the remaining two products and uses
-            // "Scarta selezionati", which shows a single confirmation modal
-            // for the whole selection (not one per record).
-            $browser->with($this->rowSelector($bulkDiscardFirst), function (Browser $row) {
+            // 10. The admin selects the remaining two attribute proposals and
+            // uses "Scarta selezionati", which shows a single confirmation
+            // modal for the whole selection (not one per record).
+            $browser->with($this->rowSelector($bulkDiscardFirstProposal), function (Browser $row) {
                 $row->click('input.fi-ta-record-checkbox');
             });
 
             $browser->pause(300);
 
-            $browser->with($this->rowSelector($bulkDiscardSecond), function (Browser $row) {
+            $browser->with($this->rowSelector($bulkDiscardSecondProposal), function (Browser $row) {
                 $row->click('input.fi-ta-record-checkbox');
             });
 
             $browser->pause(400)
                 ->assertSee('Scarta selezionati')
-                ->screenshot('15-bulk-discard-rows-selected');
+                ->screenshot('14-bulk-discard-rows-selected');
 
             $this->clickButtonByLabel($browser, 'Scarta selezionati');
 
             $browser->pause(500)
                 ->waitFor('.fi-modal-open')
-                ->screenshot('16-bulk-discard-confirmation-modal');
+                ->screenshot('15-bulk-discard-confirmation-modal');
 
-            // Same default "Confirm" submit label as the single-record
-            // discard confirmation above (no form, confirmation-only action).
             $browser->with('.fi-modal-open', function (Browser $modal) {
                 $modal->press('Confirm');
             });
 
+            // The queue settles back down to exactly the one proposal that
+            // was never touched throughout the whole scenario: the attribute
+            // proposal that survived the "Correggi" of its sibling family
+            // proposal on the same product.
             $browser->pause(800)
-                ->assertSee($bulkDiscardFirst->description_raw)
-                ->assertSee($bulkDiscardSecond->description_raw)
+                ->waitUntilMissing($this->rowSelector($bulkDiscardFirstProposal))
+                ->assertMissing($this->rowSelector($bulkDiscardSecondProposal))
+                ->assertSee('1 articoli da revisionare')
+                ->assertPresent($this->rowSelector($attributeProposalOnToCorrect))
                 ->pause(1500)
-                ->screenshot('17-after-bulk-discard');
+                ->screenshot('16-after-bulk-discard');
         });
 
         $toConfirm->refresh();
+        $brandProposal->refresh();
+
+        $this->assertSame($aiBrand->id, $toConfirm->brand_id);
+        $this->assertSame('ai', $toConfirm->brand_source);
+        $this->assertSame('applied', $brandProposal->status);
+
         $toCorrect->refresh();
-        $toDiscard->refresh();
+        $familyProposal->refresh();
+        $attributeProposalOnToCorrect->refresh();
 
-        $this->assertSame('enriched', $toConfirm->enrichment_status);
-
-        $this->assertSame($correctedBrand->id, $toCorrect->brand_id);
         $this->assertSame($correctedFamily->id, $toCorrect->family_id);
-        $this->assertSame('manual', $toCorrect->brand_source);
         $this->assertSame('manual', $toCorrect->family_source);
-        $this->assertSame('enriched', $toCorrect->enrichment_status);
+        $this->assertSame('applied', $familyProposal->status);
 
+        // The attribute proposal on the same product was never confirmed,
+        // corrected, or discarded, so it is still pending and its value was
+        // never written to the product.
+        $this->assertSame('pending', $attributeProposalOnToCorrect->status);
+        $this->assertSame(0, $toCorrect->attributes()->count());
+
+        $toDiscard->refresh();
+        $discardProposal->refresh();
+
+        $this->assertSame('discarded', $discardProposal->status);
         $this->assertNull($toDiscard->brand_id);
         $this->assertNull($toDiscard->family_id);
-        $this->assertSame('needs_review', $toDiscard->enrichment_status);
+        $this->assertSame(0, $toDiscard->attributes()->count());
 
-        $bulkConfirmFirst->refresh();
-        $bulkConfirmSecond->refresh();
-        $bulkDiscardFirst->refresh();
-        $bulkDiscardSecond->refresh();
+        // Assigned by reference inside the `browse()` closure above (not
+        // before it, so their creation doesn't inflate the earlier "N
+        // articoli da revisionare" assertions) — asserted non-null here so
+        // static analysis can narrow them from their initial `null` type
+        // before the property/method access below.
+        $this->assertNotNull($bulkConfirmFirstProposal);
+        $this->assertNotNull($bulkConfirmSecondProposal);
+        $this->assertNotNull($bulkDiscardFirstProposal);
+        $this->assertNotNull($bulkDiscardSecondProposal);
 
-        $this->assertSame('enriched', $bulkConfirmFirst->enrichment_status);
-        $this->assertSame('enriched', $bulkConfirmSecond->enrichment_status);
+        $bulkConfirmFirstProposal->refresh();
+        $bulkConfirmSecondProposal->refresh();
 
-        $this->assertNull($bulkDiscardFirst->brand_id);
-        $this->assertNull($bulkDiscardFirst->brand_source);
-        $this->assertNull($bulkDiscardFirst->family_id);
-        $this->assertSame('needs_review', $bulkDiscardFirst->enrichment_status);
+        $this->assertSame('applied', $bulkConfirmFirstProposal->status);
+        $this->assertSame($aiBrand->id, $bulkConfirmFirstProposal->product->brand_id);
+        $this->assertSame('ai', $bulkConfirmFirstProposal->product->brand_source);
 
-        $this->assertSame($manualBrand->id, $bulkDiscardSecond->brand_id);
-        $this->assertSame('manual', $bulkDiscardSecond->brand_source);
-        $this->assertNull($bulkDiscardSecond->family_id);
-        $this->assertNull($bulkDiscardSecond->family_source);
-        $this->assertSame('needs_review', $bulkDiscardSecond->enrichment_status);
+        $this->assertSame('applied', $bulkConfirmSecondProposal->status);
+        $this->assertSame($aiBrand->id, $bulkConfirmSecondProposal->product->brand_id);
+        $this->assertSame('file', $bulkConfirmSecondProposal->product->brand_source);
+
+        $bulkDiscardFirstProposal->refresh();
+        $bulkDiscardSecondProposal->refresh();
+
+        $this->assertSame('discarded', $bulkDiscardFirstProposal->status);
+        $this->assertSame(0, $bulkDiscardFirstProposal->product->attributes()->count());
+
+        $this->assertSame('discarded', $bulkDiscardSecondProposal->status);
+        $this->assertSame(0, $bulkDiscardSecondProposal->product->attributes()->count());
+
+        // Sanity check: across the whole scenario, exactly one proposal is
+        // still pending — the attribute proposal that survived its sibling
+        // being corrected.
+        $this->assertSame(1, EnrichmentProposal::query()->where('status', 'pending')->count());
+        $this->assertSame($attributeProposalOnToCorrect->id, EnrichmentProposal::query()->where('status', 'pending')->first()->id);
     }
 
     /**
-     * Builds a CSS selector for the table row of the given product, so each
+     * Builds a CSS selector for the table row of the given proposal, so each
      * action button click is scoped to the correct record instead of
      * matching the first "Conferma"/"Correggi"/"Scarta" button on the page.
      * Filament keys every table row with a `wire:key` ending in
-     * `table.records.{recordKey}`, which is a stable, unique attribute to
-     * scope on (Dusk's resolver only supports CSS selectors, not XPath).
+     * `table.records.{recordKey}` — under US-041 the table's record is the
+     * {@see EnrichmentProposal}, not the product, so this is now keyed by the
+     * proposal's own id (Dusk's resolver only supports CSS selectors, not
+     * XPath).
      */
-    private function rowSelector(Product $product): string
+    private function rowSelector(EnrichmentProposal $proposal): string
     {
-        return 'tr[wire\\:key$=".table.records.'.$product->getKey().'"]';
+        return 'tr[wire\\:key$=".table.records.'.$proposal->getKey().'"]';
     }
 
     /**
      * Clicks a button by its exact visible label via a direct DOM `.click()`
      * call instead of Dusk's native `->press()`. Used for the sticky toolbar
-     * bulk-action buttons (US-037), which WebDriver can report as obscured
-     * by the app's fixed topbar even though they are visually reachable. A
-     * DOM `.click()` still dispatches a real "click" event, which is all
+     * bulk-action buttons, which WebDriver can report as obscured by the
+     * app's fixed topbar even though they are visually reachable. A DOM
+     * `.click()` still dispatches a real "click" event, which is all
      * Alpine's `x-on:click="mountAction(...)"` listens for.
      */
     private function clickButtonByLabel(Browser $browser, string $label): void
