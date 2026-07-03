@@ -6,7 +6,7 @@ epic:
   title: Backoffice Filament
 priority: HIGH
 points: 3
-status: TODO
+status: REVIEW
 body: |-
   #### US-031: Azioni manuali di rielaborazione per singolo prodotto
 

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Products\Tables;
 
+use App\Filament\Resources\Products\Actions\ProductEnrichmentActions;
 use App\Models\Product;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
@@ -53,6 +54,9 @@ class ProductsTable
             ->recordActions([
                 ViewAction::make(),
                 EditAction::make(),
+                ProductEnrichmentActions::relaunchDeterministicEnrichment(),
+                ProductEnrichmentActions::relaunchAiClassification(),
+                ProductEnrichmentActions::regenerateProductBaseEmbedding(),
             ]);
     }
 }

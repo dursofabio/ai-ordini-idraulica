@@ -1,0 +1,86 @@
+schema: archetipo/plan/v2
+spec_code: US-031
+body: |
+  ## Soluzione Tecnica
+
+  Le tre azioni manuali vengono esposte come `Filament\Actions\Action` riutilizzabili, centralizzate in una nuova classe `App\Filament\Resources\Products\Actions\ProductEnrichmentActions` (pattern già visto in `ProductBasesTable::regenerateEmbeddingAction()`), così da evitare duplicazione tra la riga della tabella prodotti (`ProductsTable::recordActions()`) e le header actions della pagina di dettaglio (`ViewProduct::getHeaderActions()`), come richiesto dall'AC4.
+
+  - **Rilancia arricchimento deterministico**: la pipeline `DeterministicEnrichmentPipeline::run()` e ogni singolo resolver (`BrandResolver`, `GroupingResolver`, `AttributeResolver`, `FamilyPropagationResolver`, `FileTaxonomyResolver`) sono già idempotenti per costruzione (si limitano a valorizzare i campi ancora `null`), ma `DeterministicEnrichmentPipeline::run()` esegue un no-op immediato se `enrichment_status !== 'pending'`. Per rendere l'azione un vero "rilancio" senza duplicare la logica di orchestrazione dei resolver né introdurre reset distruttivi dei campi già risolti, l'azione riporta il prodotto a `enrichment_status = 'pending'` e poi accoda un nuovo job `App\Jobs\RunDeterministicEnrichmentJob` (coda `enrich`, stesso pattern di `ClassifyProductsBatchJob`) che invoca la pipeline esistente sul solo prodotto. Effetto collaterale accettato e documentato: se il prodotto era `needs_review`, l'azione lo riporta a `pending` e lo rimuove temporaneamente dalla coda di revisione (US-023) finché non viene ri-classificato; è un compromesso ragionevole per uno story da 3 punti e coerente con il significato di "forzare l'elaborazione".
+  - **Rilancia classificazione AI**: `ClassifyProductsBatchJob` filtra internamente `where('enrichment_status', 'pending')`, quindi per soddisfare l'AC2 ("indipendentemente dal suo enrichment_status corrente") l'azione riporta prima il prodotto a `pending` e poi accoda `ClassifyProductsBatchJob::dispatch([$record->id])`, riusando il job esistente senza modificarlo. Prima di procedere, l'azione verifica che `description_clean ?? description_raw` non sia vuoto (stesso pattern di `BrandResolver`/`AttributeResolver`): se vuoto, il pulsante è disabilitato (`->disabled()`) e, come guardia difensiva, l'`->action()` mostra una notifica di errore invece di accodare il job (AC5).
+  - **Rigenera embedding prodotto-base**: riusa integralmente `App\Jobs\GenerateProductBaseEmbeddingJob` già esistente (nessuna modifica), dispatchandolo con `$record->product_base_id`. L'azione è disabilitata quando il prodotto non ha un `product_base_id` collegato (AC5), altrimenti sovrascrive un embedding già presente per costruzione del job (`updateOrCreate` per `product_base_id` + `model`).
+  - Tutte e tre le azioni mostrano una `Filament\Notifications\Notification` di successo (o di errore per il caso degradato dell'AC5), coerente con il pattern già usato in `ReviewQueue` e `ProductBasesTable::regenerateEmbeddingAction()`.
+  - Nessuna migrazione né modifica al modello `Product`/`ProductBase` è necessaria: si riusa lo schema e i job/servizi già presenti nell'EP-004/EP-005.
+
+  ## Strategia di Test
+
+  Test Feature con Livewire/Pest-style assertions (PHPUnit, come da convenzione del progetto), usando `Queue::fake()` per verificare il dispatch dei job senza eseguirli realmente, seguendo lo stile già usato in `ProductBaseResourceTest` e `ClassifyProductsBatchJobTest`.
+
+  - Nuovo test unitario/feature per `RunDeterministicEnrichmentJob`: dispatch sulla coda `enrich`; l'esecuzione riporta lo stato a `pending` e invoca la pipeline esistente (riusa i fixture già visti in `DeterministicEnrichmentPipelineTest` per un prodotto con brand/famiglia non ancora risolti); l'esecuzione su un prodotto già completamente risolto è un no-op sicuro sui campi (idempotenza dei resolver) pur riportando `enrichment_status` a `pending`.
+  - Test Feature sulla tabella prodotti (`ListProducts`): ciascuna delle tre azioni di riga accoda il job corretto con l'id giusto e mostra la notifica di successo; l'azione di classificazione funziona anche su prodotti `enriched`/`needs_review` (AC2); l'azione di classificazione è disabilitata (o mostra errore) su un prodotto con descrizione vuota (AC5); l'azione di embedding è disabilitata quando `product_base_id` è null (AC5).
+  - Test Feature sulla pagina di dettaglio (`ViewProduct`): le stesse tre azioni sono disponibili come header actions e producono lo stesso comportamento (AC4), riusando `callAction()` come in `ProductBaseResourceTest::test_regenerate_embedding_action_dispatches_job_from_edit_page`.
+  - Nessuna copertura e2e/browser dedicata: lo scope è puramente backoffice Filament senza nuovi flussi UI complessi, coerente con l'assenza di test Dusk per `ProductBasesTable::regenerateEmbeddingAction()` (funzionalità equivalente già in produzione, testata solo a livello Feature).
+  - Regressione: ri-eseguire `ProductResourceTest`, `ProductResourceViewTest`, `ProductBaseResourceTest`, `ClassifyProductsBatchJobTest` e `DeterministicEnrichmentPipelineTest` per assicurarsi che il reset di `enrichment_status` introdotto dalle nuove azioni non comprometta il comportamento esistente.
+tasks:
+  - id: TASK-01
+    title: Creare il job RunDeterministicEnrichmentJob
+    description: 'Nuova classe App\Jobs\RunDeterministicEnrichmentJob (coda ''enrich'', pattern analogo a ClassifyProductsBatchJob/GenerateProductBaseEmbeddingJob): riceve un productId, carica il Product (findOrFail), lo riporta a enrichment_status = ''pending'' e invoca DeterministicEnrichmentPipeline::run($product) riusando i resolver esistenti senza duplicarne la logica.'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test del job RunDeterministicEnrichmentJob
+    description: 'tests/Feature/RunDeterministicEnrichmentJobTest.php: verifica il dispatch sulla coda ''enrich'', l''esecuzione che risolve brand/attributi/famiglia per un prodotto pending con campi non risolti, e il comportamento no-op sicuro (ma con reset dello stato a pending) su un prodotto già completamente arricchito.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Creare la classe condivisa ProductEnrichmentActions
+    description: 'Nuova classe App\Filament\Resources\Products\Actions\ProductEnrichmentActions con tre metodi statici che costruiscono le Filament\Actions\Action: relaunchDeterministicEnrichment() (accoda RunDeterministicEnrichmentJob), relaunchAiClassification() (riporta il prodotto a pending e accoda ClassifyProductsBatchJob::dispatch([$record->id]), disabilitata/con errore se description_clean ?? description_raw è vuota), regenerateProductBaseEmbedding() (accoda GenerateProductBaseEmbeddingJob per $record->product_base_id, disabilitata se product_base_id è null). Ogni azione mostra una Notification di esito.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: Aggiungere le azioni alla riga della tabella prodotti
+    description: Aggiungere le tre azioni di ProductEnrichmentActions a ProductsTable::recordActions(), accanto a ViewAction/EditAction esistenti.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Test delle azioni sulla riga della tabella prodotti
+    description: 'tests/Feature/ProductManualActionsTest.php: callTableAction su ListProducts per ciascuna delle tre azioni, verifica del job accodato con l''id corretto e della notifica; verifica che la classificazione funzioni indipendentemente da enrichment_status (AC2); verifica disabilitazione/errore per descrizione vuota e per product_base_id nullo (AC5).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-04
+    ref: TASK-05
+  - id: TASK-06
+    title: Aggiungere le azioni come header actions della pagina di dettaglio
+    description: Implementare ViewProduct::getHeaderActions() riusando le stesse tre azioni di ProductEnrichmentActions, così che siano disponibili anche dalla pagina di dettaglio del prodotto (AC4).
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-06
+  - id: TASK-07
+    title: Test delle azioni sulla pagina di dettaglio
+    description: Estendere tests/Feature/ProductResourceViewTest.php (o nuovo file) con callAction() su ViewProduct per ciascuna delle tre azioni, verificando lo stesso comportamento di dispatch/notifica/disabilitazione già coperto per la tabella.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-06
+    ref: TASK-07
+  - id: TASK-08
+    title: Verifica di regressione
+    description: Rieseguire ProductResourceTest, ProductResourceViewTest, ProductBaseResourceTest, ClassifyProductsBatchJobTest e DeterministicEnrichmentPipelineTest per assicurarsi che il reset di enrichment_status introdotto dalle nuove azioni non comprometta il comportamento esistente (batch CLI, ReviewQueue, embedding).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+      - TASK-07
+    ref: TASK-08

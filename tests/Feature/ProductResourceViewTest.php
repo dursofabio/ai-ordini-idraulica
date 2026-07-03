@@ -4,6 +4,9 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Filament\Resources\Products\Pages\ViewProduct;
+use App\Jobs\ClassifyProductsBatchJob;
+use App\Jobs\GenerateProductBaseEmbeddingJob;
+use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\EnrichmentLog;
 use App\Models\Product;
 use App\Models\ProductBase;
@@ -14,6 +17,7 @@ use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\Assert;
 use Livewire\Livewire;
 use Tests\Concerns\RequiresDatabase;
@@ -208,5 +212,104 @@ class ProductResourceViewTest extends TestCase
                 'enrichment_empty_state',
                 checkComponentUsing: fn (TextEntry $component): bool => ! $component->isVisible(),
             );
+    }
+
+    /**
+     * US-031 AC4: the same manual reprocessing actions available from the
+     * products table row must also be available (and behave the same) from
+     * the product view page header.
+     */
+    public function test_view_page_relaunch_deterministic_enrichment_dispatches_job(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->callAction('relaunchDeterministicEnrichment')
+            ->assertNotified();
+
+        Queue::assertPushed(
+            RunDeterministicEnrichmentJob::class,
+            static fn (RunDeterministicEnrichmentJob $job): bool => $job->productId === $product->id,
+        );
+    }
+
+    public function test_view_page_relaunch_ai_classification_dispatches_job_regardless_of_current_status(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'description_raw' => 'CALDAIA A CONDENSAZIONE 25KW',
+            'enrichment_status' => 'enriched',
+        ]);
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->callAction('relaunchAiClassification')
+            ->assertNotified();
+
+        Queue::assertPushed(
+            ClassifyProductsBatchJob::class,
+            static fn (ClassifyProductsBatchJob $job): bool => $job->productIds === [$product->id],
+        );
+    }
+
+    public function test_view_page_relaunch_ai_classification_is_disabled_when_description_is_empty(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'description_raw' => '',
+            'description_clean' => null,
+        ]);
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertActionDisabled('relaunchAiClassification');
+
+        Queue::assertNotPushed(ClassifyProductsBatchJob::class);
+    }
+
+    public function test_view_page_regenerate_product_base_embedding_dispatches_job(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $productBase = ProductBase::factory()->create();
+        $product = Product::factory()->create(['product_base_id' => $productBase->id]);
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->callAction('regenerateProductBaseEmbedding')
+            ->assertNotified();
+
+        Queue::assertPushed(
+            GenerateProductBaseEmbeddingJob::class,
+            static fn (GenerateProductBaseEmbeddingJob $job): bool => $job->productBaseId === $productBase->id,
+        );
+    }
+
+    public function test_view_page_regenerate_product_base_embedding_is_disabled_when_product_has_no_base(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create(['product_base_id' => null]);
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertActionDisabled('regenerateProductBaseEmbedding');
+
+        Queue::assertNotPushed(GenerateProductBaseEmbeddingJob::class);
     }
 }
