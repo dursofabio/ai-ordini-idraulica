@@ -1,0 +1,129 @@
+schema: archetipo/plan/v2
+spec_code: US-040
+body: |-
+  ## Soluzione Tecnica
+
+  L'approccio introduce un registro trasversale `enrichment_proposals` che affianca (senza sostituirla nella UI/ricerca) la scrittura diretta già esistente su `products`/`product_attributes`: ogni resolver deterministico (`FileTaxonomyResolver`, `BrandResolver`, `AttributeResolver`, `FamilyPropagationResolver`) e `EnrichmentApplier` (Step B, AI) creano una riga di proposta per ogni campo marca/famiglia/sottofamiglia/attributo che tentano di valorizzare; la riga viene marcata `applied` quando la confidenza supera la soglia già in vigore per quella fonte — nel qual caso il valore viene comunque scritto sulla colonna diretta esattamente come oggi — oppure `pending` quando la confidenza è bassa, nel qual caso il prodotto non viene toccato. Per le fonti deterministiche (file/regex/dictionary/propagated) non esiste oggi alcuna soglia di scarto: risolvono con certezza o non propongono nulla, quindi restano sempre `applied` e il comportamento osservabile è bit-per-bit identico a quello attuale. L'unico punto dove `pending` diventa osservabile è `EnrichmentApplier`, che già gestisce le soglie 60/85.
+
+  - **Migrazione `enrichment_proposals`**: `product_id` (FK `products`, cascade delete), `field` (string: `brand`|`family`|`subfamily`|`attribute`), `attribute_key` (string nullable, valorizzato solo per `field=attribute`, mirror di `product_attributes.key`), `value_id` (unsignedBigInteger nullable, l'id del record di tassonomia proposto per brand/family/subfamily), `value_num`/`value_text`/`unit` (mirror di `product_attributes`, per le proposte di attributo), `origin` (string: `file`|`regex`|`dictionary`|`propagated`|`ai`), `confidence` (unsignedTinyInteger nullable), `status` (string, default `pending`: `applied`|`pending`), `timestamps()`. Indici su `product_id` e su `status` (letture della coda in US-041), più `[product_id, field, attribute_key]` per lookup mirati. Nuovo model `EnrichmentProposal` (Fillable, cast `value_num => decimal:3`, `confidence => integer`) con `belongsTo(Product)`, nuova relazione `Product::enrichmentProposals(): HasMany` (mirror di `enrichmentLogs()`), e factory dedicata.
+  - **`EnrichmentProposalRecorder`** (nuovo servizio in `app/Services/Enrichment/`): unico punto che sa costruire e persistere una riga `enrichment_proposals` a partire dai parametri del resolver chiamante (product, field, attribute_key, value, origin, confidence, status), riusato da tutti i resolver e da `EnrichmentApplier` per evitare la duplicazione della logica di shaping tra `value_id` (taxonomy) e `value_num`/`value_text`/`unit` (attributi). Espone anche un metodo di inserimento bulk (via `insert()`, stesso pattern già usato da `EnrichmentLog::query()->insert($rows)` in `ClassifyProductsBatchJob`) per il caso `FamilyPropagationResolver`, che oggi scrive con una singola query di massa e non può hydrare un model per riga senza introdurre N+1.
+  - **`FileTaxonomyResolver`**: per ogni campo effettivamente linkato (brand/family/subfamily) registra una proposta `applied`, `origin='file'`, `confidence=100` (fonte certa, coerente col docblock esistente); il `product->fill()->save()` resta identico, la sola aggiunta è la chiamata al recorder subito prima/dopo il save.
+  - **`BrandResolver`**: registra una proposta `applied` per il brand risolto, riusando `origin` e `confidence` già calcolati dal match (`regex`/95, `dictionary`/80); nessun cambio alla logica di matching.
+  - **`AttributeResolver`** (Step A regex): registra una proposta `applied`, `origin='regex'`, `confidence=100`, solo quando `writeAttribute()` scrive effettivamente (la guardia esistente sul `source` più autorevole resta invariata e continua a sopprimere sia la scrittura sia la proposta).
+  - **`FamilyPropagationResolver`**: dopo l'update di massa su `family_id`/`subfamily_id` (invariato), inserisce in bulk una proposta `applied`, `origin='propagated'`, `confidence=100` per ciascun `product_id` aggiornato e per la colonna coinvolta.
+  - **`EnrichmentApplier`** (AI, Step B): `resolvedAttributes()` viene invocato sempre, indipendentemente dalla soglia bassa (oggi è chiamato solo se `confidence >= 60`), così da poter loggare come `pending` anche i suggerimenti di brand/family/sottofamiglia sotto soglia — la guardia esistente su `*_source` manuale/file resta invariata e continua a escludere dalla proposta i campi già bloccati. Se `confidence >= 60` il comportamento di scrittura resta identico a oggi (fill+save dei campi risolti) e ciascun campo risolto genera una proposta `applied` con `origin='ai'` e `confidence=$result->confidence`; se `confidence < 60` nessun campo viene scritto (invariato) ma ogni campo risolto genera una proposta `pending` con la stessa confidenza. `applyAttributes()` mantiene le tre fasce già esistenti per attributo (<60 skip, 60-84 scrive e forza `needs_review`, >=85 scrive) aggiungendo la proposta corrispondente: `pending` nel primo caso (nessuna scrittura), `applied` negli altri due (scrittura invariata); la guardia sul `source` esistente resta il primo controllo e, se blocca, non genera alcuna proposta (coerente con 'mai sovrascritto').
+  - **`EnrichmentCache`**: nessuna modifica — continua a serializzare l'intero `ClassifiedProduct`; un hit di cache richiama comunque `EnrichmentApplier::apply()` sullo stesso risultato, quindi le proposte vengono generate anche per un duplicato, coerente con US-016.
+  - Nessuna migrazione retroattiva: il registro traccia solo le proposte generate da qui in avanti, i dati già presenti su `products`/`product_attributes` non vengono toccati.
+
+  ## Strategia di Test
+
+  - Test unitario/feature sul nuovo `EnrichmentProposalRecorder`: crea una riga `applied` per una proposta di tassonomia (`value_id`), una riga `pending` per una proposta di attributo (`value_num`/`unit`), e l'inserimento bulk produce N righe coerenti con gli id passati.
+  - `tests/Feature/FileTaxonomyResolverTest.php`: estendere gli scenari esistenti verificando che ogni link da file produca anche una riga `enrichment_proposals` con `status='applied'`, `origin='file'`, `confidence=100`, senza alterare le asserzioni esistenti su `products`.
+  - `tests/Feature/BrandResolverTest.php`: estendere verificando la proposta `applied` con `origin`/`confidence` coerenti al match (suffix vs inline), senza alterare le asserzioni esistenti.
+  - `tests/Feature/AttributeResolverTest.php`: estendere verificando la proposta `applied`/`origin='regex'`/`confidence=100` per un attributo scritto, e l'assenza di proposta quando la guardia sul `source` più autorevole blocca la scrittura.
+  - `tests/Feature/FamilyPropagationResolverTest.php`: estendere verificando che la propagazione bulk produca una proposta per ciascun prodotto/colonna aggiornato, senza N+1 (assert su query count) e senza alterare le asserzioni esistenti.
+  - `tests/Feature/EnrichmentApplierTest.php`: nuovi scenari — (1) confidenza complessiva >= 85 → proposte `applied` per brand/family/subfamily risolti, oltre alle asserzioni esistenti sui campi diretti; (2) confidenza 60-84 → proposte `applied` identiche nel risultato finale; (3) confidenza < 60 → nessun campo scritto (invariato) ma proposte `pending` create per i campi che si sarebbero risolti; (4) attributo < 60 → proposta `pending`, nessuna riga `product_attributes` scritta; (5) attributo 60-84/>=85 → proposta `applied`, comportamento di scrittura invariato; (6) campo con `*_source='manual'`/`'file'` esistente → nessuna proposta creata, coerente con la guardia.
+  - Regressione: rieseguire `ReviewQueueTest`, `ClassifyProductsBatchJobTest`, `DeterministicEnrichmentPipelineTest` e l'intera suite `EnrichmentApplierTest`/resolver per confermare che nessuna asserzione esistente su `products`/`product_attributes` sia cambiata (solo aggiunte, nessuna modifica comportamentale osservabile ad alta confidenza).
+
+  Spec puramente backend (nuova tabella di log, nessuna nuova UI): non generati mockup né test e2e browser — la coda di revisione granulare che consumerà questo registro è US-041 (EP-007), fuori scope qui.
+tasks:
+  - id: TASK-01
+    title: Migrazione enrichment_proposals, model e factory
+    description: 'Nuova migrazione che crea la tabella enrichment_proposals (product_id FK cascade, field, attribute_key nullable, value_id nullable, value_num/value_text/unit nullable, origin, confidence nullable, status default ''pending'', timestamps) con indici su product_id, status e [product_id, field, attribute_key]. Nuovo model App\Models\EnrichmentProposal (Fillable, cast value_num=>decimal:3, confidence=>integer, belongsTo Product), nuova relazione Product::enrichmentProposals(): HasMany, e EnrichmentProposalFactory.'
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Servizio EnrichmentProposalRecorder
+    description: Nuovo servizio in app/Services/Enrichment/ che centralizza la creazione di una riga enrichment_proposals a partire da product, field, attribute_key, value (value_id oppure value_num/value_text/unit), origin, confidence, status, oltre a un metodo di inserimento bulk (via insert(), stesso pattern di EnrichmentLog::query()->insert()) per il caso di scritture di massa (FamilyPropagationResolver).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Test del recorder
+    description: 'Test feature per EnrichmentProposalRecorder: una proposta di tassonomia (value_id) viene persistita con status/origin/confidence corretti; una proposta di attributo (value_num/unit) viene persistita correttamente; l''inserimento bulk produce una riga per ciascun product_id passato con i campi attesi.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Wiring FileTaxonomyResolver sul registro proposte
+    description: Per ogni campo (brand/family/subfamily) effettivamente linkato da FileTaxonomyResolver::resolve(), registrare tramite EnrichmentProposalRecorder una proposta status='applied', origin='file', confidence=100, mantenendo invariata la scrittura diretta su products.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-05
+    title: Test FileTaxonomyResolver con registro proposte
+    description: Estendere tests/Feature/FileTaxonomyResolverTest.php verificando che ogni link da file produca la riga enrichment_proposals attesa (status='applied', origin='file', confidence=100) senza alterare le asserzioni esistenti sulle colonne dirette di products.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Wiring BrandResolver sul registro proposte
+    description: Nel ramo di match (suffix 'regex'/95, inline 'dictionary'/80) di BrandResolver::resolve(), registrare tramite EnrichmentProposalRecorder una proposta status='applied' con origin/confidence coerenti al match, mantenendo invariata la scrittura diretta su products.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-07
+    title: Test BrandResolver con registro proposte
+    description: Estendere tests/Feature/BrandResolverTest.php verificando la riga enrichment_proposals attesa per il match suffix e per il match inline, senza alterare le asserzioni esistenti.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-08
+    title: Wiring AttributeResolver (Step A regex) sul registro proposte
+    description: In AttributeResolver::writeAttribute(), quando la scrittura viene effettivamente eseguita (guardia sul source più autorevole invariata), registrare tramite EnrichmentProposalRecorder una proposta status='applied', origin='regex', confidence=100, field='attribute', attribute_key=key.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-09
+    title: Test AttributeResolver con registro proposte
+    description: Estendere tests/Feature/AttributeResolverTest.php verificando la riga enrichment_proposals per un attributo scritto e l'assenza di proposta quando la guardia sul source più autorevole blocca la scrittura.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-10
+    title: Wiring FamilyPropagationResolver sul registro proposte
+    description: Dopo ciascun update di massa in FamilyPropagationResolver::propagateColumn(), inserire in bulk (via EnrichmentProposalRecorder) una proposta status='applied', origin='propagated', confidence=100 per ciascun product_id aggiornato sulla colonna coinvolta, senza introdurre N+1 query.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-11
+    title: Test FamilyPropagationResolver con registro proposte
+    description: Estendere tests/Feature/FamilyPropagationResolverTest.php verificando che la propagazione produca una proposta per ciascun prodotto/colonna aggiornato e che il numero di query resti contenuto (assert su query count), senza alterare le asserzioni esistenti.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
+  - id: TASK-12
+    title: Refactor EnrichmentApplier per proposte applied/pending su brand/family/subfamily e attributi
+    description: resolvedAttributes() viene invocato sempre (anche sotto la soglia bassa) per poter loggare proposte 'pending' quando confidence < 60; a confidence >= 60 il comportamento di scrittura resta identico a oggi con proposta 'applied' per campo risolto (origin='ai', confidence=result->confidence). applyAttributes() aggiunge la proposta corrispondente per fascia (pending sotto 60, applied 60-84/>=85) mantenendo invariate scritture e forzatura di needs_review; la guardia esistente sul source più autorevole resta il primo controllo e, se blocca, non genera alcuna proposta.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-13
+    title: Test EnrichmentApplier per proposte applied/pending
+    description: 'Estendere tests/Feature/EnrichmentApplierTest.php con: confidenza >= 85 e 60-84 producono proposte ''applied'' per i campi risolti (in aggiunta alle asserzioni esistenti sulle colonne dirette); confidenza < 60 non scrive nulla (invariato) ma produce proposte ''pending'' per i campi che si sarebbero risolti; attributo < 60 produce proposta ''pending'' senza scrittura; attributo 60-84/>=85 produce proposta ''applied'' con scrittura invariata; un campo già ''manual''/''file'' non genera alcuna proposta.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-12
+  - id: TASK-14
+    title: Regressione sulla suite esistente
+    description: Rieseguire ReviewQueueTest, ClassifyProductsBatchJobTest, DeterministicEnrichmentPipelineTest e l'intera suite EnrichmentApplierTest/resolver per confermare che tutte le asserzioni esistenti su products/product_attributes restano invariate (solo scritture aggiuntive sul nuovo registro, nessuna regressione comportamentale ad alta confidenza).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-05
+      - TASK-07
+      - TASK-09
+      - TASK-11
+      - TASK-13

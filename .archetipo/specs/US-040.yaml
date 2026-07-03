@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-040
+title: Registro delle proposte di arricchimento come base per marca, famiglia, sottofamiglia e attributi
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 6
+status: PLANNED
+body: |-
+  #### US-040: Registro delle proposte di arricchimento come base per marca, famiglia, sottofamiglia e attributi
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 6 | **Stato:** TODO
+  **Bloccata da:** US-039
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che ogni proposta di modifica a marca, famiglia, sottofamiglia o attributo tecnico (da file, regex o AI) sia registrata come voce di un log con la propria origine, confidenza e stato di applicazione, mantenendo il prodotto sempre nello stato correntemente applicato,
+  così da avere una cronologia di ogni proposta e una base pronta per una revisione granulare, senza rallentare la ricerca sul catalogo.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, ogni scrittura di marca/famiglia/sottofamiglia/attributo prodotta dai resolver deterministici e dalla classificazione AI genera una riga di log con origine, confidenza e stato (applicata automaticamente o in attesa); i valori applicati automaticamente restano immediatamente visibili sulle colonne dirette di `products`/`product_attributes` esattamente come oggi, mentre una proposta in attesa non modifica il valore corrente del prodotto finché non viene approvata.
+
+  **Criteri di Accettazione**
+  - [ ] Nuova tabella di log (es. `enrichment_proposals`) con colonne per prodotto, campo interessato (marca/famiglia/sottofamiglia/attributo+chiave), valore proposto, origine, confidenza, stato e timestamp
+  - [ ] Ogni resolver deterministico e la classificazione AI creano una proposta invece di scrivere direttamente; una proposta ad alta confidenza viene applicata automaticamente con lo stesso risultato finale di oggi sulle colonne dirette, una a bassa confidenza resta in attesa senza modificare il prodotto
+  - [ ] Il comportamento osservabile per marca/famiglia/sottofamiglia/attributi con confidenza alta è identico a quello pre-esistente, senza regressioni sulle soglie 60/85 già in `EnrichmentApplier`/`AttributeResolver`
+  - [ ] I dati già presenti su `products`/`product_attributes` prima di questa spec restano invariati: nessuna migrazione retroattiva dello storico, il log traccia solo le proposte da qui in avanti
+  - [ ] La suite di test esistente (`ReviewQueueTest`, `ClassifyProductsBatchJobTest`, `DeterministicEnrichmentPipelineTest`, `EnrichmentApplierTest`) continua a passare invariata
