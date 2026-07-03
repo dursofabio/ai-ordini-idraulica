@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Product;
 use App\Services\Enrichment\BrandResolver;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -36,7 +38,7 @@ class BrandResolverTest extends TestCase
             'brand_id' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertTrue($resolved);
         $product->refresh();
@@ -44,6 +46,14 @@ class BrandResolverTest extends TestCase
         $this->assertSame('regex', $product->brand_source);
         $this->assertSame(95, $product->confidence);
         $this->assertSame('Miscelatore lavabo monocomando', $product->description_clean);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'origin' => 'regex',
+            'status' => 'applied',
+            'confidence' => 95,
+            'value_id' => $brand->id,
+        ]);
     }
 
     public function test_resolves_brand_from_trailing_suffix_matching_alias(): void
@@ -54,7 +64,7 @@ class BrandResolverTest extends TestCase
             'brand_id' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertTrue($resolved);
         $product->refresh();
@@ -72,7 +82,7 @@ class BrandResolverTest extends TestCase
             'brand_id' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertTrue($resolved);
         $product->refresh();
@@ -80,6 +90,14 @@ class BrandResolverTest extends TestCase
         $this->assertSame('dictionary', $product->brand_source);
         $this->assertSame(80, $product->confidence);
         $this->assertSame('Miscelatore serie eurosmart', $product->description_clean);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'origin' => 'dictionary',
+            'status' => 'applied',
+            'confidence' => 80,
+            'value_id' => $brand->id,
+        ]);
     }
 
     public function test_leaves_brand_unresolved_when_no_match(): void
@@ -91,13 +109,14 @@ class BrandResolverTest extends TestCase
             'enrichment_status' => 'pending',
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertFalse($resolved);
         $product->refresh();
         $this->assertNull($product->brand_id);
         $this->assertSame('Tubo multistrato 16mm', $product->description_clean);
         $this->assertSame('pending', $product->enrichment_status);
+        $this->assertSame(0, EnrichmentProposal::where('product_id', $product->id)->count());
     }
 
     public function test_leaves_brand_unresolved_when_inline_match_is_ambiguous(): void
@@ -110,7 +129,7 @@ class BrandResolverTest extends TestCase
             'enrichment_status' => 'pending',
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertFalse($resolved);
         $product->refresh();
@@ -131,7 +150,7 @@ class BrandResolverTest extends TestCase
             'description_clean' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertFalse($resolved);
         $product->refresh();
@@ -140,6 +159,7 @@ class BrandResolverTest extends TestCase
         $this->assertSame(60, $product->confidence);
         $this->assertNull($product->description_clean);
         $this->assertNotSame($otherBrand->id, $product->brand_id);
+        $this->assertSame(0, EnrichmentProposal::where('product_id', $product->id)->count());
     }
 
     public function test_suffix_match_takes_priority_over_inline_match(): void
@@ -151,7 +171,7 @@ class BrandResolverTest extends TestCase
             'brand_id' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertTrue($resolved);
         $product->refresh();
@@ -168,7 +188,7 @@ class BrandResolverTest extends TestCase
             'brand_id' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertTrue($resolved);
         $product->refresh();

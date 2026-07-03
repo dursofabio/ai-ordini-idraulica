@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Services\Enrichment\AttributeResolver;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -35,7 +36,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'CALDAIA A CONDENSAZIONE 3.5KW -VAILLANT-',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(1, $written);
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
@@ -43,6 +44,15 @@ class AttributeResolverTest extends TestCase
         $this->assertEquals(3.5, $attribute->value_num);
         $this->assertSame('kW', $attribute->unit);
         $this->assertSame('regex', $attribute->source);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'origin' => 'regex',
+            'status' => 'applied',
+            'confidence' => 100,
+            'value_num' => 3.5,
+        ]);
     }
 
     public function test_extracts_kw_from_explicit_unit_with_comma_decimal(): void
@@ -51,7 +61,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'BOX BD 7/7 M4 0,13KW -VORTICE-',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertNotNull($attribute);
@@ -65,7 +75,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'BY-PASS ECOBLOCK EXCLUSIV 35 Kw -VAILLANT-',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertNotNull($attribute);
@@ -79,7 +89,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => "UNITA' ESTERNA VAI 8-025 WNO VAILLANT",
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertNotNull($attribute);
@@ -94,7 +104,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(0, $written);
         $this->assertNull($product->attributes()->where('key', 'potenza_kw')->first());
@@ -106,7 +116,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'BOLLITORE 800 LT SOLARE IN RF PROD SOLARE ACS CON DOPPIO SCAMB ELLEGI',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(1, $written);
         $attribute = $product->attributes()->where('key', 'capacita_litri')->first();
@@ -122,7 +132,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'SF/N00050 SERBATOIO ACCUMULO VOLANO TERMICO A/R PDC 50 lt - ELLEGI -',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'capacita_litri')->first();
         $this->assertNotNull($attribute);
@@ -136,7 +146,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(0, $written);
         $this->assertNull($product->attributes()->where('key', 'capacita_litri')->first());
@@ -148,7 +158,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'RIDUTTORE PRESS.ACQUA 1" C/MANOM. -TECNOGAS-',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(1, $written);
         $attribute = $product->attributes()->where('key', 'attacco_pollici')->first();
@@ -164,7 +174,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'GIUNTO FILETTATO 25*3/4" F AQUATHERM',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'attacco_pollici')->first();
         $this->assertNotNull($attribute);
@@ -178,7 +188,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'ADATTATORE 1 1/4" A 28MM RAME VAILLANT',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'attacco_pollici')->first();
         $this->assertNotNull($attribute);
@@ -192,7 +202,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(0, $written);
         $this->assertNull($product->attributes()->where('key', 'attacco_pollici')->first());
@@ -204,7 +214,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'CASSETTA ESTERNA 610*370*210 INOX',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(1, $written);
         $attribute = $product->attributes()->where('key', 'materiale')->first();
@@ -224,8 +234,8 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'SERPENTINA PORTAMANOMETRO 3/8 MF PN30 RAME -TECNOGAS-',
         ]);
 
-        (new AttributeResolver)->resolve($pvc);
-        (new AttributeResolver)->resolve($rame);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($pvc);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($rame);
 
         $this->assertSame('PVC', $pvc->attributes()->where('key', 'materiale')->first()->value_text);
         $this->assertSame('RAME', $rame->attributes()->where('key', 'materiale')->first()->value_text);
@@ -237,7 +247,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'SOLAR/SS0200 IN RG PROD.SOLARE ACS C/2 SCAMB.FISSO -ELLEGI-',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'materiale')->first();
         $this->assertNotNull($attribute);
@@ -250,7 +260,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'RACCORDO PVC CON GUARNIZIONE INOX PER TUBO RAME',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'materiale')->first();
         $this->assertNotNull($attribute);
@@ -263,7 +273,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'STAFFA DI FISSAGGIO UNIVERSALE',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(0, $written);
         $this->assertNull($product->attributes()->where('key', 'materiale')->first());
@@ -275,7 +285,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'CALDAIA 24KW BOLLITORE INOX 1" -VAILLANT-',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(3, $written);
         $this->assertEquals(24, $product->attributes()->where('key', 'potenza_kw')->first()->value_num);
@@ -289,7 +299,7 @@ class AttributeResolverTest extends TestCase
         $product = Product::factory()->create([
             'description_raw' => 'BOLLITORE 800 LT -ELLEGI-',
         ]);
-        $resolver = new AttributeResolver;
+        $resolver = new AttributeResolver(new EnrichmentProposalRecorder);
 
         $resolver->resolve($product);
         $firstAttribute = $product->attributes()->where('key', 'capacita_litri')->first();
@@ -311,12 +321,16 @@ class AttributeResolverTest extends TestCase
             'source' => 'ai',
         ]);
 
-        $written = (new AttributeResolver)->resolve($product);
+        $written = (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertSame(0, $written);
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertEquals(99, $attribute->value_num);
         $this->assertSame('ai', $attribute->source);
+        $this->assertDatabaseMissing('enrichment_proposals', [
+            'product_id' => $product->id,
+            'attribute_key' => 'potenza_kw',
+        ]);
     }
 
     public function test_potenza_kw_range_query_returns_matching_products(): void
@@ -324,7 +338,7 @@ class AttributeResolverTest extends TestCase
         $inRange = Product::factory()->create(['description_raw' => 'UNITA ESTERNA VAI 3-025 WNO VAILLANT']);
         $alsoInRange = Product::factory()->create(['description_raw' => 'CALDAIA 6KW -VAILLANT-']);
         $outOfRange = Product::factory()->create(['description_raw' => 'CALDAIA 24KW -VAILLANT-']);
-        $resolver = new AttributeResolver;
+        $resolver = new AttributeResolver(new EnrichmentProposalRecorder);
         $resolver->resolve($inRange);
         $resolver->resolve($alsoInRange);
         $resolver->resolve($outOfRange);
@@ -345,7 +359,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'FILTRO GAS MTN DN80 UNI8042 2BAR C/PR.PRESS. -TECNOGAS-',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'diametro_nominale')->first();
         $this->assertNotNull($attribute);
@@ -360,7 +374,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'FLEX ESTENS.GAS DN 15*400 F/M C/GUAINA BIANCA+OR',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'diametro_nominale')->first();
         $this->assertNotNull($attribute);
@@ -374,7 +388,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'GIUNTO COMPENSATORE AWF DN25 PN16 TECNOGAS',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $dn = $product->attributes()->where('key', 'diametro_nominale')->first();
         $pn = $product->attributes()->where('key', 'pressione_nominale')->first();
@@ -394,7 +408,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'TERMOARREDO TEKNO 1200*500 ELETTRICO BIANCO RAL9010 IDROEXPERT',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'colore_ral')->first();
         $this->assertNotNull($attribute);
@@ -410,7 +424,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'VALVOLA DI SICUREZZA CENTRAL.VT TARAT.18BAR 1/4',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'pressione_bar')->first();
         $this->assertNotNull($attribute);
@@ -425,7 +439,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'MANOMETRO RAD.0/100 MBAR D.80MM 3/8 -TECNOGAS-',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'pressione_bar')->first();
         $this->assertNotNull($attribute);
@@ -439,7 +453,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'BOBINA PER TRASFORMAZ.ELETTR. IN ADPE 230V RM/NC',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'tensione_volt')->first();
         $this->assertNotNull($attribute);
@@ -454,7 +468,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'CASSA VENTILANTE AUTOPORTANTI VORT QBK COMFORT 10/10 4M 1V EP VORTICE',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertNull($product->attributes()->where('key', 'tensione_volt')->first());
     }
@@ -465,7 +479,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'RESISTENZA FLANGIATA CURVA 1200W',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $attribute = $product->attributes()->where('key', 'potenza_watt')->first();
         $this->assertNotNull($attribute);
@@ -480,7 +494,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'MODULO ACQUA CALDA SANIT. VPM20/25/2 W',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertNull($product->attributes()->where('key', 'potenza_watt')->first());
     }
@@ -491,7 +505,7 @@ class AttributeResolverTest extends TestCase
             'description_raw' => 'CALDAIA A CONDENSAZIONE 24KW -VAILLANT-',
         ]);
 
-        (new AttributeResolver)->resolve($product);
+        (new AttributeResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertNull($product->attributes()->where('key', 'potenza_watt')->first());
         $this->assertEquals(24, $product->attributes()->where('key', 'potenza_kw')->first()->value_num);
@@ -503,7 +517,7 @@ class AttributeResolverTest extends TestCase
         $ottone = Product::factory()->create(['description_raw' => 'RACCORDO OTTONE FILETTATO M/F']);
         $alluminio = Product::factory()->create(['description_raw' => 'RADIATORE ALLUMINIO 5 ELEMENTI']);
         $ghisa = Product::factory()->create(['description_raw' => 'CALDAIA GHISA 4 ELEMENTI']);
-        $resolver = new AttributeResolver;
+        $resolver = new AttributeResolver(new EnrichmentProposalRecorder);
         $resolver->resolve($acciaio);
         $resolver->resolve($ottone);
         $resolver->resolve($alluminio);
@@ -522,7 +536,7 @@ class AttributeResolverTest extends TestCase
             'GIUNTO COMPENSATORE AWF DN25 PN16 TECNOGAS',
             'FLEX ESTENS.GAS DN 15*400 F/M',
         ];
-        $resolver = new AttributeResolver;
+        $resolver = new AttributeResolver(new EnrichmentProposalRecorder);
         foreach ($products as $description) {
             $resolver->resolve(Product::factory()->create(['description_raw' => $description]));
         }

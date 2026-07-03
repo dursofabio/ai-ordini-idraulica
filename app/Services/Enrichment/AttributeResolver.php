@@ -13,6 +13,10 @@ use App\Models\Product;
  */
 class AttributeResolver
 {
+    public function __construct(
+        private readonly EnrichmentProposalRecorder $recorder,
+    ) {}
+
     /**
      * Series-code prefixes where the number immediately following the prefix
      * denotes the nominal power in kW (e.g. Vaillant Aroterm `VAI 8-025` = 8kW,
@@ -130,6 +134,18 @@ class AttributeResolver
         $product->attributes()->updateOrCreate(
             ['key' => $key],
             [...$attribute, 'source' => 'regex'],
+        );
+
+        $this->recorder->record(
+            product: $product,
+            field: 'attribute',
+            origin: 'regex',
+            status: 'applied',
+            confidence: 100,
+            attributeKey: $key,
+            valueNum: $attribute['value_num'] ?? null,
+            valueText: $attribute['value_text'] ?? null,
+            unit: $attribute['unit'] ?? null,
         );
 
         return true;

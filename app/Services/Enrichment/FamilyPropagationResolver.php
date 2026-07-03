@@ -20,6 +20,8 @@ use Illuminate\Database\Eloquent\Collection;
  */
 class FamilyPropagationResolver
 {
+    public function __construct(private readonly EnrichmentProposalRecorder $recorder) {}
+
     /**
      * Propagate the prevailing family_id and subfamily_id, independently,
      * to the variants of the given ProductBase that currently have a null
@@ -60,12 +62,27 @@ class FamilyPropagationResolver
             return 0;
         }
 
-        return Product::query()
+        $updated = Product::query()
             ->whereIn('id', $candidateIds)
             ->update([
                 $column => $prevailingValue,
                 $sourceColumn => 'propagated',
             ]);
+
+        if ($updated > 0) {
+            $field = $column === 'family_id' ? 'family' : 'subfamily';
+
+            $this->recorder->insertMany($candidateIds->map(fn (int $id): array => [
+                'product_id' => $id,
+                'field' => $field,
+                'value_id' => $prevailingValue,
+                'origin' => 'propagated',
+                'status' => 'applied',
+                'confidence' => 100,
+            ])->all());
+        }
+
+        return $updated;
     }
 
     /**

@@ -10,6 +10,7 @@ use App\Models\Subfamily;
 use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\TaxonomyCatalog;
 use App\Services\Enrichment\EnrichmentApplier;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -47,7 +48,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertSame($brand->id, $fresh->brand_id);
@@ -59,6 +60,31 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame('enriched', $fresh->enrichment_status);
         $this->assertSame('ai', $fresh->source);
         $this->assertSame(90, $fresh->confidence);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 90,
+            'value_id' => $brand->id,
+        ]);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'family',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 90,
+            'value_id' => $family->id,
+        ]);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'subfamily',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 90,
+            'value_id' => $subfamily->id,
+        ]);
     }
 
     public function test_medium_confidence_result_is_applied_but_marks_product_needs_review(): void
@@ -76,7 +102,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 70,
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertSame($brand->id, $fresh->brand_id);
@@ -84,11 +110,20 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame('needs_review', $fresh->enrichment_status);
         $this->assertSame('ai', $fresh->source);
         $this->assertSame(70, $fresh->confidence);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 70,
+            'value_id' => $brand->id,
+        ]);
     }
 
     public function test_low_confidence_result_applies_no_ai_values(): void
     {
-        Brand::factory()->create(['name' => 'Grohe']);
+        $brand = Brand::factory()->create(['name' => 'Grohe']);
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
 
         $result = new ClassifiedProduct(
@@ -101,7 +136,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 40,
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertNull($fresh->brand_id);
@@ -109,6 +144,15 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame('needs_review', $fresh->enrichment_status);
         $this->assertNull($fresh->source);
         $this->assertNull($fresh->confidence);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 40,
+            'value_id' => $brand->id,
+        ]);
     }
 
     public function test_manual_brand_source_is_never_overwritten_but_other_fields_and_status_still_update(): void
@@ -133,7 +177,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertSame($manualBrand->id, $fresh->brand_id);
@@ -144,6 +188,19 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame('enriched', $fresh->enrichment_status);
         $this->assertSame('ai', $fresh->source);
         $this->assertSame(90, $fresh->confidence);
+
+        $this->assertDatabaseMissing('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+        ]);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'family',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 90,
+            'value_id' => $family->id,
+        ]);
     }
 
     public function test_file_brand_source_is_never_overwritten_but_other_fields_and_status_still_update(): void
@@ -168,7 +225,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertSame($fileBrand->id, $fresh->brand_id);
@@ -195,7 +252,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertNull($fresh->brand_id);
@@ -222,7 +279,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $attribute = $product->attributes()->where('key', 'portata_lmin')->first();
         $this->assertNotNull($attribute);
@@ -230,6 +287,15 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame('L/min', $attribute->unit);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(90, $attribute->confidence);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'portata_lmin',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 90,
+        ]);
     }
 
     public function test_existing_regex_attribute_is_corrected_by_ai_at_high_confidence(): void
@@ -256,7 +322,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertNotNull($attribute);
@@ -282,9 +348,19 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $this->assertNull($product->attributes()->where('key', 'materiale')->first());
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'materiale',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 50,
+            'value_text' => 'ottone',
+        ]);
     }
 
     public function test_medium_confidence_attribute_is_written_but_forces_needs_review_even_with_high_overall_confidence(): void
@@ -306,7 +382,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $fresh = $product->fresh();
         $this->assertSame($brand->id, $fresh->brand_id);
@@ -343,12 +419,17 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
 
         $attribute = $product->attributes()->where('key', 'materiale')->first();
         $this->assertNotNull($attribute);
         $this->assertSame('ottone', $attribute->value_text);
         $this->assertSame('manual', $attribute->source);
         $this->assertNull($attribute->confidence);
+
+        $this->assertDatabaseMissing('enrichment_proposals', [
+            'product_id' => $product->id,
+            'attribute_key' => 'materiale',
+        ]);
     }
 }

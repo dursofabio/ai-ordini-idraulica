@@ -27,6 +27,10 @@ class BrandResolver
      */
     private ?Collection $brands = null;
 
+    public function __construct(
+        private readonly EnrichmentProposalRecorder $recorder,
+    ) {}
+
     /**
      * Attempt to resolve and persist the brand for the given product.
      * No-ops when the product already has a brand (idempotency guard).
@@ -61,6 +65,15 @@ class BrandResolver
             'confidence' => $confidence,
             'description_clean' => $cleaned,
         ])->save();
+
+        $this->recorder->record(
+            product: $product,
+            field: 'brand',
+            origin: $source,
+            status: 'applied',
+            confidence: $confidence,
+            valueId: $brand->id,
+        );
 
         return true;
     }

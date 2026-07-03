@@ -113,4 +113,14 @@ class Product extends Model
     {
         return $this->hasMany(EnrichmentLog::class);
     }
+
+    /**
+     * The enrichment proposal entries for this product.
+     *
+     * @return HasMany<EnrichmentProposal, $this>
+     */
+    public function enrichmentProposals(): HasMany
+    {
+        return $this->hasMany(EnrichmentProposal::class);
+    }
 }

@@ -6,8 +6,10 @@ use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductBase;
 use App\Models\Subfamily;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use App\Services\Enrichment\FamilyPropagationResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
@@ -51,11 +53,19 @@ class FamilyPropagationResolverTest extends TestCase
             'family_id' => null,
         ]);
 
-        (new FamilyPropagationResolver)->resolve($base->fresh());
+        (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
         $unclassified->refresh();
         $this->assertSame($majorityFamily->id, $unclassified->family_id);
         $this->assertSame('propagated', $unclassified->family_source);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $unclassified->id,
+            'field' => 'family',
+            'origin' => 'propagated',
+            'status' => 'applied',
+            'confidence' => 100,
+            'value_id' => $majorityFamily->id,
+        ]);
     }
 
     public function test_tie_break_between_two_equally_frequent_family_ids_is_deterministic(): void
@@ -80,7 +90,7 @@ class FamilyPropagationResolverTest extends TestCase
             'family_id' => null,
         ]);
 
-        (new FamilyPropagationResolver)->resolve($base->fresh());
+        (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
         $unclassified->refresh();
         $this->assertSame($expectedWinner, $unclassified->family_id);
@@ -103,7 +113,7 @@ class FamilyPropagationResolverTest extends TestCase
             'family_id' => null,
         ]);
 
-        (new FamilyPropagationResolver)->resolve($otherBase->fresh());
+        (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($otherBase->fresh());
 
         $otherUnclassified->refresh();
         $this->assertSame($expectedWinner, $otherUnclassified->family_id);
@@ -124,12 +134,16 @@ class FamilyPropagationResolverTest extends TestCase
             'family_id' => null,
         ]);
 
-        $updated = (new FamilyPropagationResolver)->resolve($base->fresh());
+        $updated = (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
         $this->assertSame(1, $updated);
         $unclassified->refresh();
         $this->assertSame($family->id, $unclassified->family_id);
         $this->assertSame('propagated', $unclassified->family_source);
+        $this->assertSame(1, DB::table('enrichment_proposals')
+            ->whereIn('product_id', $base->products->pluck('id'))
+            ->where('field', 'family')
+            ->count());
 
         foreach ($classified as $product) {
             $product->refresh();
@@ -157,7 +171,7 @@ class FamilyPropagationResolverTest extends TestCase
                 'family_source' => $source,
             ]);
 
-            (new FamilyPropagationResolver)->resolve($base->fresh());
+            (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
             $alreadyClassified->refresh();
             $this->assertSame($existingFamily->id, $alreadyClassified->family_id);
@@ -180,11 +194,11 @@ class FamilyPropagationResolverTest extends TestCase
             'family_id' => null,
         ]);
 
-        $firstRun = (new FamilyPropagationResolver)->resolve($base->fresh());
+        $firstRun = (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
         $unclassified->refresh();
         $stateAfterFirstRun = [$unclassified->family_id, $unclassified->family_source];
 
-        $secondRun = (new FamilyPropagationResolver)->resolve($base->fresh());
+        $secondRun = (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
         $this->assertSame(1, $firstRun);
         $this->assertSame(0, $secondRun);
@@ -201,7 +215,7 @@ class FamilyPropagationResolverTest extends TestCase
             'family_id' => null,
         ]);
 
-        $updated = (new FamilyPropagationResolver)->resolve($base->fresh());
+        $updated = (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
         $this->assertSame(0, $updated);
         foreach ($variants as $variant) {
@@ -227,12 +241,59 @@ class FamilyPropagationResolverTest extends TestCase
             'subfamily_id' => null,
         ]);
 
-        $updated = (new FamilyPropagationResolver)->resolve($base->fresh());
+        $updated = (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
 
         $this->assertSame(1, $updated);
         $unclassified->refresh();
         $this->assertSame($subfamily->id, $unclassified->subfamily_id);
         $this->assertSame('propagated', $unclassified->subfamily_source);
         $this->assertNull($unclassified->family_id);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $unclassified->id,
+            'field' => 'subfamily',
+            'origin' => 'propagated',
+            'status' => 'applied',
+            'confidence' => 100,
+            'value_id' => $subfamily->id,
+        ]);
+    }
+
+    public function test_propagating_a_large_group_does_not_issue_an_n_plus_one_of_proposal_inserts(): void
+    {
+        $base = ProductBase::factory()->create();
+        $family = Family::factory()->create();
+
+        Product::factory()->count(2)->create([
+            'product_base_id' => $base->id,
+            'family_id' => $family->id,
+            'family_source' => 'file',
+        ]);
+        $unclassified = Product::factory()->count(8)->create([
+            'product_base_id' => $base->id,
+            'family_id' => null,
+        ]);
+
+        $queryCount = 0;
+        DB::listen(function () use (&$queryCount) {
+            $queryCount++;
+        });
+
+        $updated = (new FamilyPropagationResolver(new EnrichmentProposalRecorder))->resolve($base->fresh());
+
+        $this->assertSame(8, $updated);
+        // 1 fresh() reload + 1 products lazy-load + 1 update + 1 bulk insert
+        // = 4 in practice; a per-row insert loop would add ~8 more.
+        $this->assertLessThanOrEqual(6, $queryCount, 'Propagation should not issue an N+1 of proposal inserts.');
+
+        foreach ($unclassified as $product) {
+            $product->refresh();
+            $this->assertSame($family->id, $product->family_id);
+            $this->assertSame('propagated', $product->family_source);
+        }
+
+        $this->assertSame(8, DB::table('enrichment_proposals')
+            ->where('field', 'family')
+            ->where('origin', 'propagated')
+            ->count());
     }
 }

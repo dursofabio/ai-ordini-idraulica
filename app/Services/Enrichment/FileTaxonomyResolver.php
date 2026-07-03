@@ -38,6 +38,7 @@ class FileTaxonomyResolver
 
     public function __construct(
         private readonly TaxonomyCatalog $taxonomy,
+        private readonly EnrichmentProposalRecorder $recorder,
     ) {}
 
     /**
@@ -104,6 +105,39 @@ class FileTaxonomyResolver
 
         if ($attributes !== []) {
             $product->fill($attributes)->save();
+        }
+
+        if ($linked['brand']) {
+            $this->recorder->record(
+                product: $product,
+                field: 'brand',
+                origin: 'file',
+                status: 'applied',
+                confidence: self::BRAND_CONFIDENCE,
+                valueId: $brand->id,
+            );
+        }
+
+        if ($linked['family']) {
+            $this->recorder->record(
+                product: $product,
+                field: 'family',
+                origin: 'file',
+                status: 'applied',
+                confidence: self::BRAND_CONFIDENCE,
+                valueId: $family->id,
+            );
+        }
+
+        if ($linked['subfamily']) {
+            $this->recorder->record(
+                product: $product,
+                field: 'subfamily',
+                origin: 'file',
+                status: 'applied',
+                confidence: self::BRAND_CONFIDENCE,
+                valueId: $subfamily->id,
+            );
         }
 
         return $linked;

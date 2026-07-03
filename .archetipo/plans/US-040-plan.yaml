@@ -31,99 +31,113 @@ tasks:
     title: Migrazione enrichment_proposals, model e factory
     description: 'Nuova migrazione che crea la tabella enrichment_proposals (product_id FK cascade, field, attribute_key nullable, value_id nullable, value_num/value_text/unit nullable, origin, confidence nullable, status default ''pending'', timestamps) con indici su product_id, status e [product_id, field, attribute_key]. Nuovo model App\Models\EnrichmentProposal (Fillable, cast value_num=>decimal:3, confidence=>integer, belongsTo Product), nuova relazione Product::enrichmentProposals(): HasMany, e EnrichmentProposalFactory.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Servizio EnrichmentProposalRecorder
     description: Nuovo servizio in app/Services/Enrichment/ che centralizza la creazione di una riga enrichment_proposals a partire da product, field, attribute_key, value (value_id oppure value_num/value_text/unit), origin, confidence, status, oltre a un metodo di inserimento bulk (via insert(), stesso pattern di EnrichmentLog::query()->insert()) per il caso di scritture di massa (FamilyPropagationResolver).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Test del recorder
     description: 'Test feature per EnrichmentProposalRecorder: una proposta di tassonomia (value_id) viene persistita con status/origin/confidence corretti; una proposta di attributo (value_num/unit) viene persistita correttamente; l''inserimento bulk produce una riga per ciascun product_id passato con i campi attesi.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Wiring FileTaxonomyResolver sul registro proposte
     description: Per ogni campo (brand/family/subfamily) effettivamente linkato da FileTaxonomyResolver::resolve(), registrare tramite EnrichmentProposalRecorder una proposta status='applied', origin='file', confidence=100, mantenendo invariata la scrittura diretta su products.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-04
   - id: TASK-05
     title: Test FileTaxonomyResolver con registro proposte
     description: Estendere tests/Feature/FileTaxonomyResolverTest.php verificando che ogni link da file produca la riga enrichment_proposals attesa (status='applied', origin='file', confidence=100) senza alterare le asserzioni esistenti sulle colonne dirette di products.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Wiring BrandResolver sul registro proposte
     description: Nel ramo di match (suffix 'regex'/95, inline 'dictionary'/80) di BrandResolver::resolve(), registrare tramite EnrichmentProposalRecorder una proposta status='applied' con origin/confidence coerenti al match, mantenendo invariata la scrittura diretta su products.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-06
   - id: TASK-07
     title: Test BrandResolver con registro proposte
     description: Estendere tests/Feature/BrandResolverTest.php verificando la riga enrichment_proposals attesa per il match suffix e per il match inline, senza alterare le asserzioni esistenti.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: Wiring AttributeResolver (Step A regex) sul registro proposte
     description: In AttributeResolver::writeAttribute(), quando la scrittura viene effettivamente eseguita (guardia sul source più autorevole invariata), registrare tramite EnrichmentProposalRecorder una proposta status='applied', origin='regex', confidence=100, field='attribute', attribute_key=key.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-08
   - id: TASK-09
     title: Test AttributeResolver con registro proposte
     description: Estendere tests/Feature/AttributeResolverTest.php verificando la riga enrichment_proposals per un attributo scritto e l'assenza di proposta quando la guardia sul source più autorevole blocca la scrittura.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-09
   - id: TASK-10
     title: Wiring FamilyPropagationResolver sul registro proposte
     description: Dopo ciascun update di massa in FamilyPropagationResolver::propagateColumn(), inserire in bulk (via EnrichmentProposalRecorder) una proposta status='applied', origin='propagated', confidence=100 per ciascun product_id aggiornato sulla colonna coinvolta, senza introdurre N+1 query.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-10
   - id: TASK-11
     title: Test FamilyPropagationResolver con registro proposte
     description: Estendere tests/Feature/FamilyPropagationResolverTest.php verificando che la propagazione produca una proposta per ciascun prodotto/colonna aggiornato e che il numero di query resti contenuto (assert su query count), senza alterare le asserzioni esistenti.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-10
+    ref: TASK-11
   - id: TASK-12
     title: Refactor EnrichmentApplier per proposte applied/pending su brand/family/subfamily e attributi
     description: resolvedAttributes() viene invocato sempre (anche sotto la soglia bassa) per poter loggare proposte 'pending' quando confidence < 60; a confidence >= 60 il comportamento di scrittura resta identico a oggi con proposta 'applied' per campo risolto (origin='ai', confidence=result->confidence). applyAttributes() aggiunge la proposta corrispondente per fascia (pending sotto 60, applied 60-84/>=85) mantenendo invariate scritture e forzatura di needs_review; la guardia esistente sul source più autorevole resta il primo controllo e, se blocca, non genera alcuna proposta.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-12
   - id: TASK-13
     title: Test EnrichmentApplier per proposte applied/pending
     description: 'Estendere tests/Feature/EnrichmentApplierTest.php con: confidenza >= 85 e 60-84 producono proposte ''applied'' per i campi risolti (in aggiunta alle asserzioni esistenti sulle colonne dirette); confidenza < 60 non scrive nulla (invariato) ma produce proposte ''pending'' per i campi che si sarebbero risolti; attributo < 60 produce proposta ''pending'' senza scrittura; attributo 60-84/>=85 produce proposta ''applied'' con scrittura invariata; un campo già ''manual''/''file'' non genera alcuna proposta.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-12
+    ref: TASK-13
   - id: TASK-14
     title: Regressione sulla suite esistente
     description: Rieseguire ReviewQueueTest, ClassifyProductsBatchJobTest, DeterministicEnrichmentPipelineTest e l'intera suite EnrichmentApplierTest/resolver per confermare che tutte le asserzioni esistenti su products/product_attributes restano invariate (solo scritture aggiuntive sul nuovo registro, nessuna regressione comportamentale ad alta confidenza).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
       - TASK-07
       - TASK-09
       - TASK-11
       - TASK-13
+    ref: TASK-14

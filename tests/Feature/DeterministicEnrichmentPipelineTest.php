@@ -10,6 +10,7 @@ use App\Services\Ai\TaxonomyCatalog;
 use App\Services\Enrichment\AttributeResolver;
 use App\Services\Enrichment\BrandResolver;
 use App\Services\Enrichment\DeterministicEnrichmentPipeline;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use App\Services\Enrichment\FamilyPropagationResolver;
 use App\Services\Enrichment\FileTaxonomyResolver;
 use App\Services\Enrichment\GroupingResolver;
@@ -36,11 +37,11 @@ class DeterministicEnrichmentPipelineTest extends TestCase
     private function pipeline(): DeterministicEnrichmentPipeline
     {
         return new DeterministicEnrichmentPipeline(
-            new FileTaxonomyResolver(new TaxonomyCatalog),
-            new BrandResolver,
-            new AttributeResolver,
+            new FileTaxonomyResolver(new TaxonomyCatalog, new EnrichmentProposalRecorder),
+            new BrandResolver(new EnrichmentProposalRecorder),
+            new AttributeResolver(new EnrichmentProposalRecorder),
             new GroupingResolver,
-            new FamilyPropagationResolver,
+            new FamilyPropagationResolver(new EnrichmentProposalRecorder),
         );
     }
 

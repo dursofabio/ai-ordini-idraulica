@@ -3,10 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\Subfamily;
 use App\Services\Ai\TaxonomyCatalog;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use App\Services\Enrichment\FileTaxonomyResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
@@ -32,7 +34,7 @@ class FileTaxonomyResolverTest extends TestCase
 
     private function resolver(): FileTaxonomyResolver
     {
-        return new FileTaxonomyResolver(new TaxonomyCatalog);
+        return new FileTaxonomyResolver(new TaxonomyCatalog, new EnrichmentProposalRecorder);
     }
 
     public function test_links_brand_family_and_subfamily_by_exact_code_match(): void
@@ -70,6 +72,53 @@ class FileTaxonomyResolverTest extends TestCase
         $this->assertSame('file', $fresh->family_source);
         $this->assertSame($subfamily->id, $fresh->subfamily_id);
         $this->assertSame('file', $fresh->subfamily_source);
+    }
+
+    public function test_records_an_applied_enrichment_proposal_for_each_linked_field(): void
+    {
+        $brand = Brand::factory()->create(['name' => 'Wavin Italia Spa', 'slug' => 'wavin-italia-spa', 'aliases' => ['01', 'WAVIN']]);
+        $family = Family::factory()->create(['name' => 'Tubi e Raccordi', 'slug' => 'tubi-e-raccordi', 'aliases' => ['12']]);
+        $subfamily = Subfamily::factory()->create(['name' => 'Raccordi a Pressare', 'slug' => 'tubi-e-raccordi-raccordi-a-pressare', 'family_id' => $family->id, 'aliases' => ['RAC']]);
+
+        $product = Product::factory()->create([
+            'marca_codice' => '01',
+            'descrizione_marca' => null,
+            'fam_codice' => '12',
+            'fam_descrizione' => null,
+            'subfam_codice' => 'RAC',
+            'subfam_descrizione' => null,
+            'brand_id' => null,
+            'family_id' => null,
+            'subfamily_id' => null,
+        ]);
+
+        $this->resolver()->resolve($product);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'origin' => 'file',
+            'status' => 'applied',
+            'confidence' => 100,
+            'value_id' => $brand->id,
+        ]);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'family',
+            'origin' => 'file',
+            'status' => 'applied',
+            'confidence' => 100,
+            'value_id' => $family->id,
+        ]);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'subfamily',
+            'origin' => 'file',
+            'status' => 'applied',
+            'confidence' => 100,
+            'value_id' => $subfamily->id,
+        ]);
+        $this->assertSame(3, EnrichmentProposal::where('product_id', $product->id)->count());
     }
 
     public function test_links_brand_by_exact_label_match_when_code_does_not_match(): void

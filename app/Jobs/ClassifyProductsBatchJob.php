@@ -211,7 +211,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         [$cached, $toClassify, $notCached] = $this->partitionByCache($products, $cache);
 
         // Apply cache hits immediately; nothing to classify for them.
-        $this->applyCachedResults($cached, $taxonomy, new EnrichmentApplier);
+        $this->applyCachedResults($cached, $taxonomy, app(EnrichmentApplier::class));
 
         if ($toClassify->isEmpty()) {
             return;
@@ -517,7 +517,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         $shareIn = intdiv($batchTokensIn, $count);
         $shareOut = intdiv($batchTokensOut, $count);
         $now = Carbon::now();
-        $applier = new EnrichmentApplier;
+        $applier = app(EnrichmentApplier::class);
 
         $rows = [];
 

@@ -7,6 +7,7 @@ use App\Models\Brand;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\Enrichment\BrandResolver;
+use App\Services\Enrichment\EnrichmentProposalRecorder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\Concerns\RequiresDatabase;
@@ -43,7 +44,7 @@ class BrandAliasBackofficeResolverTest extends TestCase
             'brand_id' => null,
         ]);
 
-        $resolved = (new BrandResolver)->resolve($product);
+        $resolved = (new BrandResolver(new EnrichmentProposalRecorder))->resolve($product);
 
         $this->assertTrue($resolved);
         $product->refresh();

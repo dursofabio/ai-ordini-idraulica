@@ -21,6 +21,13 @@ use App\Services\Ai\TaxonomyCatalog;
  * are ignored rather than raising an exception. A field already carrying
  * `*_source = 'manual'` or `*_source = 'file'` (US-032) is never
  * overwritten, regardless of confidence.
+ *
+ * Every brand/family/subfamily/attribute value produced by the AI — whether
+ * actually written to the product or not — is also logged via
+ * {@see EnrichmentProposalRecorder}: `status = 'applied'` when written,
+ * `status = 'pending'` when confidence was too low to write it. A field that
+ * doesn't resolve against the taxonomy, or is guarded by a manual/file/other
+ * authoritative source, never generates a proposal.
  */
 class EnrichmentApplier
 {
@@ -35,6 +42,10 @@ class EnrichmentApplier
      */
     private const HIGH_CONFIDENCE_THRESHOLD = 85;
 
+    public function __construct(
+        private readonly EnrichmentProposalRecorder $recorder,
+    ) {}
+
     /**
      * Apply the classification result to the product and persist it.
      */
@@ -48,13 +59,18 @@ class EnrichmentApplier
         // the classification is too weak to trust.
         $attributesForceReview = $this->applyAttributes($product, $result);
 
+        // Resolved unconditionally, even below the low-confidence threshold,
+        // so every field that *would* resolve against the taxonomy is still
+        // logged as a pending proposal — it just isn't written to $product.
+        $attributes = $this->resolvedAttributes($product, $result, $taxonomy);
+
         if ($confidence < self::LOW_CONFIDENCE_THRESHOLD) {
+            $this->recordResolvedProposals($product, $attributes, 'pending', $confidence);
+
             $product->fill(['enrichment_status' => 'needs_review'])->save();
 
             return;
         }
-
-        $attributes = $this->resolvedAttributes($product, $result, $taxonomy);
 
         $attributes['enrichment_status'] = ($confidence >= self::HIGH_CONFIDENCE_THRESHOLD && ! $attributesForceReview)
             ? 'enriched'
@@ -63,6 +79,36 @@ class EnrichmentApplier
         $attributes['confidence'] = $confidence;
 
         $product->fill($attributes)->save();
+
+        $this->recordResolvedProposals($product, $attributes, 'applied', $confidence);
+    }
+
+    /**
+     * Records a proposal for each brand/family/subfamily field present in
+     * `resolvedAttributes()`'s result, i.e. every field that resolved
+     * against the taxonomy — regardless of whether `$status` is `applied`
+     * (it was written to `$product`) or `pending` (confidence was too low).
+     * Extra keys the caller may have merged in (`enrichment_status`,
+     * `source`, `confidence`) are simply ignored.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function recordResolvedProposals(Product $product, array $attributes, string $status, int $confidence): void
+    {
+        foreach (['brand', 'family', 'subfamily'] as $field) {
+            if (! array_key_exists("{$field}_id", $attributes)) {
+                continue;
+            }
+
+            $this->recorder->record(
+                product: $product,
+                field: $field,
+                origin: 'ai',
+                status: $status,
+                confidence: $confidence,
+                valueId: $attributes["{$field}_id"],
+            );
+        }
     }
 
     /**
@@ -78,6 +124,11 @@ class EnrichmentApplier
      * An existing row whose `source` is not `null`, `regex`, or `ai` (e.g.
      * `manual`) is never overwritten, mirroring the guard already applied by
      * {@see AttributeResolver::writeAttribute()} for the regex extraction pass.
+     * That same guard is checked first, before the confidence bands: if it
+     * blocks the write, no proposal is recorded either. Otherwise, a
+     * proposal is recorded for every attribute regardless of its confidence
+     * band — `pending` when skipped for low confidence, `applied` when
+     * written.
      *
      * @return bool whether at least one written attribute forces `needs_review`
      */
@@ -86,15 +137,41 @@ class EnrichmentApplier
         $forcesReview = false;
 
         foreach ($result->attributes as $key => $attribute) {
+            if ($this->isBlockedByAuthoritativeSource($product, $key)) {
+                continue;
+            }
+
             $confidence = $attribute['confidence'] ?? 0;
 
             if ($confidence < self::LOW_CONFIDENCE_THRESHOLD) {
+                $this->recorder->record(
+                    product: $product,
+                    field: 'attribute',
+                    origin: 'ai',
+                    status: 'pending',
+                    confidence: $confidence,
+                    attributeKey: $key,
+                    valueNum: $attribute['value_num'] ?? null,
+                    valueText: $attribute['value_text'] ?? null,
+                    unit: $attribute['unit'] ?? null,
+                );
+
                 continue;
             }
 
-            if (! $this->writeAttribute($product, $key, $attribute, $confidence)) {
-                continue;
-            }
+            $this->writeAttribute($product, $key, $attribute, $confidence);
+
+            $this->recorder->record(
+                product: $product,
+                field: 'attribute',
+                origin: 'ai',
+                status: 'applied',
+                confidence: $confidence,
+                attributeKey: $key,
+                valueNum: $attribute['value_num'] ?? null,
+                valueText: $attribute['value_text'] ?? null,
+                unit: $attribute['unit'] ?? null,
+            );
 
             if ($confidence < self::HIGH_CONFIDENCE_THRESHOLD) {
                 $forcesReview = true;
@@ -105,16 +182,22 @@ class EnrichmentApplier
     }
 
     /**
-     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     * Whether `$key` already carries a value from a source more authoritative
+     * than the AI (i.e. anything other than `null`, `regex`, or `ai`), which
+     * must block both the write and the proposal.
      */
-    private function writeAttribute(Product $product, string $key, array $attribute, int $confidence): bool
+    private function isBlockedByAuthoritativeSource(Product $product, string $key): bool
     {
         $existing = $product->attributes()->where('key', $key)->first();
 
-        if ($existing !== null && $existing->source !== null && $existing->source !== 'regex' && $existing->source !== 'ai') {
-            return false;
-        }
+        return $existing !== null && $existing->source !== null && $existing->source !== 'regex' && $existing->source !== 'ai';
+    }
 
+    /**
+     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     */
+    private function writeAttribute(Product $product, string $key, array $attribute, int $confidence): void
+    {
         $product->attributes()->updateOrCreate(
             ['key' => $key],
             [
@@ -125,8 +208,6 @@ class EnrichmentApplier
                 'confidence' => $confidence,
             ],
         );
-
-        return true;
     }
 
     /**
