@@ -156,6 +156,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                     }),
             ])
             ->recordActions([
+                $this->viewDetailAction(),
                 $this->confirmAction(),
                 $this->correctAction(),
                 $this->discardAction(),
@@ -217,6 +218,20 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                     ->success()
                     ->send();
             });
+    }
+
+    /**
+     * US-038 AC1: real navigation link (not a modal) to the standalone
+     * {@see ReviewQueueDetail} page for this record, positioned before the
+     * quick-triage actions.
+     */
+    private function viewDetailAction(): Action
+    {
+        return Action::make('viewDetail')
+            ->label('Dettagli')
+            ->color('gray')
+            ->icon(Heroicon::OutlinedEye)
+            ->url(fn (Product $record): string => ReviewQueueDetail::getUrl(['record' => $record]));
     }
 
     /**
@@ -361,8 +376,10 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
     /**
      * Maps a `*_source` literal to the human-readable origin label shown
      * alongside each AI-proposed field (brand/family/subfamily/attributes).
+     * Public so {@see ReviewQueueDetail} can reuse the exact same mapping
+     * (US-038) instead of duplicating it.
      */
-    private static function originLabel(?string $source): string
+    public static function originLabel(?string $source): string
     {
         return match ($source) {
             'ai' => 'AI',

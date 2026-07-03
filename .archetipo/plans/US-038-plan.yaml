@@ -1,0 +1,51 @@
+schema: archetipo/plan/v2
+spec_code: US-038
+body: "## Soluzione Tecnica\n\nL'approccio riusa al massimo i pattern già in uso in `ReviewQueue` (US-023/036/037) e nella risorsa `ProductResource` (US-030/031), evitando di introdurre un nuovo layer architetturale: una singola `Page` Filament standalone, non legata a un `Resource`, esposta con una route propria `review-queue/{record}` e raggiungibile solo via link dalla coda (non in navigazione).\n\n- **Nuova pagina `App\\Filament\\Pages\\ReviewQueueDetail`** (auto-discoverata da `discoverPages`, come `ReviewQueue`): `protected static ?string $slug = 'review-queue/{record}';` produce l'URL dedicato richiesto da AC1 (`/admin/review-queue/{id}`); `protected static bool $shouldRegisterNavigation = false;` la tiene fuori dal menu. `mount(Product $record)` sfrutta il route/model binding implicito di Livewire (parametro tipizzato che combacia col segmento `{record}`), lo stesso meccanismo usato implicitamente da `ViewProduct`/`EditProduct` di Filament.\n- **Due schema separati sulla stessa pagina**, seguendo la separazione già esistente tra `ProductInfolist` (sola lettura) e `ProductForm` (editabile) invece di un'unica schema mista:\n  - `infolist(Schema $schema)`: sezione read-only con tutte le informazioni richieste da AC2 — dati da file (`codice_articolo`, `description_raw`, `descrizione_marca`, `fam_descrizione`, `subfam_descrizione`, `costo`, `giacenza`), le proposte marca/famiglia/sottofamiglia con relativa origine (stesso `originLabel()` di `ReviewQueue`, estratto in un helper condiviso o duplicato in modo consistente), l'elenco attributi tecnici con origine (stesso `state()` costruito in `ReviewQueue::table()` per la colonna `attributes`) e la confidenza complessiva.\n  - `form(Schema $schema)`: form editabile con `Select` per `brand_id`/`family_id`/`subfamily_id` (stesso pattern di `ProductForm`/`ReviewQueue::correctAction()`, incluso l'helper text \"\U0001F512 Impostato manualmente\") più un `Repeater::make('attributes')->relationship()` per modificare gli attributi tecnici (key/value_text/value_num/unit), con `mutateRelationshipDataBeforeCreateUsing()`/`mutateRelationshipDataBeforeSaveUsing()` che forzano `source = 'manual'` su ogni riga salvata, così le origini restano coerenti con la convenzione \"Manuale\" già usata nell'app.\n- **`save()`**: applica esattamente la stessa logica di `ReviewQueue::correctAction()` (AC4) — `brand_id`/`family_id`/`subfamily_id` dal form, `*_source = 'manual'`, `source = 'manual'`, `confidence = 100`, `enrichment_status = 'enriched'` — poi persiste gli attributi via `$this->form->saveRelationships()` e reindirizza a `ReviewQueue::getUrl()` (AC4). Una `Notification` di successo conferma il salvataggio, come nelle altre azioni della coda.\n- **Link dalla coda**: in `ReviewQueue::table()->recordActions()` viene aggiunta una nuova `Action::make('viewDetail')` con `->url(fn (Product $record) => ReviewQueueDetail::getUrl(['record' => $record]))` (link reale, non modale, per soddisfare AC1) posizionata prima di Conferma/Correggi/Scarta. Il modale \"Correggi\" esistente resta invariato (AC5): nessuna modifica al suo schema/azione.\n- **Vista Blade** `resources/views/filament/pages/review-queue-detail.blade.php`: renderizza `{{ $this->infolist }}` seguito da `{{ $this->form }}`, più un'azione header \"Torna alla coda\" verso `ReviewQueue::getUrl()` per la navigazione manuale.\n\n## Strategia di Test\n\n- Test Feature su `ReviewQueueDetailTest` (Livewire::test su `ReviewQueueDetail::class` con `['record' => $product->getRouteKey()]`): caricamento pagina, presenza di tutte le informazioni (dati da file, proposte con origine, attributi con origine, confidenza), precompilazione del form (`assertSchemaStateSet` su `brand_id`/`family_id`/`subfamily_id`), salvataggio che applica `source='manual'`/`confidence=100`/`enrichment_status='enriched'` e redirige a `ReviewQueue::getUrl()`, salvataggio che persiste modifiche/aggiunte agli attributi tecnici.\n- Estensione di `ReviewQueueTest`: verifica che ogni riga esponga l'azione/link `viewDetail` con URL risolto verso `ReviewQueueDetail::getUrl(['record' => $product])`, e non-regressione sull'azione `correct` esistente (resta invariata e continua a funzionare in tabella).\n- Nuovo Dusk e2e in `ReviewQueueDetailPageTest` (stesso framework già in uso nel progetto — Laravel Dusk, vedi `tests/Browser/ReviewQueueTriageTest.php`): l'admin apre la coda \"Da revisionare\", clicca il link \"Dettagli\" su una riga (navigazione reale, non modale — verificata con `assertPathIs`/`waitForLocation` su `/admin/review-queue/{id}`), vede tutte le informazioni del prodotto incluso l'attributo tecnico, corregge marca/famiglia/sottofamiglia e il valore di un attributo, salva e viene reindirizzato alla coda, dove il prodotto non è più presente. Come per le altre browser test di questa epic, Dusk non supporta la registrazione video nativa: l'artefatto visivo è la sequenza di screenshot per-step, salvata in `docs/test-results/US-038/` (stessa convenzione di `docs/test-results/US-023/`).\n\n### E2E Tests — Simulazione utente\n\n**Framework:** Laravel Dusk (esistente nel progetto, `tests/Browser/*Test.php`)\n**Registrazione video:** non disponibile nativamente in Dusk; sostituita da screenshot per-step salvati in `docs/test-results/US-038/`, come da convenzione già adottata in `tests/Browser/ReviewQueueTriageTest.php` (US-023).\n\n| Scenario | Descrizione del flusso utente |\n|---|---|\n| Apertura pagina di dettaglio dalla coda | L'admin apre \"Da revisionare\", clicca il link \"Dettagli\" su una riga, e viene portato a una URL dedicata (`/admin/review-queue/{id}`) che mostra tutte le informazioni del prodotto (dati da file, proposte AI con origine, attributi tecnici con origine, confidenza). |\n| Correzione e salvataggio dalla pagina di dettaglio | L'admin modifica marca/famiglia/sottofamiglia e un attributo tecnico nel form, salva, viene reindirizzato alla coda di revisione e il prodotto (ora `enriched`/manuale) non è più presente nella coda. |\n\n> Nota: `docs/mockups/` non è mai stato utilizzato per le pagine di questa epica (EP-007 Backoffice Filament) — `ReviewQueue`, `ViewProduct`/`EditProduct` sono tutte composte con i soli componenti Filament standard (`Section`, `TextEntry`, `Select`) senza mockup dedicati. Questa pagina segue la stessa convenzione: nessun mockup generato.\n"
+tasks:
+  - id: TASK-01
+    title: Creare la pagina Filament ReviewQueueDetail con schema di sola lettura e form editabile
+    description: 'Nuova classe app/Filament/Pages/ReviewQueueDetail.php (slug ''review-queue/{record}'', fuori navigazione, mount(Product $record)) con due schema separati: infolist() di sola lettura (dati da file, proposte con origine, attributi con origine, confidenza, riusando i pattern di ProductInfolist/ReviewQueue) e form() editabile per brand_id/family_id/subfamily_id (pattern ProductForm/correctAction) più Repeater(''attributes'')->relationship() per gli attributi tecnici, con vista Blade resources/views/filament/pages/review-queue-detail.blade.php.'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Implementare save() con la stessa logica di Correggi e redirect alla coda
+    description: 'Metodo save() su ReviewQueueDetail: applica brand_id/family_id/subfamily_id dal form con *_source=''manual'', source=''manual'', confidence=100, enrichment_status=''enriched'' (stessa logica di ReviewQueue::correctAction()), forza source=''manual'' sulle righe attributi salvate via mutateRelationshipDataBeforeSaveUsing/mutateRelationshipDataBeforeCreateUsing sul Repeater, persiste con $this->form->saveRelationships(), mostra una Notification di successo e reindirizza a ReviewQueue::getUrl().'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Test feature per ReviewQueueDetail
+    description: 'tests/Feature/ReviewQueueDetailTest.php: caricamento pagina via Livewire::test(ReviewQueueDetail::class, [''record'' => $product->getRouteKey()]), presenza di tutte le informazioni (dati da file, proposte con origine, attributi con origine, confidenza), precompilazione del form (assertSchemaStateSet su brand_id/family_id/subfamily_id), salvataggio che applica source=''manual''/confidence=100/enrichment_status=''enriched'' e reindirizza a ReviewQueue::getUrl(), salvataggio che persiste modifiche/aggiunte agli attributi tecnici.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-03
+  - id: TASK-04
+    title: Aggiungere il link 'Dettagli' per riga nella coda di revisione
+    description: In ReviewQueue::table()->recordActions(), aggiungere Action::make('viewDetail')->url(fn (Product $record) => ReviewQueueDetail::getUrl(['record' => $record])) prima di Conferma/Correggi/Scarta, senza modificare l'azione 'correct' esistente (AC5).
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-04
+  - id: TASK-05
+    title: Test feature per il link di dettaglio e non-regressione della coda
+    description: 'Estendere tests/Feature/ReviewQueueTest.php: verificare che ogni riga esponga l''azione/link viewDetail con URL risolto verso ReviewQueueDetail::getUrl([''record'' => $product]), e che l''azione ''correct'' esistente in tabella resti invariata e funzionante (non-regressione AC5).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-04
+    ref: TASK-05
+  - id: TASK-06
+    title: Test e2e Dusk del flusso completo dalla coda alla pagina di dettaglio
+    description: 'tests/Browser/ReviewQueueDetailPageTest.php: l''admin apre ''Da revisionare'', clicca ''Dettagli'' su una riga (navigazione reale verso /admin/review-queue/{id}, non modale), vede tutte le informazioni del prodotto incluso un attributo tecnico, corregge marca/famiglia/sottofamiglia e il valore dell''attributo, salva, viene reindirizzato alla coda dove il prodotto (ora enriched/manuale) non è più presente. Screenshot per-step salvati in docs/test-results/US-038/ (Dusk non supporta video nativamente, stessa convenzione di US-023).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-04
+    ref: TASK-06

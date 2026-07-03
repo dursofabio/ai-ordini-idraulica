@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-038
+title: Pagina di dettaglio in modifica per l'articolo in coda di revisione
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 5
+status: REVIEW
+body: |-
+  #### US-038: Pagina di dettaglio in modifica per l'articolo in coda di revisione
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-023
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio aprire una pagina di dettaglio dedicata per un articolo in coda di revisione, con tutte le informazioni del prodotto e un form per modificare marca, famiglia, sottofamiglia e attributi tecnici,
+  così da correggere proposte complesse con più contesto e più campi editabili rispetto al modale compatto esistente.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, dalla coda "Da revisionare" un link su ogni riga apre una pagina dedicata (con URL proprio) che mostra tutte le informazioni disponibili del prodotto (dati da file, proposte con relativa origine, attributi tecnici, confidenza) e un form per modificare marca, famiglia, sottofamiglia e attributi tecnici; salvando si applica la stessa logica dell'azione Correggi esistente e si torna alla coda di revisione. Il modale "Correggi" resta disponibile in tabella come scorciatoia per le correzioni rapide.
+
+  **Criteri di Accettazione**
+  - [ ] Dalla coda di revisione è possibile aprire, tramite un link per riga, una pagina di dettaglio dedicata con URL proprio (non una modale) per il singolo articolo
+  - [ ] La pagina mostra tutte le informazioni disponibili del prodotto: dati originali da file, proposte con relativa origine, attributi tecnici, confidenza
+  - [ ] La pagina espone un form di modifica per marca, famiglia, sottofamiglia e attributi tecnici, precompilato con i valori correnti
+  - [ ] Il salvataggio applica la stessa logica dell'azione Correggi esistente (`source='manual'`, `confidence=100`, `enrichment_status='enriched'`) e reindirizza alla coda di revisione
+  - [ ] Il modale "Correggi" esistente in tabella resta disponibile invariato come scorciatoia rapida

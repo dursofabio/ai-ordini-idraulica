@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Filament\Pages\ReviewQueue;
+use App\Filament\Pages\ReviewQueueDetail;
 use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
@@ -510,6 +511,58 @@ class ReviewQueueTest extends TestCase
         $this->assertSame('Origine: AI', $this->columnDescription($component, 'brand.name', $product));
         $this->assertSame('Origine: Dedotta', $this->columnDescription($component, 'family.name', $product));
         $this->assertSame('Origine: Da file', $this->columnDescription($component, 'subfamily.name', $product));
+    }
+
+    /**
+     * US-038 AC1: each row exposes a "Dettagli" link action resolving to the
+     * standalone {@see ReviewQueueDetail} page for that record (a real
+     * navigation link, not a modal).
+     */
+    public function test_view_detail_action_links_to_the_review_queue_detail_page(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $action = $component->instance()->getTable()->getAction('viewDetail');
+        $action->record($product);
+
+        $this->assertSame(ReviewQueueDetail::getUrl(['record' => $product]), $action->getUrl());
+    }
+
+    /**
+     * US-038 AC5 (non-regression): the "Correggi" modal action added before
+     * this spec must remain untouched by the new "Dettagli" link action, and
+     * keep saving corrections exactly as before.
+     */
+    public function test_correct_action_still_works_unchanged_alongside_the_new_view_detail_action(): void
+    {
+        $admin = User::factory()->create();
+        $correctedBrand = Brand::factory()->create();
+        $correctedFamily = Family::factory()->create();
+        $correctedSubfamily = Subfamily::factory()->create(['family_id' => $correctedFamily->id]);
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('correct', $product, [
+                'brand_id' => $correctedBrand->id,
+                'family_id' => $correctedFamily->id,
+                'subfamily_id' => $correctedSubfamily->id,
+            ]);
+
+        $product->refresh();
+
+        $this->assertSame($correctedBrand->id, $product->brand_id);
+        $this->assertSame($correctedFamily->id, $product->family_id);
+        $this->assertSame($correctedSubfamily->id, $product->subfamily_id);
+        $this->assertSame('manual', $product->source);
+        $this->assertSame(100, $product->confidence);
+        $this->assertSame('enriched', $product->enrichment_status);
     }
 
     /**
