@@ -173,6 +173,106 @@ class ClassificationResponseValidatorTest extends TestCase
         (new ClassificationResponseValidator)->validate($response, collect(['ABC-001']), new TaxonomyCatalog);
     }
 
+    public function test_attaches_a_valid_free_key_attribute_to_the_classified_product(): void
+    {
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => null,
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                    'attributes' => [
+                        [
+                            'key' => 'portata_lmin',
+                            'value_num' => 12.5,
+                            'unit' => 'L/min',
+                            'confidence' => 88,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $validated = (new ClassificationResponseValidator)->validate($response, collect(['ABC-001']), new TaxonomyCatalog);
+
+        $attributes = $validated->for('ABC-001')?->attributes;
+
+        $this->assertSame([
+            'portata_lmin' => [
+                'confidence' => 88,
+                'value_num' => 12.5,
+                'unit' => 'L/min',
+            ],
+        ], $attributes);
+    }
+
+    public function test_discards_a_malformed_attribute_entry_without_rejecting_the_whole_result(): void
+    {
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => null,
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                    'attributes' => [
+                        // missing key
+                        ['value_num' => 1, 'confidence' => 90],
+                        // confidence out of range
+                        ['key' => 'materiale', 'value_text' => 'ottone', 'confidence' => 150],
+                        // confidence missing
+                        ['key' => 'colore', 'value_text' => 'bianco'],
+                        // empty key
+                        ['key' => '', 'value_num' => 1, 'confidence' => 90],
+                        // no value at all
+                        ['key' => 'senza_valore', 'confidence' => 90],
+                        // the only valid entry
+                        ['key' => 'potenza_kw', 'value_num' => 1.5, 'unit' => 'kW', 'confidence' => 70],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
+
+        $this->assertNotNull($result);
+        $this->assertSame(['potenza_kw'], array_keys($result->attributes));
+        $this->assertSame(70, $result->attributes['potenza_kw']['confidence']);
+    }
+
+    public function test_missing_attributes_array_results_in_no_attributes(): void
+    {
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => null,
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                ],
+            ],
+        ]);
+
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
+
+        $this->assertNotNull($result);
+        $this->assertSame([], $result->attributes);
+    }
+
     /**
      * @param  array<string, mixed>  $decoded
      */

@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['product_id', 'key', 'value_num', 'value_text', 'unit', 'source'])]
+#[Fillable(['product_id', 'key', 'value_num', 'value_text', 'unit', 'source', 'confidence'])]
 class ProductAttribute extends Model
 {
     /** @use HasFactory<ProductAttributeFactory> */
@@ -23,6 +23,7 @@ class ProductAttribute extends Model
     {
         return [
             'value_num' => 'decimal:3',
+            'confidence' => 'integer',
         ];
     }
 

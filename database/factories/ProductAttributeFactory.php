@@ -25,6 +25,7 @@ class ProductAttributeFactory extends Factory
             'value_text' => null,
             'unit' => fake()->randomElement(['kW', 'L', 'mm']),
             'source' => fake()->randomElement(['regex', 'ai']),
+            'confidence' => null,
         ];
     }
 }

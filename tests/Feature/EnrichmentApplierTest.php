@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
+use App\Models\ProductAttribute;
 use App\Models\Subfamily;
 use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\TaxonomyCatalog;
@@ -202,5 +203,152 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame('enriched', $fresh->enrichment_status);
         $this->assertSame('ai', $fresh->source);
         $this->assertSame(90, $fresh->confidence);
+    }
+
+    public function test_new_key_attribute_is_written_at_high_confidence(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'portata_lmin' => ['value_num' => 12.5, 'unit' => 'L/min', 'confidence' => 90],
+            ],
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $attribute = $product->attributes()->where('key', 'portata_lmin')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(12.5, $attribute->value_num);
+        $this->assertSame('L/min', $attribute->unit);
+        $this->assertSame('ai', $attribute->source);
+        $this->assertSame(90, $attribute->confidence);
+    }
+
+    public function test_existing_regex_attribute_is_corrected_by_ai_at_high_confidence(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+        ProductAttribute::factory()->for($product)->create([
+            'key' => 'potenza_kw',
+            'value_num' => 1.0,
+            'unit' => 'kW',
+            'source' => 'regex',
+            'confidence' => null,
+        ]);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'potenza_kw' => ['value_num' => 1.5, 'unit' => 'kW', 'confidence' => 95],
+            ],
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(1.5, $attribute->value_num);
+        $this->assertSame('ai', $attribute->source);
+        $this->assertSame(95, $attribute->confidence);
+    }
+
+    public function test_low_confidence_attribute_is_not_written(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'materiale' => ['value_text' => 'ottone', 'confidence' => 50],
+            ],
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $this->assertNull($product->attributes()->where('key', 'materiale')->first());
+    }
+
+    public function test_medium_confidence_attribute_is_written_but_forces_needs_review_even_with_high_overall_confidence(): void
+    {
+        $brand = Brand::factory()->create(['name' => 'Grohe']);
+        $family = Family::factory()->create(['name' => 'Rubinetteria']);
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: 'Grohe',
+            family: 'Rubinetteria',
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: 95,
+            attributes: [
+                'colore_ral' => ['value_text' => 'RAL 9010', 'confidence' => 70],
+            ],
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $fresh = $product->fresh();
+        $this->assertSame($brand->id, $fresh->brand_id);
+        $this->assertSame($family->id, $fresh->family_id);
+        $this->assertSame('needs_review', $fresh->enrichment_status);
+
+        $attribute = $product->attributes()->where('key', 'colore_ral')->first();
+        $this->assertNotNull($attribute);
+        $this->assertSame('RAL 9010', $attribute->value_text);
+        $this->assertSame(70, $attribute->confidence);
+    }
+
+    public function test_manual_source_attribute_is_never_overwritten_by_ai_proposal(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+        ProductAttribute::factory()->for($product)->create([
+            'key' => 'materiale',
+            'value_num' => null,
+            'value_text' => 'ottone',
+            'source' => 'manual',
+            'confidence' => null,
+        ]);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'materiale' => ['value_text' => 'plastica', 'confidence' => 95],
+            ],
+        );
+
+        (new EnrichmentApplier)->apply($product, $result, new TaxonomyCatalog);
+
+        $attribute = $product->attributes()->where('key', 'materiale')->first();
+        $this->assertNotNull($attribute);
+        $this->assertSame('ottone', $attribute->value_text);
+        $this->assertSame('manual', $attribute->source);
+        $this->assertNull($attribute->confidence);
     }
 }

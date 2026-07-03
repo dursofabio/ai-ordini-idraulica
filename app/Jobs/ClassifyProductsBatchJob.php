@@ -196,6 +196,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         $products = Product::query()
             ->whereIn('id', $this->productIds)
             ->where('enrichment_status', 'pending')
+            ->with('attributes')
             ->get();
 
         if ($products->isEmpty()) {
@@ -330,6 +331,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
             productType: $result->productType,
             enrichedDescription: $result->enrichedDescription,
             confidence: $result->confidence,
+            attributes: $result->attributes,
         );
     }
 

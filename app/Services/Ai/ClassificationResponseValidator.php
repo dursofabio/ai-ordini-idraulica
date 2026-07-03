@@ -98,7 +98,74 @@ class ClassificationResponseValidator
             productType: $this->nullableString($item['product_type'] ?? null),
             enrichedDescription: $this->nullableString($item['enriched_description'] ?? null),
             confidence: is_numeric($confidence) ? (int) $confidence : null,
+            attributes: $this->parseAttributes($item),
         );
+    }
+
+    /**
+     * Parses the optional per-result "attributes" array with free-form,
+     * non-taxonomy-bound keys. Unlike brand/family/subfamily, a malformed
+     * attribute entry (missing/empty key, non-numeric or out-of-range
+     * confidence, or no value_num/value_text at all) is silently dropped
+     * instead of invalidating the whole classification result — a bad
+     * attribute proposal shouldn't cost the product its brand/family match.
+     *
+     * @return array<string, array{value_num?: float, value_text?: string, unit?: string, confidence: int}>
+     */
+    private function parseAttributes(mixed $item): array
+    {
+        $rawAttributes = is_array($item) ? ($item['attributes'] ?? null) : null;
+
+        if (! is_array($rawAttributes)) {
+            return [];
+        }
+
+        $attributes = [];
+
+        foreach ($rawAttributes as $rawAttribute) {
+            if (! is_array($rawAttribute)) {
+                continue;
+            }
+
+            $key = $rawAttribute['key'] ?? null;
+
+            if (! is_string($key) || trim($key) === '') {
+                continue;
+            }
+
+            $confidence = $rawAttribute['confidence'] ?? null;
+
+            if (! is_numeric($confidence) || (int) $confidence < 0 || (int) $confidence > 100) {
+                continue;
+            }
+
+            $valueNum = $rawAttribute['value_num'] ?? null;
+            $valueText = $this->nullableString($rawAttribute['value_text'] ?? null);
+
+            if (! is_numeric($valueNum) && $valueText === null) {
+                continue;
+            }
+
+            $attribute = ['confidence' => (int) $confidence];
+
+            if (is_numeric($valueNum)) {
+                $attribute['value_num'] = (float) $valueNum;
+            }
+
+            if ($valueText !== null) {
+                $attribute['value_text'] = $valueText;
+            }
+
+            $unit = $this->nullableString($rawAttribute['unit'] ?? null);
+
+            if ($unit !== null) {
+                $attribute['unit'] = $unit;
+            }
+
+            $attributes[trim($key)] = $attribute;
+        }
+
+        return $attributes;
     }
 
     /**

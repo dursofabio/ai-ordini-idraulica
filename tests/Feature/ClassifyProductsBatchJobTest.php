@@ -6,6 +6,7 @@ use App\Jobs\ClassifyProductsBatchJob;
 use App\Models\Brand;
 use App\Models\EnrichmentLog;
 use App\Models\Product;
+use App\Models\ProductAttribute;
 use App\Services\Ai\AiClient;
 use App\Services\Ai\ClassificationPromptBuilder;
 use App\Services\Ai\ClassificationResponseValidator;
@@ -742,9 +743,10 @@ class ClassifyProductsBatchJobTest extends TestCase
     }
 
     /**
+     * @param  list<array<string, mixed>>  $attributes
      * @return array<string, mixed>
      */
-    private function resultFor(Product $product, int $confidence): array
+    private function resultFor(Product $product, int $confidence, array $attributes = []): array
     {
         return [
             'codice_articolo' => $product->codice_articolo,
@@ -754,6 +756,96 @@ class ClassifyProductsBatchJobTest extends TestCase
             'product_type' => 'Miscelatore',
             'enriched_description' => 'Descrizione arricchita',
             'confidence' => $confidence,
+            'attributes' => $attributes,
         ];
+    }
+
+    public function test_batch_classification_populates_product_attributes_from_ai_response(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+        ProductAttribute::factory()->for($product)->create([
+            'key' => 'potenza_kw',
+            'value_num' => 1.0,
+            'value_text' => null,
+            'unit' => 'kW',
+            'source' => 'regex',
+            'confidence' => null,
+        ]);
+
+        $batchBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [
+                        $this->resultFor($product, confidence: 90, attributes: [
+                            ['key' => 'potenza_kw', 'value_num' => 1.5, 'unit' => 'kW', 'confidence' => 92],
+                            ['key' => 'portata_lmin', 'value_num' => 12.0, 'unit' => 'L/min', 'confidence' => 88],
+                        ]),
+                    ],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 100, 'output_tokens' => 40],
+        ];
+
+        Http::fake(['*' => Http::response($batchBody)]);
+
+        (new ClassifyProductsBatchJob([$product->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        $potenza = $product->attributes()->where('key', 'potenza_kw')->first();
+        $this->assertNotNull($potenza);
+        $this->assertEquals(1.5, $potenza->value_num);
+        $this->assertSame('ai', $potenza->source);
+        $this->assertSame(92, $potenza->confidence);
+
+        $portata = $product->attributes()->where('key', 'portata_lmin')->first();
+        $this->assertNotNull($portata);
+        $this->assertEquals(12.0, $portata->value_num);
+        $this->assertSame('ai', $portata->source);
+        $this->assertSame(88, $portata->confidence);
+    }
+
+    public function test_cache_hit_carries_through_previously_proposed_attributes(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $cachedProduct = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'description_raw' => 'Miscelatore da cucina Grohe cromato con portata regolabile',
+        ]);
+
+        (new EnrichmentCache)->put($cachedProduct, new ClassifiedProduct(
+            codiceArticolo: $cachedProduct->codice_articolo,
+            brand: 'Grohe',
+            family: null,
+            subfamily: null,
+            productType: 'Miscelatore',
+            enrichedDescription: 'Descrizione arricchita cacheata',
+            confidence: 92,
+            attributes: [
+                'portata_lmin' => ['value_num' => 10.0, 'unit' => 'L/min', 'confidence' => 90],
+            ],
+        ));
+
+        Http::fake();
+
+        (new ClassifyProductsBatchJob([$cachedProduct->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertNothingSent();
+
+        $attribute = $cachedProduct->attributes()->where('key', 'portata_lmin')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(10.0, $attribute->value_num);
+        $this->assertSame('ai', $attribute->source);
+        $this->assertSame(90, $attribute->confidence);
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Services\Ai;
 
 use App\Models\Product;
+use App\Models\ProductAttribute;
 use Illuminate\Support\Collection;
 
 /**
@@ -58,9 +59,10 @@ class ClassificationPromptBuilder
     {
         $items = $products
             ->map(fn (Product $product): string => sprintf(
-                '- codice_articolo: %s | descrizione: %s',
+                '- codice_articolo: %s | descrizione: %s%s',
                 $product->codice_articolo,
                 trim((string) ($product->description_clean ?? $product->description_raw)),
+                $this->knownAttributesText($product),
             ))
             ->implode("\n");
 
@@ -73,6 +75,14 @@ class ClassificationPromptBuilder
         marche, famiglie o sottofamiglie che non compaiono nell'elenco: se non sei sicuro, lascia il
         campo a null. Includi anche una breve descrizione arricchita e un livello di confidenza
         (intero 0-100) per ciascun prodotto.
+
+        Per ciascun prodotto sono elencati anche gli attributi tecnici già noti (chiave, valore,
+        unità di misura e origine). Valida quegli attributi correggendoli se il valore non è
+        coerente con la descrizione, e proponi eventuali altri attributi tecnici rilevanti anche
+        con chiavi non presenti nell'elenco (chiave libera, in snake_case, es. "portata_lmin").
+        Per ciascun attributo proposto indica un valore numerico ("value_num") o testuale
+        ("value_text"), l'eventuale unità di misura ("unit") e un livello di confidenza (intero
+        0-100) specifico per quell'attributo. Se non sei sicuro di un attributo, non includerlo.
 
         Tassonomia chiusa:
         {$taxonomyText}
@@ -90,12 +100,52 @@ class ClassificationPromptBuilder
               "subfamily": "string|null",
               "product_type": "string|null",
               "enriched_description": "string",
-              "confidence": 0
+              "confidence": 0,
+              "attributes": [
+                {
+                  "key": "string",
+                  "value_num": 0,
+                  "value_text": "string|null",
+                  "unit": "string|null",
+                  "confidence": 0
+                }
+              ]
             }
           ]
         }
 
         Includi un elemento in "results" per ogni codice_articolo elencato sopra, nello stesso ordine.
+        Il campo "attributes" può essere un array vuoto se non ci sono attributi da validare o proporre.
         PROMPT;
+    }
+
+    /**
+     * Renders the product's already-known technical attributes (extracted by
+     * regex or previously proposed by AI) as inline prompt context, so the
+     * model can validate/correct them instead of guessing blind. Returns an
+     * empty string when the product has no known attributes.
+     */
+    private function knownAttributesText(Product $product): string
+    {
+        $attributes = $product->relationLoaded('attributes') ? $product->attributes : collect();
+
+        if ($attributes->isEmpty()) {
+            return '';
+        }
+
+        $parts = $attributes
+            ->map(function (ProductAttribute $attribute): string {
+                $value = $attribute->value_num !== null
+                    ? (string) $attribute->value_num
+                    : (string) $attribute->value_text;
+
+                $unit = $attribute->unit !== null ? " {$attribute->unit}" : '';
+                $source = $attribute->source ?? 'sconosciuta';
+
+                return "{$attribute->key}={$value}{$unit} (origine: {$source})";
+            })
+            ->implode(', ');
+
+        return " | attributi noti: {$parts}";
     }
 }

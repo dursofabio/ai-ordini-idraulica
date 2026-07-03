@@ -42,6 +42,12 @@ class EnrichmentApplier
     {
         $confidence = $result->confidence ?? 0;
 
+        // Proposed technical attributes are written independently of the
+        // overall brand/family/subfamily confidence branch below: a single
+        // attribute can carry its own high confidence even when the rest of
+        // the classification is too weak to trust.
+        $attributesForceReview = $this->applyAttributes($product, $result);
+
         if ($confidence < self::LOW_CONFIDENCE_THRESHOLD) {
             $product->fill(['enrichment_status' => 'needs_review'])->save();
 
@@ -50,13 +56,77 @@ class EnrichmentApplier
 
         $attributes = $this->resolvedAttributes($product, $result, $taxonomy);
 
-        $attributes['enrichment_status'] = $confidence >= self::HIGH_CONFIDENCE_THRESHOLD
+        $attributes['enrichment_status'] = ($confidence >= self::HIGH_CONFIDENCE_THRESHOLD && ! $attributesForceReview)
             ? 'enriched'
             : 'needs_review';
         $attributes['source'] = 'ai';
         $attributes['confidence'] = $confidence;
 
         $product->fill($attributes)->save();
+    }
+
+    /**
+     * Writes each proposed technical attribute to `product_attributes`
+     * according to its own confidence band, independent of the product's
+     * overall brand/family/subfamily confidence:
+     *  - confidence < {@see self::LOW_CONFIDENCE_THRESHOLD}: skipped, not written.
+     *  - confidence between the low and high thresholds: written, and the
+     *    product must be forced to `needs_review` even if brand/family were
+     *    high-confidence.
+     *  - confidence >= {@see self::HIGH_CONFIDENCE_THRESHOLD}: written without
+     *    forcing anything; the final status follows the overall branch.
+     * An existing row whose `source` is not `null`, `regex`, or `ai` (e.g.
+     * `manual`) is never overwritten, mirroring the guard already applied by
+     * {@see AttributeResolver::writeAttribute()} for the regex extraction pass.
+     *
+     * @return bool whether at least one written attribute forces `needs_review`
+     */
+    private function applyAttributes(Product $product, ClassifiedProduct $result): bool
+    {
+        $forcesReview = false;
+
+        foreach ($result->attributes as $key => $attribute) {
+            $confidence = $attribute['confidence'] ?? 0;
+
+            if ($confidence < self::LOW_CONFIDENCE_THRESHOLD) {
+                continue;
+            }
+
+            if (! $this->writeAttribute($product, $key, $attribute, $confidence)) {
+                continue;
+            }
+
+            if ($confidence < self::HIGH_CONFIDENCE_THRESHOLD) {
+                $forcesReview = true;
+            }
+        }
+
+        return $forcesReview;
+    }
+
+    /**
+     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     */
+    private function writeAttribute(Product $product, string $key, array $attribute, int $confidence): bool
+    {
+        $existing = $product->attributes()->where('key', $key)->first();
+
+        if ($existing !== null && $existing->source !== null && $existing->source !== 'regex' && $existing->source !== 'ai') {
+            return false;
+        }
+
+        $product->attributes()->updateOrCreate(
+            ['key' => $key],
+            [
+                'value_num' => $attribute['value_num'] ?? null,
+                'value_text' => $attribute['value_text'] ?? null,
+                'unit' => $attribute['unit'] ?? null,
+                'source' => 'ai',
+                'confidence' => $confidence,
+            ],
+        );
+
+        return true;
     }
 
     /**
