@@ -109,7 +109,33 @@ class ReviewQueueTriageTest extends DuskTestCase
             'confidence' => null,
         ]);
 
-        $this->browse(function (Browser $browser) use ($admin, $toConfirm, $toCorrect, $toDiscard) {
+        // US-037: brand reused by the bulk discard step below to verify a
+        // field already `*_source = 'manual'` is preserved in a bulk discard
+        // exactly like it is for the single "Scarta" action (AC3 of US-023).
+        $manualBrand = Brand::factory()->create(['name' => 'Marca Manuale']);
+
+        // US-037: the four products for the bulk triage steps are created
+        // by reference *inside* the closure (after the single-record flow
+        // asserts "1 articoli da revisionare"), not here, so they don't
+        // inflate the initial "3 articoli da revisionare" counter assertion.
+        $bulkConfirmFirst = null;
+        $bulkConfirmSecond = null;
+        $bulkDiscardFirst = null;
+        $bulkDiscardSecond = null;
+
+        $this->browse(function (Browser $browser) use (
+            $admin,
+            $toConfirm,
+            $toCorrect,
+            $toDiscard,
+            $aiBrand,
+            $aiFamily,
+            $manualBrand,
+            &$bulkConfirmFirst,
+            &$bulkConfirmSecond,
+            &$bulkDiscardFirst,
+            &$bulkDiscardSecond,
+        ) {
             // 1. The admin logs in to the Filament backoffice.
             $browser->visit('/admin/login')
                 ->waitFor('#form\\.email')
@@ -280,6 +306,133 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->assertSee('1 articoli da revisionare')
                 ->pause(1500)
                 ->screenshot('11-after-discard');
+
+            // 6. (US-037) Four more products enter the queue (e.g. from a
+            // later import), two for the bulk "Conferma selezionati" step
+            // and two for the bulk "Scarta selezionati" step below. The
+            // admin reloads the queue and sees them alongside the counter.
+            $bulkConfirmFirst = Product::factory()->create([
+                'codice_articolo' => 'BULK-CONFIRM-004',
+                'description_raw' => 'Miscelatore da confermare in blocco (1 di 2)',
+                'enrichment_status' => 'needs_review',
+                'brand_id' => $aiBrand->id,
+                'family_id' => $aiFamily->id,
+                'brand_source' => 'ai',
+                'family_source' => 'ai',
+                'source' => 'ai',
+                'confidence' => 65,
+            ]);
+            $bulkConfirmSecond = Product::factory()->create([
+                'codice_articolo' => 'BULK-CONFIRM-005',
+                'description_raw' => 'Miscelatore da confermare in blocco (2 di 2)',
+                'enrichment_status' => 'needs_review',
+                'brand_id' => $aiBrand->id,
+                'family_id' => $aiFamily->id,
+                'brand_source' => 'ai',
+                'family_source' => 'ai',
+                'source' => 'ai',
+                'confidence' => 68,
+            ]);
+            $bulkDiscardFirst = Product::factory()->create([
+                'codice_articolo' => 'BULK-DISCARD-006',
+                'description_raw' => 'Rubinetto da scartare in blocco (1 di 2)',
+                'enrichment_status' => 'needs_review',
+                'brand_id' => $aiBrand->id,
+                'family_id' => $aiFamily->id,
+                'brand_source' => 'ai',
+                'family_source' => 'ai',
+                'source' => 'ai',
+                'confidence' => 25,
+            ]);
+            // Carries a brand already `brand_source = 'manual'`, so the test
+            // can verify the bulk discard preserves it exactly like the
+            // single "Scarta" action does (AC3 of US-023, reused here).
+            $bulkDiscardSecond = Product::factory()->create([
+                'codice_articolo' => 'BULK-DISCARD-007',
+                'description_raw' => 'Rubinetto da scartare in blocco (2 di 2)',
+                'enrichment_status' => 'needs_review',
+                'brand_id' => $manualBrand->id,
+                'brand_source' => 'manual',
+                'family_id' => $aiFamily->id,
+                'family_source' => 'ai',
+                'source' => 'ai',
+                'confidence' => 35,
+            ]);
+
+            $browser->visit('/admin/review-queue')
+                ->waitForText('articoli da revisionare')
+                ->assertSee($bulkConfirmFirst->description_raw)
+                ->assertSee($bulkConfirmSecond->description_raw)
+                ->assertSee($bulkDiscardFirst->description_raw)
+                ->assertSee($bulkDiscardSecond->description_raw)
+                ->pause(400)
+                ->screenshot('12-bulk-queue-before');
+
+            // 7. The admin selects the two products via their row checkboxes;
+            // the "Conferma selezionati"/"Scarta selezionati" bulk actions
+            // become visible in the toolbar as soon as a row is selected.
+            $browser->with($this->rowSelector($bulkConfirmFirst), function (Browser $row) {
+                $row->click('input.fi-ta-record-checkbox');
+            });
+
+            $browser->pause(300);
+
+            $browser->with($this->rowSelector($bulkConfirmSecond), function (Browser $row) {
+                $row->click('input.fi-ta-record-checkbox');
+            });
+
+            $browser->pause(400)
+                ->assertSee('Conferma selezionati')
+                ->screenshot('13-bulk-confirm-rows-selected');
+
+            // 8. Clicking "Conferma selezionati" applies the confirm logic to
+            // both selected records in one go, with a single notification.
+            // The toolbar bulk-action buttons stick right below the fixed
+            // topbar, so WebDriver's native click sometimes reports them as
+            // obscured by it; a direct DOM click (still dispatching a real
+            // "click" event, which is all Alpine's `x-on:click` listens for)
+            // sidesteps that false-positive interception.
+            $this->clickButtonByLabel($browser, 'Conferma selezionati');
+
+            $browser->pause(800)
+                ->waitUntilMissingText($bulkConfirmFirst->description_raw)
+                ->assertDontSee($bulkConfirmSecond->description_raw)
+                ->screenshot('14-after-bulk-confirm');
+
+            // 9. The admin selects the remaining two products and uses
+            // "Scarta selezionati", which shows a single confirmation modal
+            // for the whole selection (not one per record).
+            $browser->with($this->rowSelector($bulkDiscardFirst), function (Browser $row) {
+                $row->click('input.fi-ta-record-checkbox');
+            });
+
+            $browser->pause(300);
+
+            $browser->with($this->rowSelector($bulkDiscardSecond), function (Browser $row) {
+                $row->click('input.fi-ta-record-checkbox');
+            });
+
+            $browser->pause(400)
+                ->assertSee('Scarta selezionati')
+                ->screenshot('15-bulk-discard-rows-selected');
+
+            $this->clickButtonByLabel($browser, 'Scarta selezionati');
+
+            $browser->pause(500)
+                ->waitFor('.fi-modal-open')
+                ->screenshot('16-bulk-discard-confirmation-modal');
+
+            // Same default "Confirm" submit label as the single-record
+            // discard confirmation above (no form, confirmation-only action).
+            $browser->with('.fi-modal-open', function (Browser $modal) {
+                $modal->press('Confirm');
+            });
+
+            $browser->pause(800)
+                ->assertSee($bulkDiscardFirst->description_raw)
+                ->assertSee($bulkDiscardSecond->description_raw)
+                ->pause(1500)
+                ->screenshot('17-after-bulk-discard');
         });
 
         $toConfirm->refresh();
@@ -297,6 +450,25 @@ class ReviewQueueTriageTest extends DuskTestCase
         $this->assertNull($toDiscard->brand_id);
         $this->assertNull($toDiscard->family_id);
         $this->assertSame('needs_review', $toDiscard->enrichment_status);
+
+        $bulkConfirmFirst->refresh();
+        $bulkConfirmSecond->refresh();
+        $bulkDiscardFirst->refresh();
+        $bulkDiscardSecond->refresh();
+
+        $this->assertSame('enriched', $bulkConfirmFirst->enrichment_status);
+        $this->assertSame('enriched', $bulkConfirmSecond->enrichment_status);
+
+        $this->assertNull($bulkDiscardFirst->brand_id);
+        $this->assertNull($bulkDiscardFirst->brand_source);
+        $this->assertNull($bulkDiscardFirst->family_id);
+        $this->assertSame('needs_review', $bulkDiscardFirst->enrichment_status);
+
+        $this->assertSame($manualBrand->id, $bulkDiscardSecond->brand_id);
+        $this->assertSame('manual', $bulkDiscardSecond->brand_source);
+        $this->assertNull($bulkDiscardSecond->family_id);
+        $this->assertNull($bulkDiscardSecond->family_source);
+        $this->assertSame('needs_review', $bulkDiscardSecond->enrichment_status);
     }
 
     /**
@@ -310,5 +482,25 @@ class ReviewQueueTriageTest extends DuskTestCase
     private function rowSelector(Product $product): string
     {
         return 'tr[wire\\:key$=".table.records.'.$product->getKey().'"]';
+    }
+
+    /**
+     * Clicks a button by its exact visible label via a direct DOM `.click()`
+     * call instead of Dusk's native `->press()`. Used for the sticky toolbar
+     * bulk-action buttons (US-037), which WebDriver can report as obscured
+     * by the app's fixed topbar even though they are visually reachable. A
+     * DOM `.click()` still dispatches a real "click" event, which is all
+     * Alpine's `x-on:click="mountAction(...)"` listens for.
+     */
+    private function clickButtonByLabel(Browser $browser, string $label): void
+    {
+        $browser->script(sprintf(
+            <<<'JS'
+            Array.from(document.querySelectorAll('button')).find(
+                (button) => button.textContent.trim() === %s
+            )?.click();
+            JS,
+            json_encode($label)
+        ));
     }
 }

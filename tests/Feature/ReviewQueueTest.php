@@ -8,6 +8,8 @@ use App\Models\Family;
 use App\Models\Product;
 use App\Models\Subfamily;
 use App\Models\User;
+use Filament\Actions\Action;
+use Filament\Actions\Testing\TestAction;
 use Filament\Tables\Columns\Column;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Features\SupportTesting\Testable;
@@ -255,6 +257,135 @@ class ReviewQueueTest extends TestCase
         $this->assertNull($product->family_id);
         $this->assertNull($product->family_source);
         $this->assertSame('needs_review', $product->enrichment_status);
+    }
+
+    /**
+     * US-037 AC1/AC2/AC4: selecting multiple needs_review products and
+     * running the "Conferma selezionati" bulk action applies the exact same
+     * logic as the single "Conferma" action to every selected record, with
+     * one summary notification for the whole batch.
+     */
+    public function test_confirm_selected_bulk_action_promotes_every_selected_record(): void
+    {
+        $admin = User::factory()->create();
+        $brand = Brand::factory()->create();
+        $family = Family::factory()->create();
+        $first = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $brand->id,
+            'family_id' => $family->id,
+            'brand_source' => 'ai',
+            'family_source' => 'ai',
+            'source' => 'ai',
+            'confidence' => 70,
+        ]);
+        $second = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $brand->id,
+            'family_id' => $family->id,
+            'brand_source' => 'ai',
+            'family_source' => 'ai',
+            'source' => 'ai',
+            'confidence' => 40,
+        ]);
+        $untouched = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->selectTableRecords([$first->getKey(), $second->getKey()])
+            ->callAction(TestAction::make('confirmSelected')->table()->bulk())
+            ->assertNotified('2 proposte confermate');
+
+        foreach ([$first, $second] as $product) {
+            $product->refresh();
+            $this->assertSame('enriched', $product->enrichment_status);
+            $this->assertSame($brand->id, $product->brand_id);
+            $this->assertSame($family->id, $product->family_id);
+            $this->assertSame('ai', $product->brand_source);
+            $this->assertSame('ai', $product->family_source);
+            $this->assertSame('ai', $product->source);
+        }
+
+        $untouched->refresh();
+        $this->assertSame('needs_review', $untouched->enrichment_status);
+    }
+
+    /**
+     * US-037 AC1/AC3/AC4: selecting multiple needs_review products and
+     * running the "Scarta selezionati" bulk action (with its single
+     * confirmation modal for the whole selection) applies the exact same
+     * logic as the single "Scarta" action to every selected record,
+     * including preserving fields already `*_source = 'manual'`.
+     */
+    public function test_discard_selected_bulk_action_clears_every_selected_record(): void
+    {
+        $admin = User::factory()->create();
+        $aiBrand = Brand::factory()->create();
+        $aiFamily = Family::factory()->create();
+        $manualBrand = Brand::factory()->create();
+        $first = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $aiBrand->id,
+            'family_id' => $aiFamily->id,
+            'brand_source' => 'ai',
+            'family_source' => 'ai',
+            'source' => 'ai',
+            'confidence' => 30,
+        ]);
+        $second = Product::factory()->create([
+            'enrichment_status' => 'needs_review',
+            'brand_id' => $manualBrand->id,
+            'brand_source' => 'manual',
+            'family_id' => $aiFamily->id,
+            'family_source' => 'ai',
+            'source' => 'ai',
+            'confidence' => 50,
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->selectTableRecords([$first->getKey(), $second->getKey()])
+            ->callAction(TestAction::make('discardSelected')->table()->bulk())
+            ->assertNotified('2 proposte scartate');
+
+        $first->refresh();
+        $this->assertNull($first->brand_id);
+        $this->assertNull($first->brand_source);
+        $this->assertNull($first->family_id);
+        $this->assertNull($first->family_source);
+        $this->assertNull($first->source);
+        $this->assertNull($first->confidence);
+        $this->assertSame('needs_review', $first->enrichment_status);
+
+        $second->refresh();
+        $this->assertSame($manualBrand->id, $second->brand_id);
+        $this->assertSame('manual', $second->brand_source);
+        $this->assertNull($second->family_id);
+        $this->assertNull($second->family_source);
+        $this->assertSame('needs_review', $second->enrichment_status);
+    }
+
+    /**
+     * US-037 AC5 (non-regression): "Correggi" requires a per-record form and
+     * has no sensible bulk equivalent, so it must never be exposed as a
+     * bulk/toolbar action.
+     */
+    public function test_correct_action_is_not_exposed_as_a_bulk_action(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class)
+            ->assertActionExists(TestAction::make('confirmSelected')->table()->bulk())
+            ->assertActionExists(TestAction::make('discardSelected')->table()->bulk());
+
+        $toolbarActionNames = collect($component->instance()->getTable()->getToolbarActions())
+            ->map(fn (Action $action): string => $action->getName())
+            ->all();
+
+        $this->assertNotContains('correct', $toolbarActionNames);
     }
 
     public function test_subfamily_column_shows_proposed_subfamily_name(): void

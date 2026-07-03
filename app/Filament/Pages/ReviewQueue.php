@@ -8,6 +8,7 @@ use App\Models\ProductAttribute;
 use App\Models\Subfamily;
 use BackedEnum;
 use Filament\Actions\Action;
+use Filament\Actions\BulkAction;
 use Filament\Actions\Concerns\InteractsWithActions;
 use Filament\Actions\Contracts\HasActions;
 use Filament\Forms\Components\Select;
@@ -23,6 +24,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 
 /**
  * US-023: work queue for products flagged `enrichment_status = 'needs_review'`
@@ -157,6 +159,10 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                 $this->confirmAction(),
                 $this->correctAction(),
                 $this->discardAction(),
+            ])
+            ->toolbarActions([
+                $this->confirmSelectedBulkAction(),
+                $this->discardSelectedBulkAction(),
             ]);
     }
 
@@ -183,10 +189,31 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->color('success')
             ->icon(Heroicon::OutlinedCheck)
             ->action(function (Product $record): void {
-                $record->update(['enrichment_status' => 'enriched']);
+                $this->applyConfirm($record);
 
                 Notification::make()
                     ->title('Proposta confermata')
+                    ->success()
+                    ->send();
+            });
+    }
+
+    /**
+     * US-037: bulk counterpart of {@see confirmAction()} (AC1, AC2, AC4).
+     * Filament automatically enables the row-selection checkbox column as
+     * soon as the table defines at least one bulk action here.
+     */
+    private function confirmSelectedBulkAction(): BulkAction
+    {
+        return BulkAction::make('confirmSelected')
+            ->label('Conferma selezionati')
+            ->color('success')
+            ->icon(Heroicon::OutlinedCheck)
+            ->action(function (Collection $records): void {
+                $records->each(fn (Product $record) => $this->applyConfirm($record));
+
+                Notification::make()
+                    ->title("{$records->count()} proposte confermate")
                     ->success()
                     ->send();
             });
@@ -263,25 +290,72 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             ->icon(Heroicon::OutlinedTrash)
             ->requiresConfirmation()
             ->action(function (Product $record): void {
-                $attributes = ['enrichment_status' => 'needs_review'];
-
-                foreach (['brand', 'family', 'subfamily'] as $field) {
-                    if ($record->{"{$field}_source"} !== 'manual') {
-                        $attributes["{$field}_id"] = null;
-                        $attributes["{$field}_source"] = null;
-                    }
-                }
-
-                $attributes['source'] = null;
-                $attributes['confidence'] = null;
-
-                $record->update($attributes);
+                $this->applyDiscard($record);
 
                 Notification::make()
                     ->title('Proposta scartata')
                     ->success()
                     ->send();
             });
+    }
+
+    /**
+     * US-037: bulk counterpart of {@see discardAction()} (AC1, AC3, AC4).
+     * `->requiresConfirmation()` on the bulk action itself shows a single
+     * confirmation modal for the whole selection, not one per record.
+     */
+    private function discardSelectedBulkAction(): BulkAction
+    {
+        return BulkAction::make('discardSelected')
+            ->label('Scarta selezionati')
+            ->color('danger')
+            ->icon(Heroicon::OutlinedTrash)
+            ->requiresConfirmation()
+            ->action(function (Collection $records): void {
+                $records->each(fn (Product $record) => $this->applyDiscard($record));
+
+                Notification::make()
+                    ->title("{$records->count()} proposte scartate")
+                    ->success()
+                    ->send();
+            });
+    }
+
+    /**
+     * AC2: promotes the AI proposal as-is, without touching
+     * brand_id/family_id/subfamily_id or any *_source/source field. Shared
+     * by the single {@see confirmAction()} and the bulk
+     * {@see confirmSelectedBulkAction()} so both variants can never diverge.
+     */
+    private function applyConfirm(Product $record): void
+    {
+        $record->update(['enrichment_status' => 'enriched']);
+    }
+
+    /**
+     * AC4: discards the AI proposal. Only fields that are not already
+     * `*_source = 'manual'` are cleared, so a prior manual correction on one
+     * field (e.g. brand) survives a discard triggered by a bad AI value on
+     * another field (e.g. family). The record explicitly stays
+     * `needs_review` for a future re-classification pass. Shared by the
+     * single {@see discardAction()} and the bulk
+     * {@see discardSelectedBulkAction()} so both variants can never diverge.
+     */
+    private function applyDiscard(Product $record): void
+    {
+        $attributes = ['enrichment_status' => 'needs_review'];
+
+        foreach (['brand', 'family', 'subfamily'] as $field) {
+            if ($record->{"{$field}_source"} !== 'manual') {
+                $attributes["{$field}_id"] = null;
+                $attributes["{$field}_source"] = null;
+            }
+        }
+
+        $attributes['source'] = null;
+        $attributes['confidence'] = null;
+
+        $record->update($attributes);
     }
 
     /**

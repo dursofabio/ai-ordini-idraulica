@@ -1,0 +1,94 @@
+schema: archetipo/plan/v2
+spec_code: US-037
+body: |-
+  ## Soluzione Tecnica
+
+  **Contesto e gap da colmare**
+  `App\Filament\Pages\ReviewQueue` (US-023, esteso da US-035/US-036) espone oggi solo `->recordActions([confirmAction(), correctAction(), discardAction()])`: tre azioni per singola riga, nessuna selezione multipla, nessuna checkbox. Questa spec richiede di poter selezionare più righe e applicare in blocco la stessa logica di Conferma (AC2 di US-023) e Scarta (AC4 di US-023) già usata per il singolo record, con un'unica notifica di riepilogo e senza estendere "Correggi" (che richiede un form per record e resta quindi non applicabile in blocco).
+
+  **Decisioni chiave**
+
+  1. **Estrazione della logica di dominio da `confirmAction()`/`discardAction()` (prerequisito per AC2/AC3)**: il corpo delle due `->action()` esistenti viene spostato in due metodi privati `applyConfirm(Product $record): void` e `applyDiscard(Product $record): void`, identici bit-per-bit alla logica attuale (nessun cambio di comportamento sul singolo record). Le azioni singole richiamano questi metodi; le nuove azioni di gruppo li riusano sullo stesso identico codice, così l'unica fonte di verità per "cosa significa confermare/scartare un record" resta questa, evitando che le due varianti (singola/blocco) divergano nel tempo.
+  2. **Checkbox di selezione multipla via `->toolbarActions()` (AC1)**: Filament abilita automaticamente la colonna di checkbox per riga non appena la tabella definisce almeno una `BulkAction` in `->toolbarActions()` — comportamento nativo documentato, nessuna colonna o stato di selezione da gestire manualmente.
+  3. **`BulkAction::make('confirmSelected')` — "Conferma selezionati" (AC2, AC4)**: itera `$records` (collection Eloquent iniettata da Filament) applicando `applyConfirm()` a ciascun record, poi invia un'unica `Notification` con il conteggio (`$records->count()`) dei record processati. Nessuna `->requiresConfirmation()`, coerente con l'azione singola "Conferma" che non la richiede.
+  4. **`BulkAction::make('discardSelected')` — "Scarta selezionati" (AC3, AC4)**: stessa struttura, ma con `->requiresConfirmation()` sulla `BulkAction` stessa — Filament mostra una singola modale di conferma per l'intera selezione (non una per record), esattamente il comportamento richiesto dall'AC3. Itera `$records` applicando `applyDiscard()` a ciascuno, poi invia un'unica `Notification` col conteggio.
+  5. **"Correggi" resta solo per singolo record (AC5)**: `correctAction()` non viene toccata e non viene aggiunta a `->toolbarActions()`; l'azione richiede un form per record (brand/family/subfamily) che non ha un equivalente sensato in blocco, quindi resta esclusivamente in `->recordActions()`.
+  6. **Nessuna nuova UI/pagina**: si tratta dell'aggiunta di due `BulkAction` sopra una tabella Filament esistente, pattern già nativo del framework (barra azioni di gruppo + checkbox) — non è richiesto alcun mockup.
+
+  **Alternative scartate**: duplicare la logica di update direttamente nelle due nuove `BulkAction` senza refactoring (scartata: introdurrebbe due copie della stessa regola di business con alto rischio di disallineamento futuro tra azione singola e azione di gruppo); usare `chunkSelectedRecords()`/`fetchSelectedRecords(false)` per l'ottimizzazione di memoria su grandi volumi (scartata per ora: la coda di revisione opera su batch tipicamente piccoli/medi per pagina, la stessa scala già gestita dalle azioni singole; si valuterà solo se emergono problemi reali di performance).
+
+  ## Strategia di Test
+
+  - Feature test (`Livewire::test` su `ReviewQueue`, pattern da `docs/10-testing/05-testing-actions.md`): `selectTableRecords()` su più prodotti `needs_review` con campi AI valorizzati, poi `callAction(TestAction::make('confirmSelected')->table()->bulk())` — verifica che ogni record selezionato passi a `enrichment_status = 'enriched'` senza toccare brand_id/family_id/subfamily_id né i `*_source`/`source`, stessa logica di AC2 di US-023 (AC2).
+  - Feature test equivalente per `discardSelected`: verifica che ogni record selezionato abbia i campi AI non-manuali azzerati e resti `needs_review`, con un prodotto tra i selezionati che ha un campo già `*_source = 'manual'` per confermare che viene preservato anche in blocco, stessa logica di AC4 di US-023 (AC3).
+  - Feature test sulla notifica: dopo `confirmSelected`/`discardSelected` su N record selezionati, `assertNotified()` con un messaggio che riporta N come numero di record processati (AC4).
+  - Feature test di non-regressione: `correctAction()` non è esposta come bulk action (assenza tra le toolbar/bulk actions della tabella) e la suite esistente `ReviewQueueTest` (azioni singole Conferma/Correggi/Scarta) continua a passare invariata (AC5).
+
+  ### E2E Test — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già presente, `tests/Browser/ReviewQueueTriageTest.php`, esteso da US-023/US-035/US-036)
+  **Registrazione screenshot:** nuovo blocco di passaggi nello stesso scenario esistente, stesso `ARTIFACT_DIR` (`docs/test-results/US-023/`) perché resta lo stesso flusso di triage della coda di revisione arricchito con la selezione multipla, non uno scenario indipendente — stessa decisione già presa in US-035/US-036.
+
+  | Scenario | Descrizione del flusso utente |
+  |---|---|
+  | Conferma e scarto in blocco (estensione dello scenario esistente) | Dopo aver visto la coda coi filtri/ordinamento già coperti, l'admin seleziona con le checkbox più righe tra i prodotti rimanenti da revisionare, usa il pulsante di gruppo "Conferma selezionati" su un sottoinsieme e verifica che i record confermati spariscano dalla coda con una notifica che riporta il numero processato; su un altro sottoinsieme usa "Scarta selezionati", conferma l'unica modale di richiesta e verifica che i record restino in coda con l'AI proposal azzerata e una notifica di conferma. |
+
+  _Nessuna nuova infrastruttura e2e: si aggiungono passaggi/screenshot allo scenario Dusk già esistente._
+tasks:
+  - id: TASK-01
+    title: Estrarre applyConfirm() e applyDiscard() dalle azioni singole
+    description: 'Spostare il corpo delle ->action() di confirmAction() e discardAction() in due nuovi metodi privati applyConfirm(Product $record): void e applyDiscard(Product $record): void, senza alcun cambio di comportamento sul singolo record; le azioni singole richiamano questi metodi (prerequisito di riuso per AC2/AC3).'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Bulk action "Conferma selezionati"
+    description: Aggiungere ->toolbarActions() a ReviewQueue::table() con BulkAction::make('confirmSelected')->label('Conferma selezionati') che applica applyConfirm() a ciascun record selezionato e invia un'unica Notification col conteggio dei record processati (AC1, AC2, AC4).
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Bulk action "Scarta selezionati"
+    description: Aggiungere a ->toolbarActions() BulkAction::make('discardSelected')->label('Scarta selezionati')->requiresConfirmation() che applica applyDiscard() a ciascun record selezionato (con un'unica modale di conferma per l'intera selezione) e invia un'unica Notification col conteggio dei record processati (AC1, AC3, AC4).
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: 'Test: bulk confirm applica la stessa logica del confirm singolo'
+    description: Feature test che seleziona più prodotti needs_review con campi AI valorizzati, esegue TestAction::make('confirmSelected')->table()->bulk() e verifica che ciascun record passi a enrichment_status='enriched' senza toccare brand_id/family_id/subfamily_id o i *_source/source, più assertNotified() sul conteggio (AC2, AC4).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-04
+  - id: TASK-05
+    title: 'Test: bulk discard applica la stessa logica del discard singolo'
+    description: Feature test che seleziona più prodotti needs_review (incluso uno con un campo già *_source='manual'), esegue TestAction::make('discardSelected')->table()->bulk() e verifica che i campi AI non-manuali siano azzerati per ciascun record selezionato, i campi manuali preservati, il record resti needs_review, più assertNotified() sul conteggio (AC3, AC4).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-05
+  - id: TASK-06
+    title: 'Test di non-regressione: Correggi resta solo per singolo record'
+    description: Feature test che verifica l'assenza di 'correct' tra le bulk/toolbar actions della tabella, più riesecuzione della suite ReviewQueueTest esistente (azioni singole Conferma/Correggi/Scarta) per confermare che restano invariate (AC5).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+      - TASK-03
+    ref: TASK-06
+  - id: TASK-07
+    title: 'Estensione e2e Dusk: selezione multipla e azioni di gruppo'
+    description: Estendere tests/Browser/ReviewQueueTriageTest.php con un nuovo blocco che seleziona più righe tramite checkbox, usa 'Conferma selezionati' su un sottoinsieme e 'Scarta selezionati' (con la sua unica modale di conferma) su un altro, con screenshot nello stesso ARTIFACT_DIR docs/test-results/US-023/ (AC1, AC2, AC3, AC4).
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-03
+    ref: TASK-07

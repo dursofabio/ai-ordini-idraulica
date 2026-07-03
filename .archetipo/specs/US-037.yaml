@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-037
+title: Conferma e scarto in blocco nella coda di revisione
+epic:
+  code: EP-007
+  title: Backoffice Filament
+priority: MEDIUM
+points: 2
+status: REVIEW
+body: |-
+  #### US-037: Conferma e scarto in blocco nella coda di revisione
+
+  **Epica:** EP-007 | **Priorità:** MEDIUM | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** US-023
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio selezionare più articoli nella coda di revisione e confermarli o scartarli in blocco,
+  così da processare rapidamente grandi quantità di proposte a basso rischio senza agire riga per riga.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, selezionando più righe nella coda "Da revisionare" e usando l'azione di gruppo "Conferma selezionati" tutti i record selezionati vengono promossi con la stessa logica dell'azione Conferma singola; l'azione di gruppo "Scarta selezionati" applica a ogni record selezionato la stessa logica dell'azione Scarta singola con un'unica richiesta di conferma.
+
+  **Criteri di Accettazione**
+  - [ ] La tabella permette la selezione multipla delle righe tramite checkbox
+  - [ ] L'azione di gruppo "Conferma selezionati" applica a ciascun record selezionato la stessa logica dell'azione Conferma singola (AC2 di US-023)
+  - [ ] L'azione di gruppo "Scarta selezionati" applica a ciascun record selezionato la stessa logica dell'azione Scarta singola (AC4 di US-023), con un'unica richiesta di conferma per l'intera selezione
+  - [ ] Al termine di un'azione di gruppo viene mostrata una notifica con il numero di record processati
+  - [ ] L'azione "Correggi" resta disponibile solo come azione per singolo record
