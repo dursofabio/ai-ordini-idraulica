@@ -1,0 +1,95 @@
+schema: archetipo/plan/v2
+spec_code: US-039
+body: |
+  ## Soluzione Tecnica
+
+  L'approccio estende la pipeline di classificazione AI (Step B) già esistente — `ClassificationPromptBuilder` → `AiClient` → `ClassificationResponseValidator` → `EnrichmentApplier`, orchestrata da `ClassifyProductsBatchJob` — senza introdurre nuovi componenti architetturali: gli attributi tecnici diventano un secondo canale di proposta AI, parallelo a marca/famiglia/sottofamiglia, che riusa le stesse soglie di confidenza (60/85) già definite in `EnrichmentApplier` (US-015) e la stessa guardia anti-overwrite già presente in `AttributeResolver` (US-0xx, Step A regex).
+
+  - **Migrazione** `product_attributes`: aggiunta colonna `confidence` (`unsignedTinyInteger`, nullable — resta `null` per le righe `source='regex'` già esistenti, popolata solo per `source='ai'`). Aggiornati `ProductAttribute` (`Fillable` + cast `confidence => integer`) e `ProductAttributeFactory`.
+  - **`ClassifiedProduct` (DTO readonly)** guadagna un nuovo campo `attributes` — `array<string, array{value_num?: float, value_text?: string, unit?: string, confidence: int}>`, chiave libera non vincolata all'elenco regex — così l'intero risultato di classificazione (taxonomy + attributi) viaggia come un'unica unità attraverso validator → cache → applier, coerente con `ValidatedClassification`/`EnrichmentCache` che già trattano `ClassifiedProduct` come opaco.
+  - **`ClassificationPromptBuilder`**: `ClassifyProductsBatchJob::handle()` carica i prodotti con `->with('attributes')` (evita N+1); per ciascun prodotto il prompt elenca gli attributi già noti (chiave, valore, unità, origine regex/ai) come contesto, e le istruzioni chiedono di validarli o proporne di nuovi a chiave libera, ciascuno con `confidence` (0-100) — lo schema JSON di risposta guadagna un array `attributes` per elemento di `results`, analogo nella forma a `product_attributes` (`key`, `value_num`/`value_text`, `unit`, `confidence`).
+  - **`ClassificationResponseValidator`**: parsing tollerante di `attributes` per ciascun risultato — una voce priva di `key` non vuota, `confidence` numerica 0-100, o di almeno uno tra `value_num`/`value_text`, viene scartata silenziosamente (senza invalidare l'intero risultato del prodotto, coerente con la filosofia "i valori che non si risolvono vengono ignorati" già applicata da `EnrichmentApplier` per marca/famiglia); marca/famiglia/sottofamiglia restano validate come oggi.
+  - **`EnrichmentApplier::apply()`**: nuova responsabilità di scrittura attributi, eseguita per ogni `ClassifiedProduct::attributes` indipendentemente dal ramo di confidenza complessivo del prodotto (anche quando la confidenza di marca/famiglia è sotto soglia bassa, un singolo attributo può comunque avere una sua confidenza alta e venire scritto): per ciascun attributo, se la riga `product_attributes` esistente ha `source` diverso da `null`/`regex`/`ai` (es. `manual`) non viene mai toccata (stessa guardia di `AttributeResolver::writeAttribute`); altrimenti — confidenza < 60: nessuna scrittura; 60-84: `updateOrCreate(['product_id','key'], ['value_num'/'value_text','unit','source'=>'ai','confidence'])` e il prodotto è **forzato** a `needs_review` anche se marca/famiglia erano ad alta confidenza; >= 85: stessa scrittura, senza forzare nulla (lo stato risultante segue comunque la confidenza complessiva già calcolata per marca/famiglia).
+  - **`EnrichmentCache`** non richiede modifiche: serializza l'intero `ClassifiedProduct`, quindi gli attributi proposti vengono ereditati automaticamente da un hit di cache o da un duplicato con la stessa `description_raw` (coerente con US-016 AC4).
+
+  ## Strategia di Test
+
+  - Test unitario su `ClassificationPromptBuilder`: un prodotto con un attributo `source='regex'` già presente produce un prompt che include quell'attributo come contesto e le istruzioni/schema di risposta richiedono il campo `attributes` con `confidence` per elemento.
+  - Test unitario su `ClassificationResponseValidator`: una risposta con un attributo valido (chiave nuova, `value_num`, `confidence`) viene attaccata al `ClassifiedProduct`; una risposta con una voce attributo malformata (confidenza mancante/fuori range, nessun valore, chiave vuota) scarta solo quella voce senza lanciare `InvalidClassificationResponseException` e senza alterare la validazione di marca/famiglia/sottofamiglia.
+  - Test feature su `EnrichmentApplierTest`: (1) attributo a chiave nuova scritto con confidenza >= 85 → riga `product_attributes` creata con `source='ai'`; (2) attributo `source='regex'` esistente corretto dall'AI con confidenza >= 85 → riga aggiornata a `source='ai'` con il nuovo valore/confidenza; (3) attributo proposto con confidenza < 60 → nessuna riga scritta/modificata; (4) attributo con confidenza 60-84 → riga scritta ma `enrichment_status` forzato a `needs_review` anche con marca/famiglia ad alta confidenza; (5) attributo con `source='manual'` esistente → mai sovrascritto dalla proposta AI, indipendentemente dalla confidenza.
+  - Test feature end-to-end su `ClassifyProductsBatchJobTest` (o file dedicato): risposta AI fake contenente `attributes` per un batch di prodotti pending → verifica che `product_attributes` venga popolata correttamente lungo l'intero flusso del job (incluso il pass-through di un hit di `EnrichmentCache` su una descrizione già classificata in precedenza).
+
+  Spec puramente backend (nessuna nuova UI, nessuna pagina Filament coinvolta): non generati mockup né test e2e browser.
+tasks:
+  - id: TASK-01
+    title: Migrazione confidence su product_attributes e aggiornamento model/factory
+    description: Nuova migrazione che aggiunge la colonna confidence (unsignedTinyInteger, nullable) a product_attributes; aggiornare App\Models\ProductAttribute (Fillable con 'confidence', cast 'confidence' => 'integer') e ProductAttributeFactory per supportare il nuovo campo.
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Estendere ClassifiedProduct con le proposte di attributi tecnici
+    description: 'Aggiungere il campo readonly ''attributes'' (array<string, array{value_num?: float, value_text?: string, unit?: string, confidence: int}>) al costruttore di App\Services\Ai\ClassifiedProduct, aggiornando i punti che costruiscono l''oggetto (es. ClassifyProductsBatchJob::rekeyed()).'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Includere gli attributi noti nel prompt e nello schema di risposta AI
+    description: In ClassifyProductsBatchJob::handle() eager-load della relazione 'attributes' sui prodotti pending; ClassificationPromptBuilder elenca per ciascun prodotto gli attributi già noti (chiave/valore/unità/origine) come contesto e aggiorna istruzioni e schema JSON di risposta per includere un array 'attributes' (chiave libera, value_num/value_text, unit, confidence) per ciascun risultato.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-03
+  - id: TASK-04
+    title: Test del prompt builder per il contesto/schema attributi
+    description: 'Test unitario (es. tests/Unit/Services/Ai/ClassificationPromptBuilderTest.php o equivalente esistente) che verifica: un attributo regex noto sul prodotto compare nel prompt come contesto; il prompt istruisce sul campo attributes con confidence nello schema di risposta.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Parsing tollerante degli attributi proposti nel validator
+    description: Estendere ClassificationResponseValidator::toClassifiedProduct() per leggere l'array 'attributes' di ciascun risultato, scartando silenziosamente le voci malformate (key mancante/vuota, confidence non numerica o fuori 0-100, nessun value_num/value_text) senza sollevare InvalidClassificationResponseException per l'intero risultato; le voci valide popolano ClassifiedProduct::attributes.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-05
+  - id: TASK-06
+    title: Test del validator per il parsing degli attributi
+    description: 'Estendere tests/Feature/ClassificationResponseValidatorTest.php (o equivalente): un attributo valido viene attaccato al ClassifiedProduct risultante; una voce malformata (confidence mancante/fuori range, nessun valore, key vuota) viene scartata senza eccezioni; la validazione di marca/famiglia/sottofamiglia resta invariata.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: Scrittura degli attributi proposti in EnrichmentApplier con soglie di confidenza
+    description: Nuovo metodo privato in EnrichmentApplier che, per ogni voce di ClassifiedProduct::attributes, applica la guardia sul source esistente (mai sovrascrivere un source diverso da null/regex/ai), non scrive sotto confidenza 60, scrive con source='ai' e confidence tra 60 e 84 forzando enrichment_status a needs_review, scrive senza forzature a confidenza >= 85; invocato da apply() indipendentemente dal ramo di confidenza complessivo del prodotto.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-07
+  - id: TASK-08
+    title: Test di EnrichmentApplier per le soglie e la guardia sugli attributi
+    description: 'Estendere tests/Feature/EnrichmentApplierTest.php con: attributo a chiave nuova scritto a confidenza alta (>=85); attributo source=''regex'' esistente corretto dall''AI a confidenza alta; attributo a confidenza bassa (<60) non scritto; attributo a confidenza media (60-84) scritto ma enrichment_status forzato a needs_review anche con marca/famiglia alte; attributo source=''manual'' mai sovrascritto dalla proposta AI.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-07
+    ref: TASK-08
+  - id: TASK-09
+    title: Test end-to-end del job di classificazione batch con attributi
+    description: 'Estendere tests/Feature/ClassifyProductsBatchJobTest.php (o nuovo file dedicato) con uno scenario in cui la risposta AI fake include ''attributes'' per i prodotti del batch: verificare che product_attributes venga popolata correttamente lungo l''intero flusso (incluso il pass-through degli attributi da un hit di EnrichmentCache).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+      - TASK-05
+      - TASK-07
+    ref: TASK-09

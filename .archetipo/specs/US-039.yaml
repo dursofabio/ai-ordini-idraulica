@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-039
+title: Includere gli attributi tecnici nella classificazione AI, con proposta di attributi dinamici e relativa confidenza
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 5
+status: REVIEW
+body: |-
+  #### US-039: Includere gli attributi tecnici nella classificazione AI, con proposta di attributi dinamici e relativa confidenza
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come amministratore del catalogo,
+  voglio che la classificazione AI (Step B) riceva in input anche gli attributi tecnici già estratti in modo deterministico e possa validarli o proporne di nuovi anche fuori dall'elenco fisso oggi gestito da regex, con un valore di confidenza per ciascuno,
+  così da coprire più prodotti in automatico e ridurre il numero di articoli che richiedono un intervento manuale.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, un batch di classificazione AI su prodotti pending include nella risposta anche eventuali attributi tecnici — sia quelli già proposti dal regex (validati o corretti dall'AI) sia nuovi attributi a chiave libera non presenti nell'elenco regex attuale — ciascuno con una propria confidenza salvata su product_attributes; un attributo ad alta confidenza viene scritto in automatico, uno a bassa confidenza lascia il prodotto in needs_review esattamente come già avviene oggi per marca/famiglia.
+
+  **Criteri di Accettazione**
+  - [ ] `product_attributes` ha una colonna `confidence` (0-100, nullable per le righe regex esistenti) valorizzata per ogni riga scritta con `source='ai'`
+  - [ ] La richiesta AI del batch di classificazione include gli attributi tecnici già noti sul prodotto come contesto, e la risposta restituisce attributi proposti a chiave libera (non vincolata all'elenco regex attuale) con valore e confidenza
+  - [ ] Un attributo proposto con confidenza >= soglia alta (85, stessa soglia usata per marca/famiglia) viene scritto automaticamente; sotto la soglia bassa (60) non viene scritto; nel mezzo viene scritto ma il prodotto resta `needs_review`
+  - [ ] Un attributo già presente con `source` diverso da `ai`/`regex` (es. `manual`) non viene mai sovrascritto dalla proposta AI, coerente con la guardia già esistente in `AttributeResolver`
+  - [ ] Test automatico copre: attributo a chiave nuova scritto con confidenza alta, attributo regex corretto dall'AI, attributo proposto con confidenza bassa che non viene scritto
