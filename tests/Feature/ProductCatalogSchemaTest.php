@@ -19,6 +19,8 @@ use Tests\TestCase;
  * US-047 drops `product_bases` and the `product_base_id`/`grouping_key`
  * columns on `products` entirely (search now operates flat on `products`).
  *
+ * US-050 adds the nullable `descrizione_estesa` markdown column (AC1).
+ *
  * Runs against in-memory SQLite via RequiresDatabase, matching US-003 pattern.
  */
 class ProductCatalogSchemaTest extends TestCase
@@ -40,8 +42,28 @@ class ProductCatalogSchemaTest extends TestCase
             'costo', 'giacenza', 'is_active', 'enrichment_status',
             'brand_id', 'family_id', 'subfamily_id',
             'brand_source', 'family_source', 'subfamily_source', 'source',
-            'confidence', 'product_type', 'search_vector', 'created_at', 'updated_at',
+            'confidence', 'product_type', 'descrizione_estesa', 'search_vector', 'created_at', 'updated_at',
         ]));
+    }
+
+    public function test_descrizione_estesa_is_nullable_and_mass_assignable(): void
+    {
+        $markdown = "# Scheda tecnica\n\nDescrizione **ricca** del prodotto.";
+
+        $productWithDescription = Product::create([
+            'codice_articolo' => 'ART-DESC-01',
+            'description_raw' => 'Caldaia a condensazione',
+            'descrizione_estesa' => $markdown,
+        ]);
+
+        $this->assertSame($markdown, $productWithDescription->fresh()->descrizione_estesa);
+
+        $productWithoutDescription = Product::create([
+            'codice_articolo' => 'ART-DESC-02',
+            'description_raw' => 'Scaldabagno elettrico',
+        ]);
+
+        $this->assertNull($productWithoutDescription->fresh()->descrizione_estesa);
     }
 
     public function test_products_table_no_longer_has_grouping_columns(): void

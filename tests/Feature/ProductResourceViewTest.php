@@ -43,6 +43,10 @@ use Tests\TestCase;
  * The technical attributes, enrichment logs, and enrichment proposals lists
  * are each rendered by a dedicated {@see RelationManager}
  * underneath the infolist, rather than being embedded in it.
+ *
+ * US-050 adds the 'Descrizione estesa' section rendering the markdown field
+ * (AC2), with a placeholder and no errors when the field is empty (AC4);
+ * updating only that field must not re-dispatch the embedding job.
  */
 class ProductResourceViewTest extends TestCase
 {
@@ -490,5 +494,43 @@ class ProductResourceViewTest extends TestCase
             GenerateProductEmbeddingJob::class,
             static fn (GenerateProductEmbeddingJob $job): bool => $job->productId === $product->id,
         );
+    }
+
+    public function test_view_page_renders_descrizione_estesa_as_markdown(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'descrizione_estesa' => "# Scheda tecnica\n\nDescrizione **ricca** del prodotto.",
+        ]);
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertOk()
+            ->assertSee('Descrizione estesa')
+            ->assertSee('<strong>ricca</strong>', escape: false);
+    }
+
+    public function test_view_page_shows_placeholder_when_descrizione_estesa_is_empty(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create(['descrizione_estesa' => null]);
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertOk()
+            ->assertSchemaStateSet(['descrizione_estesa' => null]);
+    }
+
+    public function test_updating_descrizione_estesa_does_not_dispatch_embedding_regeneration(): void
+    {
+        $product = Product::factory()->create();
+
+        Queue::fake();
+
+        $product->update(['descrizione_estesa' => 'Testo descrittivo aggiornato']);
+
+        Queue::assertNotPushed(GenerateProductEmbeddingJob::class);
     }
 }

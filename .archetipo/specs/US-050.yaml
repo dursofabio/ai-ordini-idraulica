@@ -6,7 +6,7 @@ epic:
   title: Arricchimento AI
 priority: HIGH
 points: 2
-status: PLANNED
+status: REVIEW
 scope: MVP
 body: |-
   #### US-050: Campo descrizione estesa in markdown sul prodotto

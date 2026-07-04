@@ -27,6 +27,9 @@ use Tests\TestCase;
  *  - AC5: manually-set brand/family are visually distinct in the table
  *    (badge color/icon) and the edit form helper text reflects the field's
  *    origin (manual vs AI-assigned).
+ *
+ * US-050 adds the `descrizione_estesa` markdown editor to the edit page
+ * (AC3), saved as-is and left null when empty (AC4).
  */
 class ProductResourceTest extends TestCase
 {
@@ -231,5 +234,37 @@ class ProductResourceTest extends TestCase
 
         Livewire::test(EditProduct::class, ['record' => $aiProduct->getRouteKey()])
             ->assertSee('Origine: ai');
+    }
+
+    public function test_editing_descrizione_estesa_saves_the_markdown_content(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+
+        $this->actingAs($admin);
+
+        $markdown = "# Scheda tecnica\n\nDescrizione **ricca** del prodotto.";
+
+        Livewire::test(EditProduct::class, ['record' => $product->getRouteKey()])
+            ->fillForm(['descrizione_estesa' => $markdown])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame($markdown, $product->refresh()->descrizione_estesa);
+    }
+
+    public function test_saving_with_empty_descrizione_estesa_keeps_it_empty_without_errors(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['descrizione_estesa' => null]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(EditProduct::class, ['record' => $product->getRouteKey()])
+            ->fillForm(['descrizione_estesa' => null])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $this->assertNull($product->refresh()->descrizione_estesa);
     }
 }

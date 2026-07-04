@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
     'description_raw',
     'description_clean',
     'product_type',
+    'descrizione_estesa',
     'descrizione_marca',
     'marca_codice',
     'fam_codice',

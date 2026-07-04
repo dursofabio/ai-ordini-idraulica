@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Products\Schemas;
 
 use App\Models\Product;
 use App\Models\Subfamily;
+use Filament\Forms\Components\MarkdownEditor;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -40,6 +41,16 @@ class ProductForm
                         ->pluck('name', 'id'))
                     ->searchable()
                     ->helperText(fn (?Product $record): string => $record?->subfamily_source === 'manual' ? '🔒 Impostato manualmente' : 'Origine: '.($record?->subfamily_source ?? '—')),
+                MarkdownEditor::make('descrizione_estesa')
+                    ->label('Descrizione estesa')
+                    ->toolbarButtons([
+                        ['bold', 'italic', 'strike', 'link'],
+                        ['heading'],
+                        ['blockquote', 'codeBlock', 'bulletList', 'orderedList'],
+                        ['table'],
+                        ['undo', 'redo'],
+                    ])
+                    ->columnSpanFull(),
             ]);
     }
 }

@@ -34,40 +34,46 @@ tasks:
     title: 'Migrazione e modello: campo descrizione_estesa'
     description: 'Creare la migrazione add_descrizione_estesa_to_products_table (colonna text nullable, senza default né indici) e aggiungere ''descrizione_estesa'' all''attributo #[Fillable] del modello Product.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Test di schema e fillable
     description: 'Estendere tests/Feature/ProductCatalogSchemaTest.php: la colonna descrizione_estesa esiste ed è nullable, e il campo è mass-assignable sul modello Product.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-02
   - id: TASK-03
     title: Editor markdown nella pagina di edit
     description: Aggiungere a ProductForm MarkdownEditor::make('descrizione_estesa') con label 'Descrizione estesa', columnSpanFull e toolbarButtons personalizzati senza attachFiles (upload immagini fuori scope).
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-03
   - id: TASK-04
     title: Sezione descrizione estesa nella pagina di dettaglio
     description: Aggiungere a ProductInfolist una Section 'Descrizione estesa' dopo la sezione 'Prodotto', con TextEntry::make('descrizione_estesa')->hiddenLabel()->markdown()->placeholder('—')->columnSpanFull().
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-04
   - id: TASK-05
     title: Test feature su form e view page
     description: Estendere ProductResourceTest (salvataggio del campo dalla edit page, campo vuoto senza errori) e ProductResourceViewTest (markdown renderizzato come HTML, placeholder su campo vuoto, nessun dispatch di GenerateProductEmbeddingJob con Queue::fake all'update del solo campo).
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Scenario Dusk end-to-end
     description: 'Nuovo tests/Browser/ProductExtendedDescriptionTest.php: login, edit del prodotto con markdown formattato, salvataggio, verifica del rendering nella pagina di dettaglio; secondo scenario su prodotto con campo vuoto. Screenshot per-step in docs/test-results/US-050/.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-05
+    ref: TASK-06

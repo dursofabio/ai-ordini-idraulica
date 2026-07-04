@@ -43,6 +43,14 @@ class ProductInfolist
                             ->icon(fn (Product $record): ?Heroicon => $record->subfamily_source === 'manual' ? Heroicon::OutlinedLockClosed : null),
                     ])
                     ->columns(2),
+                Section::make('Descrizione estesa')
+                    ->schema([
+                        TextEntry::make('descrizione_estesa')
+                            ->hiddenLabel()
+                            ->markdown()
+                            ->placeholder('—')
+                            ->columnSpanFull(),
+                    ]),
                 Section::make('Dati da file')
                     ->schema([
                         TextEntry::make('descrizione_marca')
