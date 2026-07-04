@@ -53,6 +53,22 @@ class OpenRouterClientTest extends TestCase
         });
     }
 
+    public function test_messages_disables_reasoning_so_thinking_models_dont_exhaust_max_tokens_on_it(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'choices' => [['message' => ['content' => '{}']]],
+                'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1],
+            ]),
+        ]);
+
+        (new OpenRouterClient)->messages(['model' => 'openrouter-test-model', 'messages' => []]);
+
+        Http::assertSent(function ($request): bool {
+            return $request['reasoning'] === ['enabled' => false];
+        });
+    }
+
     public function test_messages_parses_content_and_token_usage(): void
     {
         Http::fake([

@@ -17,11 +17,22 @@ class OpenRouterClient implements AiClient
      * Send a request to the chat completions API and return the parsed
      * response.
      *
+     * Reasoning is explicitly disabled: several free-tier "thinking" models
+     * routed through OpenRouter (e.g. nvidia/nemotron-3-nano) spend their
+     * entire `max_tokens` budget on the hidden chain-of-thought before ever
+     * emitting the requested JSON, so the response gets cut off
+     * (`finish_reason: "length"`) with no JSON in `message.content` at all —
+     * observed on real classification/query-parse prompts, whose token
+     * budgets are sized for a direct answer, not a reasoning trace.
+     *
      * @param  array<string, mixed>  $payload
      */
     public function messages(array $payload): ClaudeResponse
     {
-        $response = $this->pendingRequest()->post('/chat/completions', $payload);
+        $response = $this->pendingRequest()->post('/chat/completions', [
+            ...$payload,
+            'reasoning' => ['enabled' => false],
+        ]);
 
         return ClaudeResponse::fromOpenRouterResponse($response);
     }

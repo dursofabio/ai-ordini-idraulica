@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Exceptions\InvalidClassificationResponseException;
 use App\Models\Brand;
 use App\Models\Family;
+use App\Models\Subfamily;
 use App\Services\Ai\ClassificationResponseValidator;
 use App\Services\Ai\ClaudeResponse;
 use App\Services\Ai\TaxonomyCatalog;
@@ -20,7 +21,11 @@ use Tests\TestCase;
  *  - Syntactically invalid JSON is rejected.
  *  - A structure missing the "results" key, or missing a result for one of
  *    the requested products, is rejected.
- *  - A brand/family/subfamily outside the existing taxonomy is rejected.
+ *  - A brand/family/subfamily outside the existing taxonomy is dropped to
+ *    null for that product only (as if the model had answered null, per the
+ *    prompt's own "se non sei sicuro, lascia il campo a null" rule), never
+ *    failing the batch: one invented subfamily must not send the other
+ *    products of the batch to needs_review.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
@@ -127,32 +132,40 @@ class ClassificationResponseValidatorTest extends TestCase
         (new ClassificationResponseValidator)->validate($response, collect(['ABC-001', 'DEF-002']), new TaxonomyCatalog);
     }
 
-    public function test_rejects_brand_outside_the_closed_taxonomy(): void
+    public function test_drops_an_invented_brand_keeping_the_rest_of_the_result(): void
     {
         Brand::factory()->create(['name' => 'Grohe']);
+        Family::factory()->create(['name' => 'Rubinetteria']);
 
         $response = $this->claudeResponse([
             'results' => [
                 [
                     'codice_articolo' => 'ABC-001',
                     'brand' => 'MarcaInventata',
-                    'family' => null,
+                    'family' => 'Rubinetteria',
                     'subfamily' => null,
-                    'product_type' => null,
+                    'product_type' => 'Miscelatore',
                     'enriched_description' => 'x',
-                    'confidence' => 50,
+                    'confidence' => 88,
                 ],
             ],
         ]);
 
-        $this->expectException(InvalidClassificationResponseException::class);
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
 
-        (new ClassificationResponseValidator)->validate($response, collect(['ABC-001']), new TaxonomyCatalog);
+        $this->assertNotNull($result);
+        $this->assertNull($result->brand);
+        $this->assertSame('Rubinetteria', $result->family);
+        $this->assertSame('Miscelatore', $result->productType);
+        $this->assertSame(88, $result->confidence);
     }
 
-    public function test_rejects_family_outside_the_closed_taxonomy(): void
+    public function test_drops_an_invented_family_and_its_now_unscopable_subfamily_falls_back_to_a_global_check(): void
     {
         Family::factory()->create(['name' => 'Rubinetteria']);
+        Subfamily::factory()->create(['name' => 'Miscelatori', 'family_id' => Family::query()->first()->id]);
 
         $response = $this->claudeResponse([
             'results' => [
@@ -160,17 +173,66 @@ class ClassificationResponseValidatorTest extends TestCase
                     'codice_articolo' => 'ABC-001',
                     'brand' => null,
                     'family' => 'FamigliaInventata',
-                    'subfamily' => null,
+                    'subfamily' => 'Miscelatori',
                     'product_type' => null,
                     'enriched_description' => 'x',
-                    'confidence' => 50,
+                    'confidence' => 70,
                 ],
             ],
         ]);
 
-        $this->expectException(InvalidClassificationResponseException::class);
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
 
-        (new ClassificationResponseValidator)->validate($response, collect(['ABC-001']), new TaxonomyCatalog);
+        $this->assertNotNull($result);
+        $this->assertNull($result->family);
+        // The subfamily exists in the taxonomy, so once the invented family
+        // is dropped it survives the (now global) membership check.
+        $this->assertSame('Miscelatori', $result->subfamily);
+    }
+
+    public function test_one_invented_subfamily_does_not_reject_the_other_products_of_the_batch(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => 'Grohe',
+                    'family' => null,
+                    'subfamily' => 'CIRCOLATORI',
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                ],
+                [
+                    'codice_articolo' => 'DEF-002',
+                    'brand' => 'Grohe',
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => 'Miscelatore',
+                    'enriched_description' => 'y',
+                    'confidence' => 92,
+                ],
+            ],
+        ]);
+
+        $validated = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001', 'DEF-002']), new TaxonomyCatalog);
+
+        $offender = $validated->for('ABC-001');
+        $innocent = $validated->for('DEF-002');
+
+        $this->assertNotNull($offender);
+        $this->assertNull($offender->subfamily);
+        $this->assertSame('Grohe', $offender->brand);
+
+        $this->assertNotNull($innocent);
+        $this->assertSame('Grohe', $innocent->brand);
+        $this->assertSame('Miscelatore', $innocent->productType);
+        $this->assertSame(92, $innocent->confidence);
     }
 
     public function test_attaches_a_valid_free_key_attribute_to_the_classified_product(): void

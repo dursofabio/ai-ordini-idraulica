@@ -28,11 +28,20 @@ use Illuminate\Support\Collection;
 class ClassificationPromptBuilder
 {
     /**
-     * Maximum tokens requested for a batch classification response. Sized
-     * generously for batches up to 50 products, each producing a compact
-     * JSON object.
+     * Output token budget requested per product in the batch. Measured on a
+     * real run: a verbose result (rich enriched_description plus several
+     * attributes) costs ~210 output tokens, so 400 leaves ample headroom. A
+     * fixed batch-wide budget (previously 8192) truncated the JSON mid-array
+     * on 40-product batches with verbose descriptions (`finish_reason:
+     * "length"`), failing the whole batch as invalid JSON.
      */
-    private const MAX_TOKENS = 8192;
+    private const MAX_TOKENS_PER_PRODUCT = 400;
+
+    /**
+     * Floor for the requested output budget, so a single-product escalation
+     * call still has room for an unusually long result.
+     */
+    private const MIN_MAX_TOKENS = 1024;
 
     /**
      * Build the Messages API payload for classifying the given batch of
@@ -45,7 +54,7 @@ class ClassificationPromptBuilder
     {
         return [
             'model' => $model,
-            'max_tokens' => self::MAX_TOKENS,
+            'max_tokens' => max(self::MIN_MAX_TOKENS, $products->count() * self::MAX_TOKENS_PER_PRODUCT),
             'messages' => [
                 [
                     'role' => 'user',

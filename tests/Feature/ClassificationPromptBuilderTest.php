@@ -50,6 +50,22 @@ class ClassificationPromptBuilderTest extends TestCase
         }
     }
 
+    public function test_max_tokens_scales_with_batch_size_so_a_full_batch_response_is_never_truncated(): void
+    {
+        $builder = new ClassificationPromptBuilder;
+        $taxonomy = new TaxonomyCatalog;
+        $vocabulary = new AttributeVocabulary;
+
+        // A verbose real-world result costs ~210 output tokens per product:
+        // a 40-product batch must get well more than 40 x 210 = 8400.
+        $fullBatch = $builder->build(Product::factory()->count(40)->create(), $taxonomy, $vocabulary, 'm');
+        $this->assertGreaterThanOrEqual(40 * 300, $fullBatch['max_tokens']);
+
+        // A single-product escalation call still gets a workable floor.
+        $single = $builder->build(Product::factory()->count(1)->create(), $taxonomy, $vocabulary, 'm');
+        $this->assertGreaterThanOrEqual(1024, $single['max_tokens']);
+    }
+
     public function test_payload_includes_existing_taxonomy_brands_and_families(): void
     {
         Brand::factory()->create(['name' => 'Grohe']);

@@ -4,17 +4,28 @@ namespace App\Services\Ai;
 
 use App\Exceptions\InvalidClassificationResponseException;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Parses and validates a batch classification response from the Anthropic
  * Messages API against the schema expected by
  * {@see ClassificationPromptBuilder} and the closed catalog taxonomy.
  *
- * A response is only accepted when it is syntactically valid JSON, has a
- * `results` array with exactly one entry per requested codice_articolo, and
- * every non-null brand/family/subfamily value belongs to the existing
- * taxonomy. Anything else raises {@see InvalidClassificationResponseException}
- * so the caller can retry or fall back to `needs_review`.
+ * A response is only accepted when it is syntactically valid JSON and has a
+ * `results` array with exactly one entry per requested codice_articolo;
+ * anything else raises {@see InvalidClassificationResponseException} so the
+ * caller can retry or fall back to `needs_review` — a structural failure
+ * means the whole response is untrustworthy.
+ *
+ * A brand/family/subfamily value outside the closed taxonomy, however, is a
+ * per-product hallucination, not a structural failure: it is dropped to
+ * `null` (with a warning log) exactly as if the model had followed the
+ * prompt's own "se non sei sicuro, lascia il campo a null" rule, and the
+ * rest of that product's result — and of the batch — survives. Failing the
+ * whole batch here used to send up to 50 innocent products to
+ * `needs_review` because of a single invented subfamily, which free-tier
+ * models produce routinely. Malformed attribute entries get the same
+ * per-entry leniency (see {@see self::parseAttributes()}).
  */
 class ClassificationResponseValidator
 {
@@ -66,27 +77,29 @@ class ClassificationResponseValidator
             throw new InvalidClassificationResponseException('Un elemento di "results" non ha un codice_articolo valido.');
         }
 
-        $brand = $this->nullableString($item['brand'] ?? null);
-        $family = $this->nullableString($item['family'] ?? null);
-        $subfamily = $this->nullableString($item['subfamily'] ?? null);
+        $brand = $this->taxonomyValueOrNull(
+            $this->nullableString($item['brand'] ?? null),
+            fn (string $value): bool => $taxonomy->isValidBrand($value),
+            'marca',
+            $codiceArticolo,
+        );
 
-        if ($brand !== null && ! $taxonomy->isValidBrand($brand)) {
-            throw new InvalidClassificationResponseException(
-                "La marca «{$brand}» per il codice {$codiceArticolo} non appartiene alla tassonomia esistente."
-            );
-        }
+        $family = $this->taxonomyValueOrNull(
+            $this->nullableString($item['family'] ?? null),
+            fn (string $value): bool => $taxonomy->isValidFamily($value),
+            'famiglia',
+            $codiceArticolo,
+        );
 
-        if ($family !== null && ! $taxonomy->isValidFamily($family)) {
-            throw new InvalidClassificationResponseException(
-                "La famiglia «{$family}» per il codice {$codiceArticolo} non appartiene alla tassonomia esistente."
-            );
-        }
-
-        if ($subfamily !== null && ! $taxonomy->isValidSubfamily($subfamily, $family)) {
-            throw new InvalidClassificationResponseException(
-                "La sottofamiglia «{$subfamily}» per il codice {$codiceArticolo} non appartiene alla tassonomia esistente."
-            );
-        }
+        // Scoped to the *surviving* family: if the family was just dropped as
+        // invented, the subfamily is checked globally, mirroring how
+        // EnrichmentApplier will later resolve it via findSubfamily().
+        $subfamily = $this->taxonomyValueOrNull(
+            $this->nullableString($item['subfamily'] ?? null),
+            fn (string $value): bool => $taxonomy->isValidSubfamily($value, $family),
+            'sottofamiglia',
+            $codiceArticolo,
+        );
 
         $confidence = $item['confidence'] ?? null;
 
@@ -100,6 +113,29 @@ class ClassificationResponseValidator
             confidence: is_numeric($confidence) ? (int) $confidence : null,
             attributes: $this->parseAttributes($item),
         );
+    }
+
+    /**
+     * Returns `$value` when it belongs to the closed taxonomy according to
+     * `$isValid`, or `null` when the model invented it — logging the dropped
+     * value so hallucination frequency stays observable per model. `null` in,
+     * `null` out.
+     *
+     * @param  callable(string): bool  $isValid
+     */
+    private function taxonomyValueOrNull(?string $value, callable $isValid, string $fieldLabel, string $codiceArticolo): ?string
+    {
+        if ($value === null || $isValid($value)) {
+            return $value;
+        }
+
+        Log::warning('Valore fuori tassonomia scartato dalla classificazione AI.', [
+            'field' => $fieldLabel,
+            'value' => $value,
+            'codice_articolo' => $codiceArticolo,
+        ]);
+
+        return null;
     }
 
     /**
