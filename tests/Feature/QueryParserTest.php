@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Services\Search\QueryParser;
 use Database\Seeders\AttributeDefinitionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -93,6 +94,30 @@ class QueryParserTest extends TestCase
 
         $this->assertSame('caldaia a condensazione', $parsed->recognizedText);
         $this->assertSame([], $parsed->appliedFilters);
+    }
+
+    public function test_incompatible_cache_entry_falls_back_to_whole_text_and_self_heals(): void
+    {
+        $query = 'caldaia a condensazione';
+        $cacheKey = 'search:query-parse:'.md5($query);
+
+        // Simulates a stale cache entry left over from a prior deploy whose
+        // ParsedSearchQuery shape/class no longer matches (e.g. unserializes
+        // to __PHP_Incomplete_Class in real Redis/DB stores).
+        Cache::put($cacheKey, 'not-a-parsed-search-query', 3600);
+
+        Http::fake([
+            '*' => Http::response($this->parseBody($query, [])),
+        ]);
+
+        $parsed = app(QueryParser::class)->parse($query);
+
+        $this->assertSame($query, $parsed->recognizedText);
+        $this->assertSame([], $parsed->appliedFilters);
+
+        // The corrupted entry must be evicted so subsequent parses don't
+        // keep tripping the same fallback for the remainder of its TTL.
+        $this->assertFalse(Cache::has($cacheKey));
     }
 
     public function test_realistic_response_for_tubo_inox_produces_converted_attacco_pollici_filter(): void

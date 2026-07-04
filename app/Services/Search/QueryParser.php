@@ -50,7 +50,7 @@ class QueryParser
         $cacheKey = 'search:query-parse:'.md5($query);
         $ttl = (int) config('search.natural_language.cache_ttl');
 
-        return Cache::remember($cacheKey, $ttl, function () use ($query): ParsedSearchQuery {
+        $result = Cache::remember($cacheKey, $ttl, function () use ($query): ParsedSearchQuery {
             try {
                 $payload = $this->promptBuilder->build($query, $this->catalog, $this->aiClient->modelFast());
                 $response = $this->aiClient->messages($payload);
@@ -65,5 +65,17 @@ class QueryParser
                 return ParsedSearchQuery::wholeTextFallback($query);
             }
         });
+
+        if (! $result instanceof ParsedSearchQuery) {
+            Log::warning('Voce cache del parser query incompatibile con la classe attuale, fallback a testo intero.', [
+                'query' => $query,
+            ]);
+
+            Cache::forget($cacheKey);
+
+            return ParsedSearchQuery::wholeTextFallback($query);
+        }
+
+        return $result;
     }
 }
