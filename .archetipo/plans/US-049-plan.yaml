@@ -1,0 +1,114 @@
+schema: archetipo/plan/v2
+spec_code: US-049
+body: |-
+  ## Soluzione Tecnica
+
+  Questa spec è bloccata da US-048 (`QueryParser` + `NaturalLanguageSearchService`), oggi in stato REVIEW e già presente nel codice: `NaturalLanguageSearchService::search()`/`paginate()` delegano a `SearchService` passando il testo riconosciuto + filtri attributo estratti. `SearchService::applyRanking()` (pgsql) seleziona già `fts_score`, `vector_score` (`1 - cosine_distance`, via `<=>` di pgvector) e `combined_score` come colonne raw sul `Product` risultante, e forza sempre il match esatto su `codice_articolo` in cima all'ordinamento. Questa spec non tocca l'ordinamento esistente: aggiunge un livello di lettura sopra il set già ordinato, che classifica l'esito in tre stati usando solo `vector_score` (il coseno è confrontabile in valore assoluto tra prodotti della stessa query; `ts_rank`/`combined_score` non lo sono, come le Assunzioni della spec richiedono esplicitamente).
+
+  - **Configurazione — `config/search.php`**: nuova sezione `'confidence' => ['auto_match_margin_threshold' => (float) env('SEARCH_CONFIDENCE_AUTO_MATCH_THRESHOLD', 0.15), 'max_candidates' => (int) env('SEARCH_CONFIDENCE_MAX_CANDIDATES', 5)]`, con le voci gemelle in `.env.example`. Il valore di soglia è un default ragionevole da tarare in implementazione su query di prova reali (le Assunzioni della spec lo dicono esplicitamente: qui conta la configurabilità, non il numero).
+  - **Enum tri-stato — `App\Services\Search\MatchOutcome`** (backed string, stesso pattern di `App\Enums\ImportBatchStatus`): `AutoMatch = 'auto_match'`, `Disambiguation = 'disambiguation'`, `NoResults = 'no_results'`.
+  - **`SearchResult` esteso**: oggi è un readonly wrapper del solo `Product`. Guadagna due proprietà readonly aggiuntive, popolate al momento della mappatura in `SearchService`: `?float $vectorScore` (letto da `$product->vector_score` quando la colonna raw è presente nell'attribute bag — assente sul ramo di fallback non-pgsql — altrimenti `null`) e `bool $isExactCodeMatch` (confronto tra `$product->id` e l'id risolto da `findExactCodeMatchProductId()`). `SearchService::search()`/`::paginate()` centralizzano questa mappatura in un nuovo metodo privato `mapToResult(Product $product, ?int $exactMatchProductId): SearchResult`, così i due call site esistenti restano una riga ciascuno.
+  - **`SearchService::topCandidates(string $query, array $filters, int $limit): Collection`**: riusa `buildSearchQuery()` (stesso filtro + stesso ordinamento di `search()`/`paginate()`) con un `->limit($limit)` e nessun offset — è la fonte sia del margine (serve solo la testa dell'ordinamento) sia della lista candidati da mostrare in caso di disambiguazione. Nessuna modifica al comportamento di `search()`/`paginate()` esistenti: restano coperti dai 5 file `SearchService*Test.php` invariati (principio “minimo disturbo” già seguito da US-048).
+  - **DTO esito — `App\Services\Search\SearchMatchOutcome`** (readonly: `MatchOutcome $outcome`, `?float $margin`, `Collection<int, SearchResult> $candidates`) e **resolver puro — `App\Services\Search\MatchOutcomeResolver::resolve(Collection $orderedCandidates): SearchMatchOutcome`**, senza dipendenze da AI/DB (input già ordinato, output deterministico — testabile in isolamento). Logica, in ordine di precedenza:
+    1. Collezione vuota → `NoResults`, margine `null`.
+    2. Il primo candidato ha `isExactCodeMatch === true` → sempre `AutoMatch` (AC3), margine `null` (non applicabile: bypassa il calcolo).
+    3. Un solo candidato (nessun secondo termine di confronto) → `AutoMatch` con margine `1.0` (nessuna ambiguità possibile).
+    4. `vectorScore` nullo su uno dei primi due (fallback non-pgsql, es. Dusk su SQLite) o `vectorScore` del primo `<= 0` → non si può stabilire una confidenza affidabile: `Disambiguation` con margine `null` (degrado prudente, mai un falso automatico).
+    5. `vectorScore` del primo === `vectorScore` del secondo (parità, varianti con embedding identico) → sempre `Disambiguation` con margine `0.0`, indipendentemente dalla soglia configurata (AC4, guardia esplicita anche se una soglia mal configurata a 0 produrrebbe lo stesso esito).
+    6. Altrimenti `margin = (score1 - score2) / score1`; esito `AutoMatch` se `margin >= config('search.confidence.auto_match_margin_threshold')`, altrimenti `Disambiguation` (AC1/AC2).
+  - **Orchestrazione — `NaturalLanguageSearchService::matchOutcome(string $query, array $filters = []): SearchMatchOutcome`**: nuovo metodo pubblico (inietta anche `MatchOutcomeResolver`), stesso schema di `search()`/`paginate()` — `QueryParser::parse($query)`, fusione filtri via `mergeFilters()` già esistente, poi `SearchService::topCandidates($parsed->recognizedText, $filtriUniti, config('search.confidence.max_candidates'))` passato al resolver. Questo è il contratto “API” dell'AC5 (nessuna route HTTP in questo progetto — stesso significato già usato per `NaturalLanguageSearchResult` in US-048): esito, margine e candidati sono tutti campi pubblici di `SearchMatchOutcome`.
+  - **Wiring minimo in `App\Filament\Pages\ProductSearch`**: `search()` calcola anche l'esito (`$this->matchOutcome`/`$this->matchMargin`, proprietà pubbliche accanto a `$recognizedText`/`$appliedFilterLabels` già esistenti, stesso motivo: calcolate una sola volta al submit, sopravvivono alla paginazione). Il banner Blade (`resources/views/filament/pages/product-search.blade.php`) guadagna un badge di stato accanto al testo riconosciuto: “Corrispondenza automatica” per `AutoMatch`, “Prodotti candidati da verificare” per `Disambiguation`, nessun badge per `NoResults` (l'empty state esistente già comunica l'assenza di risultati).
+  - **Fuori scope esplicito**: nessuna nuova route/controller HTTP; nessuna modifica all'ordinamento o al calcolo di `combined_score`/`fts_score` in `SearchService`; nessuna azione automatica sul prodotto “matchato” (la spec dichiara l'esito, non esegue side-effect come la selezione automatica in un flusso a valle).
+
+  ## Strategia di Test
+
+  La suite esistente di `SearchService*Test.php` e `NaturalLanguageSearchServiceTest.php` non viene alterata nel comportamento: nuovi metodi, nessuna modifica ai metodi coperti. `MatchOutcomeResolver` è puro (nessuna query, nessuna chiamata AI) e va testato in isolamento costruendo `SearchResult` a mano, senza bisogno di Postgres.
+
+  - `tests/Unit/Services/Search/MatchOutcomeResolverTest.php`: matrice completa — margine sopra soglia → `AutoMatch`; sotto soglia → `Disambiguation`; parità esatta dei due `vectorScore` in testa → sempre `Disambiguation` anche con soglia impostata a `0`; `isExactCodeMatch` in testa → sempre `AutoMatch` anche con un margine artificialmente basso o `vectorScore` nullo; un solo candidato → `AutoMatch` con margine `1.0`; collezione vuota → `NoResults` con margine `null`; `vectorScore` nullo sui primi due (simula il ramo di fallback non-pgsql) → `Disambiguation` prudente con margine `null`; `vectorScore` in testa `<= 0` → `Disambiguation` con margine `null`.
+  - `tests/Feature/SearchServiceTopCandidatesTest.php` (Postgres-only, stesso pattern difensivo di `SearchServiceFusionRankingTest`/`SearchServiceRelevanceCutoffTest`: skip se il driver non è `pgsql` o Postgres non è raggiungibile): `topCandidates()` rispetta il `$limit`, ordina per lo stesso `combined_score` di `search()`/`paginate()`, popola `vectorScore` per ciascun candidato ed espone `isExactCodeMatch = true` solo sul prodotto il cui `codice_articolo` combacia esattamente con la query.
+  - `tests/Feature/NaturalLanguageSearchServiceMatchOutcomeTest.php` (Postgres-only, stesso setup di `NaturalLanguageSearchServiceTest` + embedding inseriti manualmente come in `SearchServiceFusionRankingTest`): scenario “Dimostra” della spec — (a) query specifica con un solo prodotto chiaramente più vicino in coseno → `AutoMatch`; (b) query ambigua tra due varianti con embedding identico → `Disambiguation` con entrambi i candidati nella lista; (c) query sul `codice_articolo` esatto di un prodotto → `AutoMatch` anche forzando artificialmente `vectorScore` ravvicinati tra i candidati; (d) query senza alcun risultato (filtro che esclude tutto) → `NoResults`.
+  - `tests/Feature/ProductSearchPageTest.php` (esteso): due scenari end-to-end sulla pagina — query che produce match automatico mostra il badge atteso; query ambigua mostra il badge di disambiguazione con i candidati elencati in tabella.
+  - `tests/Browser/ProductSearchTest.php` (esteso, Dusk, unico framework e2e nel progetto — gira su SQLite, quindi `vectorScore` è sempre `null` e l'esito degrada sempre a `Disambiguation` prudente salvo match esatto su codice): un nuovo scenario verifica solo che la pagina non si rompa e non mostri mai un badge “Corrispondenza automatica” errato in questo ambiente senza vettori — nessuna asserzione sul margine numerico, coerente con `test_operator_searches_with_nl_parsing_disabled_and_sees_plain_interpretation_banner` già esistente per lo stesso motivo (assenza di credenziali/infrastruttura AI in questo stack standalone). Screenshot per-step in `docs/test-results/US-049/`.
+  - Regressione finale: rieseguire `SearchService*Test.php`, `NaturalLanguageSearchServiceTest.php`, `ProductSearchPageTest.php`, `ProductSearchTest` (Dusk) e `vendor/bin/sail bin pint --dirty` sui file toccati.
+
+  _Piano generato via ARchetipo Planning._
+tasks:
+  - id: TASK-01
+    title: Configurazione soglie ed enum tri-stato
+    description: Aggiungere la sezione 'confidence' (auto_match_margin_threshold, max_candidates) a config/search.php con le voci gemelle in .env.example. Creare l'enum backed App\Services\Search\MatchOutcome (AutoMatch, Disambiguation, NoResults), stesso pattern di App\Enums\ImportBatchStatus.
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: SearchResult esteso e SearchService::topCandidates()
+    description: 'Aggiungere a SearchResult le proprietà readonly vectorScore (?float) e isExactCodeMatch (bool). Centralizzare la mappatura Product→SearchResult in un metodo privato mapToResult() riusato da search()/paginate(). Aggiungere SearchService::topCandidates(string $query, array $filters, int $limit): Collection che riusa buildSearchQuery() con un limit e nessun offset.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Test di topCandidates() e della mappatura degli score
+    description: 'tests/Feature/SearchServiceTopCandidatesTest.php (Postgres-only, stesso skip difensivo di SearchServiceFusionRankingTest): limit rispettato, ordinamento coerente con search()/paginate(), vectorScore popolato per candidato, isExactCodeMatch true solo sul prodotto con codice_articolo esatto.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+    ref: TASK-03
+  - id: TASK-04
+    title: DTO SearchMatchOutcome e resolver tri-stato
+    description: 'Creare App\Services\Search\SearchMatchOutcome (readonly: outcome, margin, candidates) e App\Services\Search\MatchOutcomeResolver::resolve(Collection $orderedCandidates): SearchMatchOutcome con la precedenza: vuoto→NoResults; match esatto in testa→sempre AutoMatch; un solo candidato→AutoMatch margine 1.0; vectorScore nullo o <=0 in testa→Disambiguation prudente margine null; parità esatta dei due vectorScore→sempre Disambiguation margine 0.0; altrimenti margine (score1-score2)/score1 confrontato con la soglia configurata.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-04
+  - id: TASK-05
+    title: Test del resolver (matrice completa, nessun DB)
+    description: 'tests/Unit/Services/Search/MatchOutcomeResolverTest.php: sopra/sotto soglia, parità forzata a Disambiguation anche con soglia 0, match esatto sempre AutoMatch anche con margine basso o vectorScore nullo, singolo candidato, collezione vuota, vectorScore nullo sui primi due, vectorScore in testa <= 0.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-04
+    ref: TASK-05
+  - id: TASK-06
+    title: NaturalLanguageSearchService::matchOutcome()
+    description: 'Iniettare MatchOutcomeResolver in NaturalLanguageSearchService. Aggiungere matchOutcome(string $query, array $filters = []): SearchMatchOutcome che parsea la query, fonde i filtri con mergeFilters() esistente, chiama SearchService::topCandidates() con config(''search.confidence.max_candidates'') e delega al resolver.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-04
+    ref: TASK-06
+  - id: TASK-07
+    title: Test end-to-end dell'esito sul livello di orchestrazione
+    description: 'tests/Feature/NaturalLanguageSearchServiceMatchOutcomeTest.php (Postgres-only, embedding inseriti manualmente come in SearchServiceFusionRankingTest): query specifica con un prodotto nettamente più vicino → AutoMatch; due varianti con embedding identico → Disambiguation con entrambe in candidates; query sul codice_articolo esatto → AutoMatch anche con vectorScore ravvicinati; query senza risultati → NoResults.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-06
+    ref: TASK-07
+  - id: TASK-08
+    title: Wiring nella pagina Filament ProductSearch
+    description: 'search() calcola anche l''esito (proprietà pubbliche $matchOutcome/$matchMargin, stesso schema di $recognizedText). Il banner in resources/views/filament/pages/product-search.blade.php guadagna un badge di stato: Corrispondenza automatica per AutoMatch, Prodotti candidati da verificare per Disambiguation, nessun badge per NoResults.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-06
+    ref: TASK-08
+  - id: TASK-09
+    title: Test della pagina di ricerca con badge di esito
+    description: 'Estendere tests/Feature/ProductSearchPageTest.php con due scenari: query che produce match automatico mostra il badge atteso; query ambigua mostra il badge di disambiguazione con i candidati elencati.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-08
+    ref: TASK-09
+  - id: TASK-10
+    title: Scenario Dusk di non regressione senza vettori
+    description: 'Estendere tests/Browser/ProductSearchTest.php (SQLite, nessun vectorScore): verificare che la pagina non si rompa e non mostri mai un badge di corrispondenza automatica errato in questo ambiente, salvo match esatto su codice. Screenshot per-step in docs/test-results/US-049/.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-08
+    ref: TASK-10

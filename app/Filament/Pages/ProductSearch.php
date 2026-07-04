@@ -2,10 +2,14 @@
 
 namespace App\Filament\Pages;
 
-use App\Models\ProductBase;
+use App\Models\Product;
 use App\Models\Subfamily;
+use App\Services\Search\AppliedAttributeFilter;
+use App\Services\Search\MatchOutcome;
+use App\Services\Search\MatchOutcomeResolver;
+use App\Services\Search\NaturalLanguageSearchService;
+use App\Services\Search\QueryParser;
 use App\Services\Search\SearchResult;
-use App\Services\Search\SearchService;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
@@ -30,9 +34,21 @@ use Illuminate\Pagination\LengthAwarePaginator;
  * US-033: read-only search page over the hybrid search engine
  * ({@see SearchService}, US-019). Hosts the search form (free text +
  * brand/family/subfamily + a fixed set of numeric technical attribute
- * filters) and a results table backed by `SearchService::paginate()` via
- * Filament's custom-data `->records()` (results aren't an Eloquent query,
- * they're a paginated `Collection<SearchResult>`).
+ * filters) and a results table backed by `NaturalLanguageSearchService::paginate()`
+ * (US-048) via Filament's custom-data `->records()` (results aren't an
+ * Eloquent query, they're a paginated `Collection<SearchResult>`).
+ *
+ * US-048: the free-text query is parsed by an AI model into recognized text
+ * + hard attribute filters before the hybrid search runs. `$recognizedText`/
+ * `$appliedFilterLabels` expose that parse to the view so it can show back
+ * what was understood. They're computed once in {@see self::search()} (not
+ * re-derived from the table's own query, whose `records()` resolver runs
+ * later in the Blade render — after the banner would need the value) and
+ * kept as plain Livewire-synced scalars rather than the richer
+ * `ParsedSearchQuery` DTO, which Livewire's property hydration doesn't
+ * support directly. Being real public properties, they also survive
+ * subsequent requests that don't re-run `search()` (e.g. a table pagination
+ * click), unlike a value recomputed only as a render side effect.
  *
  * @property-read Schema $form
  */
@@ -62,8 +78,40 @@ class ProductSearch extends Page implements HasSchemas, HasTable
     public bool $hasSearched = false;
 
     /**
+     * The recognized (residual) descriptive text from the last executed
+     * search's natural-language parse (US-048), or `null` before any search
+     * has run.
+     */
+    public ?string $recognizedText = null;
+
+    /**
+     * One human-readable label per attribute filter the last search's
+     * natural-language parse turned into a hard filter (US-048), rendered
+     * as chips in the interpretation banner. Empty when no attribute was
+     * recognized.
+     *
+     * @var array<int, string>
+     */
+    public array $appliedFilterLabels = [];
+
+    /**
+     * The tri-state confidence outcome (US-049) of the last executed
+     * search — automatic match, disambiguation, or no results — or `null`
+     * before any search has run. Drives the status badge in the
+     * interpretation banner.
+     */
+    public ?MatchOutcome $matchOutcome = null;
+
+    /**
+     * The confidence margin behind `$matchOutcome`, or `null` when a margin
+     * isn't meaningful (see {@see MatchOutcomeResolver}).
+     */
+    public ?float $matchMargin = null;
+
+    /**
      * The three fixed technical attribute keys exposed as min/max filter
-     * pairs on the form (see {@see AttributeResolver}, US-028).
+     * pairs on the form (US-028); populated exclusively via AI classification
+     * anchored to the attribute registry since US-043.
      *
      * @var array<int, string>
      */
@@ -80,7 +128,7 @@ class ProductSearch extends Page implements HasSchemas, HasTable
             // No backing record (this form only captures filter state), but
             // `->relationship()` selects below still need a model class to
             // resolve `brand()`/`family()` against.
-            ->model(ProductBase::class)
+            ->model(Product::class)
             ->components([
                 Form::make([
                     TextInput::make('query')
@@ -145,11 +193,64 @@ class ProductSearch extends Page implements HasSchemas, HasTable
      * true when the submission actually carries a query or a filter (AC4): a
      * "Cerca" click with every field blank must still show the guided empty
      * state, not "no results found", since no real search ran.
+     *
+     * US-048: also parses the free-text query here (not lazily inside the
+     * table's `records()` resolver) so `$recognizedText`/`$appliedFilterLabels`
+     * are ready for the very same render's interpretation banner, which
+     * Blade evaluates before the results table below it.
      */
     public function search(): void
     {
         $this->data = $this->form->getState();
         $this->hasSearched = $this->hasSearchCriteria();
+
+        $this->refreshInterpretation();
+        $this->refreshMatchOutcome();
+    }
+
+    /**
+     * Updates `$recognizedText`/`$appliedFilterLabels` from a fresh
+     * natural-language parse of the submitted query, or clears them when no
+     * search actually ran.
+     */
+    private function refreshInterpretation(): void
+    {
+        if (! $this->hasSearched) {
+            $this->recognizedText = null;
+            $this->appliedFilterLabels = [];
+
+            return;
+        }
+
+        $query = (string) ($this->data['query'] ?? '');
+        $parsed = app(QueryParser::class)->parse($query);
+
+        $this->recognizedText = $parsed->recognizedText;
+        $this->appliedFilterLabels = array_map(
+            fn (AppliedAttributeFilter $filter): string => $filter->toDisplayLabel(),
+            $parsed->appliedFilters,
+        );
+    }
+
+    /**
+     * Updates `$matchOutcome`/`$matchMargin` from a fresh confidence
+     * resolution (US-049) of the submitted query/filters, or clears them
+     * when no search actually ran.
+     */
+    private function refreshMatchOutcome(): void
+    {
+        if (! $this->hasSearched) {
+            $this->matchOutcome = null;
+            $this->matchMargin = null;
+
+            return;
+        }
+
+        $query = (string) ($this->data['query'] ?? '');
+        $outcome = app(NaturalLanguageSearchService::class)->matchOutcome($query, $this->buildSearchFilters());
+
+        $this->matchOutcome = $outcome->outcome;
+        $this->matchMargin = $outcome->margin;
     }
 
     public function table(Table $table): Table
@@ -163,11 +264,6 @@ class ProductSearch extends Page implements HasSchemas, HasTable
                     ->label('Marca'),
                 TextColumn::make('family_name')
                     ->label('Famiglia / Sottofamiglia'),
-                TextColumn::make('variants_count')
-                    ->label('N. varianti')
-                    ->numeric(),
-                TextColumn::make('power_range')
-                    ->label('Range potenza'),
             ])
             ->emptyStateHeading(fn (): string => $this->hasSearched
                 ? 'Nessun prodotto trovato'
@@ -183,9 +279,12 @@ class ProductSearch extends Page implements HasSchemas, HasTable
      * never on a submit that leaves every field empty — so the embedding
      * provider is not called needlessly.
      *
-     * Paginated at the SQL level via {@see SearchService::paginate()}
+     * Paginated at the SQL level via {@see NaturalLanguageSearchService::paginate()}
      * (instead of fetching every match and slicing in PHP) so page loads
-     * stay fast regardless of how many product-bases a broad query matches.
+     * stay fast regardless of how many products a broad query matches.
+     * US-048: also parses the free-text query into hard attribute filters
+     * before ranking (the interpretation shown to the user is computed
+     * separately, in {@see self::search()} — see that method's docblock).
      *
      * @return LengthAwarePaginator<int, array<string, mixed>>
      */
@@ -197,12 +296,15 @@ class ProductSearch extends Page implements HasSchemas, HasTable
 
         $query = (string) ($this->data['query'] ?? '');
 
-        $paginator = app(SearchService::class)->paginate($query, $this->buildSearchFilters(), $recordsPerPage, $page);
+        $naturalLanguageResult = app(NaturalLanguageSearchService::class)
+            ->paginate($query, $this->buildSearchFilters(), $recordsPerPage, $page);
 
-        // The results' `ProductBase` models come from `SearchService` without
+        $paginator = $naturalLanguageResult->results;
+
+        // The results' `Product` models come from `SearchService` without
         // brand/family/subfamily loaded; batch-load them here (instead of in
         // the service) so lazy access in `toTableRow()` below doesn't N+1.
-        EloquentCollection::make($paginator->getCollection()->map(fn (SearchResult $result): ProductBase => $result->productBase))
+        EloquentCollection::make($paginator->getCollection()->map(fn (SearchResult $result): Product => $result->product))
             ->loadMissing(['brand', 'family', 'subfamily']);
 
         return $paginator->setCollection(
@@ -290,39 +392,25 @@ class ProductSearch extends Page implements HasSchemas, HasTable
 
     /**
      * Builds a single results-table row from a `SearchResult` (AC3: titolo,
-     * marca, famiglia/sottofamiglia, numero varianti, range di potenza).
+     * marca, famiglia/sottofamiglia). Flat list, one row per product — no
+     * grouping/deduplication (US-047).
      *
      * @return array<string, mixed>
      */
     private function toTableRow(SearchResult $result): array
     {
-        $productBase = $result->productBase;
-        $familyName = $productBase->family?->name;
-        $subfamilyName = $productBase->subfamily?->name;
+        $product = $result->product;
+        $familyName = $product->family?->name;
+        $subfamilyName = $product->subfamily?->name;
+
+        $title = filled($product->product_type) ? $product->product_type : $product->description_clean;
 
         return [
-            'title' => $productBase->title,
-            'brand_name' => $productBase->brand?->name,
+            'title' => $title,
+            'brand_name' => $product->brand?->name,
             'family_name' => $subfamilyName !== null
                 ? "{$familyName} / {$subfamilyName}"
                 : $familyName,
-            'variants_count' => $result->variantsCount,
-            'power_range' => $this->formatPowerRange($result->powerRangeMin, $result->powerRangeMax),
         ];
-    }
-
-    /**
-     * Formats the variants' power range for display: a closed range
-     * "min–max kW", an open-ended "min+ kW" / "fino a max kW" when only one
-     * bound is known, or "-" when no variant has the power attribute set.
-     */
-    private function formatPowerRange(?float $min, ?float $max): string
-    {
-        return match (true) {
-            $min !== null && $max !== null => "{$min}–{$max} kW",
-            $min !== null => "{$min}+ kW",
-            $max !== null => "fino a {$max} kW",
-            default => '-',
-        };
     }
 }

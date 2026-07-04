@@ -6,8 +6,9 @@ use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
-use App\Models\ProductBase;
 use App\Models\User;
+use App\Services\Search\MatchOutcomeResolver;
+use App\Services\Search\SearchResult;
 use Database\Seeders\AdminUserSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\Hash;
@@ -17,20 +18,34 @@ use Tests\DuskTestCase;
 /**
  * US-033 demo scenario (spec "Dimostra"):
  * an operator opens "Ricerca prodotti", types free text plus a family
- * filter, clicks "Cerca", and sees a results table of candidate
- * product-bases with brand, family, variant count and power range; a
- * second scenario shows that filters matching nothing render a distinct
- * "no results" empty state instead of the initial guided one.
+ * filter, clicks "Cerca", and sees a results table of candidate products
+ * with brand and family; a second scenario shows that filters matching
+ * nothing render a distinct "no results" empty state instead of the initial
+ * guided one.
+ *
+ * US-047 flattens the results table onto a single `Product` row per SKU (no
+ * more grouping/variants/power range).
  *
  * Dusk runs against SQLite (see `.env.dusk.local`), so `SearchService`
  * takes its non-PostgreSQL fallback ranking path (plain `LIKE` on
- * title/description_ai, no vector fusion) and never calls the embedding
- * provider — no HTTP faking is needed for this browser test.
+ * product_type/description_clean, no vector fusion) and never calls the
+ * embedding provider — no HTTP faking is needed for this browser test.
  *
  * Per-step screenshots are stored in docs/test-results/US-033/ as the visual
  * artifact of the run (Dusk does not record video). Actions are paced with
  * explicit visibility assertions and short holds so the artifacts are
  * readable by a non-technical reviewer.
+ *
+ * US-048: `.env.dusk.local` also sets `SEARCH_NL_PARSING_ENABLED=false`
+ * (this standalone stack has no AI credentials, same reason `DB_CONNECTION`
+ * is SQLite here instead of Postgres), so every scenario in this class
+ * already exercises `NaturalLanguageSearchService` with the parser
+ * disabled. {@see self::test_operator_searches_with_nl_parsing_disabled_and_sees_plain_interpretation_banner()}
+ * makes that degraded path explicit and asserts the interpretation banner
+ * shows plain, unfiltered text with no invented attribute chip. The path
+ * with the AI parser actually enabled (recognized text + attribute chips,
+ * hard-filtered results) is covered by `ProductSearchPageTest`, which fakes
+ * the HTTP call in-process — Dusk never makes a real AI call.
  */
 class ProductSearchTest extends DuskTestCase
 {
@@ -55,31 +70,22 @@ class ProductSearchTest extends DuskTestCase
         $otherFamily = Family::factory()->create(['name' => 'Valvole']);
         $otherBrand = Brand::factory()->create(['name' => 'Marca Valvole']);
 
-        $matching = ProductBase::factory()->create([
-            'title' => 'Compressore a pistone 2CV',
-            'description_ai' => 'Compressore a pistone 2CV per uso officina',
+        $matching = Product::factory()->create([
+            'product_type' => 'Compressore a pistone 2CV',
+            'description_clean' => 'Compressore a pistone 2CV per uso officina',
             'brand_id' => $brand->id,
             'family_id' => $family->id,
             'subfamily_id' => null,
         ]);
-
-        $variantLow = Product::factory()->create(['product_base_id' => $matching->id]);
         ProductAttribute::factory()->create([
-            'product_id' => $variantLow->id,
+            'product_id' => $matching->id,
             'key' => 'potenza_kw',
             'value_num' => 2.5,
         ]);
 
-        $variantHigh = Product::factory()->create(['product_base_id' => $matching->id]);
-        ProductAttribute::factory()->create([
-            'product_id' => $variantHigh->id,
-            'key' => 'potenza_kw',
-            'value_num' => 4,
-        ]);
-
-        $nonMatching = ProductBase::factory()->create([
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+        $nonMatching = Product::factory()->create([
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
             'brand_id' => $otherBrand->id,
             'family_id' => $otherFamily->id,
             'subfamily_id' => null,
@@ -126,22 +132,17 @@ class ProductSearchTest extends DuskTestCase
                 ->screenshot('06-family-selected');
 
             // 4. The operator clicks "Cerca" and sees the ranked results
-            // table with the candidate product-base's brand, family, variant
-            // count and power range — and not the non-matching product-base.
+            // table with the candidate product's brand and family — and not
+            // the non-matching product.
             $browser->press('Cerca')
                 ->waitUntilMissingText(self::GUIDED_EMPTY_STATE_HEADING)
-                ->waitForText($matching->title)
-                ->assertSee($matching->title)
+                ->waitForText($matching->product_type)
+                ->assertSee($matching->product_type)
                 ->assertSee('Marca Compressori')
                 ->assertSee('Compressori')
-                ->assertDontSee($nonMatching->title)
+                ->assertDontSee($nonMatching->product_type)
                 ->pause(400)
                 ->screenshot('07-results-table');
-
-            $browser->with($this->rowSelector($matching), function (Browser $row) {
-                $row->assertSee('2')
-                    ->assertSee('2.5–4 kW');
-            });
 
             $browser->pause(1500)
                 ->screenshot('08-results-detail');
@@ -156,20 +157,18 @@ class ProductSearchTest extends DuskTestCase
             'password' => Hash::make(AdminUserSeeder::DEFAULT_PASSWORD),
         ]);
 
-        $productBase = ProductBase::factory()->create([
-            'title' => 'Pompa sommersa',
-            'description_ai' => 'Pompa sommersa per pozzi',
+        $product = Product::factory()->create([
+            'product_type' => 'Pompa sommersa',
+            'description_clean' => 'Pompa sommersa per pozzi',
             'subfamily_id' => null,
         ]);
-
-        $variant = Product::factory()->create(['product_base_id' => $productBase->id]);
         ProductAttribute::factory()->create([
-            'product_id' => $variant->id,
+            'product_id' => $product->id,
             'key' => 'potenza_kw',
             'value_num' => 5,
         ]);
 
-        $this->browse(function (Browser $browser) use ($admin, $productBase) {
+        $this->browse(function (Browser $browser) use ($admin, $product) {
             // 1. The operator logs in to the Filament backoffice.
             $browser->visit('/admin/login')
                 ->waitFor('#form\\.email')
@@ -190,7 +189,7 @@ class ProductSearchTest extends DuskTestCase
                 ->screenshot('09-guided-empty-state');
 
             // 3. The operator sets a "Potenza (kW)" range that no seeded
-            // variant falls into (the only variant has potenza_kw = 5).
+            // product falls into (the only product has potenza_kw = 5).
             $browser->type('#form\\.potenza_kw_min', '500')
                 ->pause(300)
                 ->type('#form\\.potenza_kw_max', '600')
@@ -199,27 +198,243 @@ class ProductSearchTest extends DuskTestCase
 
             // 4. The operator clicks "Cerca" and sees the distinct
             // "no results" message, not the initial guided state, and not
-            // the unrelated product-base.
+            // the unrelated product.
             $browser->press('Cerca')
                 ->waitForText(self::NO_RESULTS_EMPTY_STATE_HEADING)
                 ->assertSee(self::NO_RESULTS_EMPTY_STATE_HEADING)
                 ->assertDontSee(self::GUIDED_EMPTY_STATE_HEADING)
-                ->assertDontSee($productBase->title)
+                ->assertDontSee($product->product_type)
                 ->pause(1500)
                 ->screenshot('11-no-results-state');
         });
     }
 
     /**
-     * Builds a CSS selector for the results-table row of the given
-     * product-base, so assertions on that row's cells (variant count, power
-     * range) are scoped to the correct record instead of matching the first
-     * occurrence on the page. Filament keys every custom-data table row with
-     * a `wire:key` ending in `table.records.{recordKey}`, and `ProductSearch`
-     * keys each row by `productBase->id` (see `ProductSearch::searchResults()`).
+     * US-048 demo scenario, degraded path: with
+     * `SEARCH_NL_PARSING_ENABLED=false` (the standing setting for this whole
+     * standalone Dusk stack, see the class docblock), the page must keep
+     * working end-to-end with zero AI calls, and the interpretation banner
+     * must show the query back verbatim with no attribute chip — proving
+     * "no invented filter" holds even when the parser never runs.
+     *
+     * Screenshots for this scenario are stored separately, under
+     * docs/test-results/US-048/, instead of the class's default US-033
+     * directory.
      */
-    private function rowSelector(ProductBase $productBase): string
+    public function test_operator_searches_with_nl_parsing_disabled_and_sees_plain_interpretation_banner(): void
     {
-        return 'tr[wire\\:key$=".table.records.'.$productBase->getKey().'"]';
+        $artifactDir = __DIR__.'/../../docs/test-results/US-048';
+
+        if (! is_dir($artifactDir)) {
+            mkdir($artifactDir, 0755, true);
+        }
+
+        $previousScreenshotDir = Browser::$storeScreenshotsAt;
+        Browser::$storeScreenshotsAt = $artifactDir;
+
+        try {
+            $admin = User::factory()->create([
+                'name' => 'Admin',
+                'email' => AdminUserSeeder::DEFAULT_EMAIL,
+                'password' => Hash::make(AdminUserSeeder::DEFAULT_PASSWORD),
+            ]);
+
+            $matching = Product::factory()->create([
+                'product_type' => 'Compressore a pistone 2CV',
+                'description_clean' => 'Compressore a pistone 2CV per uso officina',
+            ]);
+
+            $this->browse(function (Browser $browser) use ($admin, $matching) {
+                // 1. The operator logs in to the Filament backoffice.
+                $browser->visit('/admin/login')
+                    ->waitFor('#form\\.email')
+                    ->type('#form\\.email', $admin->email)
+                    ->pause(400)
+                    ->type('#form\\.password', AdminUserSeeder::DEFAULT_PASSWORD)
+                    ->pause(400)
+                    ->click('button[type="submit"]')
+                    ->waitForLocation('/admin')
+                    ->pause(400);
+
+                // 2. The operator opens "Ricerca prodotti" and types free
+                // text — no attribute-looking mention, so this scenario
+                // stays valid regardless of the parser being on or off.
+                $browser->visit('/admin/product-search')
+                    ->waitForText(self::GUIDED_EMPTY_STATE_HEADING)
+                    ->type('#form\\.query', 'compressore')
+                    ->pause(400)
+                    ->screenshot('01-query-typed');
+
+                // 3. The operator clicks "Cerca" and sees the matching
+                // product, with zero AI call: the interpretation banner
+                // shows the query back verbatim, with no attribute chip.
+                $browser->press('Cerca')
+                    ->waitUntilMissingText(self::GUIDED_EMPTY_STATE_HEADING)
+                    ->waitForText($matching->product_type)
+                    ->assertSee($matching->product_type)
+                    ->assertSee('Tipo riconosciuto:')
+                    ->assertSee('compressore')
+                    ->pause(1500)
+                    ->screenshot('02-plain-interpretation-banner');
+            });
+        } finally {
+            Browser::$storeScreenshotsAt = $previousScreenshotDir;
+        }
+    }
+
+    /**
+     * US-049 non-regression scenario: Dusk runs against SQLite (see the
+     * class docblock), so `SearchService` takes its non-pgsql fallback
+     * ranking path, which never selects `vector_score` — every
+     * {@see SearchResult} in this environment has a
+     * `null` vectorScore. Two products both matching the free-text query
+     * means {@see MatchOutcomeResolver} sees more than
+     * one candidate with a null top vector score, so it must degrade to the
+     * cautious "disambiguation" outcome rather than either crash or —
+     * worse — falsely declare an automatic match it can't actually
+     * substantiate without a real vector signal.
+     *
+     * Screenshots for this scenario are stored under
+     * docs/test-results/US-049/.
+     */
+    public function test_operator_searches_ambiguous_free_text_and_never_sees_a_false_auto_match_badge(): void
+    {
+        $artifactDir = __DIR__.'/../../docs/test-results/US-049';
+
+        if (! is_dir($artifactDir)) {
+            mkdir($artifactDir, 0755, true);
+        }
+
+        $previousScreenshotDir = Browser::$storeScreenshotsAt;
+        Browser::$storeScreenshotsAt = $artifactDir;
+
+        try {
+            $admin = User::factory()->create([
+                'name' => 'Admin',
+                'email' => AdminUserSeeder::DEFAULT_EMAIL,
+                'password' => Hash::make(AdminUserSeeder::DEFAULT_PASSWORD),
+            ]);
+
+            $first = Product::factory()->create([
+                'product_type' => 'Scaldabagno a pompa di calore modello A',
+                'description_clean' => 'Scaldabagno a pompa di calore modello A per uso domestico',
+            ]);
+            $second = Product::factory()->create([
+                'product_type' => 'Scaldabagno a pompa di calore modello B',
+                'description_clean' => 'Scaldabagno a pompa di calore modello B per uso domestico',
+            ]);
+
+            $this->browse(function (Browser $browser) use ($admin, $first, $second) {
+                // 1. The operator logs in to the Filament backoffice.
+                $browser->visit('/admin/login')
+                    ->waitFor('#form\\.email')
+                    ->type('#form\\.email', $admin->email)
+                    ->pause(400)
+                    ->type('#form\\.password', AdminUserSeeder::DEFAULT_PASSWORD)
+                    ->pause(400)
+                    ->click('button[type="submit"]')
+                    ->waitForLocation('/admin')
+                    ->pause(400);
+
+                // 2. The operator opens "Ricerca prodotti" and types free
+                // text that matches two near-identical products — genuinely
+                // ambiguous, with no embedding available in this environment
+                // to break the tie.
+                $browser->visit('/admin/product-search')
+                    ->waitForText(self::GUIDED_EMPTY_STATE_HEADING)
+                    ->type('#form\\.query', 'scaldabagno pompa calore')
+                    ->pause(400)
+                    ->screenshot('01-ambiguous-query-typed');
+
+                // 3. The operator clicks "Cerca" and sees both candidates
+                // plus the disambiguation badge — never an automatic-match
+                // badge, which would be a false positive here.
+                $browser->press('Cerca')
+                    ->waitUntilMissingText(self::GUIDED_EMPTY_STATE_HEADING)
+                    ->waitForText('Prodotti candidati da verificare')
+                    ->assertSee('Prodotti candidati da verificare')
+                    ->assertDontSee('Corrispondenza automatica')
+                    ->assertSee($first->product_type)
+                    ->assertSee($second->product_type)
+                    ->pause(1500)
+                    ->screenshot('02-disambiguation-badge');
+            });
+        } finally {
+            Browser::$storeScreenshotsAt = $previousScreenshotDir;
+        }
+    }
+
+    /**
+     * US-049 non-regression scenario, exact-code exception: even on the
+     * SQLite fallback path (no vector scores at all), a query matching a
+     * product's `codice_articolo` exactly is still unambiguous by
+     * construction and must show the automatic-match badge — the one case
+     * where an automatic match is expected in this environment.
+     *
+     * Screenshots for this scenario are stored under
+     * docs/test-results/US-049/.
+     */
+    public function test_operator_searches_exact_product_code_and_sees_auto_match_badge_despite_sqlite_fallback(): void
+    {
+        $artifactDir = __DIR__.'/../../docs/test-results/US-049';
+
+        if (! is_dir($artifactDir)) {
+            mkdir($artifactDir, 0755, true);
+        }
+
+        $previousScreenshotDir = Browser::$storeScreenshotsAt;
+        Browser::$storeScreenshotsAt = $artifactDir;
+
+        try {
+            $admin = User::factory()->create([
+                'name' => 'Admin',
+                'email' => AdminUserSeeder::DEFAULT_EMAIL,
+                'password' => Hash::make(AdminUserSeeder::DEFAULT_PASSWORD),
+            ]);
+
+            $exactMatch = Product::factory()->create([
+                'product_type' => 'Valvola a sfera in ottone',
+                'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
+                'codice_articolo' => 'ABC-12345',
+            ]);
+            Product::factory()->create([
+                'product_type' => 'Valvola a sfera in acciaio',
+                'description_clean' => 'Valvola a sfera in acciaio per impianti idraulici',
+            ]);
+
+            $this->browse(function (Browser $browser) use ($admin, $exactMatch) {
+                // 1. The operator logs in to the Filament backoffice.
+                $browser->visit('/admin/login')
+                    ->waitFor('#form\\.email')
+                    ->type('#form\\.email', $admin->email)
+                    ->pause(400)
+                    ->type('#form\\.password', AdminUserSeeder::DEFAULT_PASSWORD)
+                    ->pause(400)
+                    ->click('button[type="submit"]')
+                    ->waitForLocation('/admin')
+                    ->pause(400);
+
+                // 2. The operator opens "Ricerca prodotti" and types the
+                // exact article code of one product.
+                $browser->visit('/admin/product-search')
+                    ->waitForText(self::GUIDED_EMPTY_STATE_HEADING)
+                    ->type('#form\\.query', $exactMatch->codice_articolo)
+                    ->pause(400)
+                    ->screenshot('03-exact-code-typed');
+
+                // 3. The operator clicks "Cerca" and sees the automatic
+                // match badge, not the disambiguation one.
+                $browser->press('Cerca')
+                    ->waitUntilMissingText(self::GUIDED_EMPTY_STATE_HEADING)
+                    ->waitForText('Corrispondenza automatica')
+                    ->assertSee('Corrispondenza automatica')
+                    ->assertDontSee('Prodotti candidati da verificare')
+                    ->assertSee($exactMatch->product_type)
+                    ->pause(1500)
+                    ->screenshot('04-auto-match-badge');
+            });
+        } finally {
+            Browser::$storeScreenshotsAt = $previousScreenshotDir;
+        }
     }
 }
