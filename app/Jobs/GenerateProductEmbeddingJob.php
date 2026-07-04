@@ -37,6 +37,14 @@ class GenerateProductEmbeddingJob implements ShouldQueue
 
     public int $tries = 3;
 
+    /**
+     * The embedding HTTP client retries up to `EMBEDDING_TIMEOUT` (120s by
+     * default) twice, so a worst-case call chain can run well past the
+     * default 60s worker timeout — long enough for the worker to kill this
+     * job mid-request and force a retry that was never actually needed.
+     */
+    public int $timeout = 300;
+
     public function __construct(
         public int $productId,
     ) {

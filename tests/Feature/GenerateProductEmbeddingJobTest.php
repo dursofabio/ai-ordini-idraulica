@@ -59,6 +59,20 @@ class GenerateProductEmbeddingJobTest extends TestCase
         Queue::assertPushedOn('embed', GenerateProductEmbeddingJob::class);
     }
 
+    public function test_timeout_exceeds_the_worst_case_embedding_http_call_chain(): void
+    {
+        // The provider's own retry policy (retry_times x timeout, e.g. 2 x
+        // 120s) can legitimately run past the default 60s worker timeout;
+        // the job must declare enough headroom that the worker never kills
+        // it mid-request and forces an unnecessary retry.
+        $job = new GenerateProductEmbeddingJob(1);
+
+        $this->assertGreaterThan(
+            config('services.embedding.retry_times') * config('services.embedding.timeout'),
+            $job->timeout,
+        );
+    }
+
     public function test_handling_job_creates_product_embedding_from_provider_response(): void
     {
         $product = Product::factory()->create([
