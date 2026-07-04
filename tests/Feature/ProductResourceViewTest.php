@@ -5,11 +5,10 @@ namespace Tests\Feature;
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Filament\Resources\Products\Pages\ViewProduct;
 use App\Jobs\ClassifyProductsBatchJob;
-use App\Jobs\GenerateProductBaseEmbeddingJob;
+use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\EnrichmentLog;
 use App\Models\Product;
-use App\Models\ProductBase;
 use App\Models\ProductEmbedding;
 use App\Models\User;
 use Filament\Actions\ViewAction;
@@ -29,8 +28,8 @@ use Tests\TestCase;
  *  - AC2/AC3: the enrichment history is shown in chronological order with
  *    step/confidence/model/tokens, or an explicit empty state when there is
  *    no enrichment log yet.
- *  - AC4: the linked product-base's embedding status (generated/missing,
- *    model, date) is shown.
+ *  - AC4: the product's own embedding status (generated/missing, model,
+ *    date) is shown (US-046: embedding lives per-product, not per-base).
  *  - AC5: manually-set brand/family stay visually distinct, as in the
  *    existing list/form.
  */
@@ -43,11 +42,12 @@ class ProductResourceViewTest extends TestCase
     {
         parent::setUp();
 
-        // ProductBaseObserver auto-dispatches GenerateProductBaseEmbeddingJob
-        // synchronously (QUEUE_CONNECTION=sync) whenever a ProductBase with a
-        // description_ai is created via factory. Pointing the provider at an
-        // unreachable host makes that job fail harmlessly instead of hitting
-        // the real Ollama service and creating an unwanted embedding row.
+        // ProductObserver auto-dispatches GenerateProductEmbeddingJob
+        // synchronously (QUEUE_CONNECTION=sync) whenever a Product with a
+        // product_type/description_clean/brand_id is created via factory.
+        // Pointing the provider at an unreachable host makes that job fail
+        // harmlessly instead of hitting the real Ollama service and creating
+        // an unwanted embedding row.
         config()->set('services.embedding.base_url', 'https://embedding.test');
     }
 
@@ -103,34 +103,22 @@ class ProductResourceViewTest extends TestCase
         $admin = User::factory()->create();
         $this->actingAs($admin);
 
-        $embedding = ProductEmbedding::factory()->create(['model' => 'text-embedding-3-small']);
-        $product = Product::factory()->create(['product_base_id' => $embedding->product_base_id]);
+        $product = Product::factory()->create();
+        ProductEmbedding::factory()->create(['product_id' => $product->id, 'model' => 'text-embedding-3-small']);
 
         Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
             ->assertSchemaStateSet([
                 'embedding_status' => 'Generato',
-                'productBase.embedding.model' => 'text-embedding-3-small',
+                'embedding.model' => 'text-embedding-3-small',
             ]);
     }
 
-    public function test_view_page_shows_missing_embedding_status_when_product_base_has_no_embedding(): void
+    public function test_view_page_shows_missing_embedding_status_when_product_has_no_embedding(): void
     {
         $admin = User::factory()->create();
         $this->actingAs($admin);
 
-        $productBase = ProductBase::factory()->create();
-        $product = Product::factory()->create(['product_base_id' => $productBase->id]);
-
-        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
-            ->assertSchemaStateSet(['embedding_status' => 'Assente']);
-    }
-
-    public function test_view_page_shows_missing_embedding_status_when_product_has_no_product_base(): void
-    {
-        $admin = User::factory()->create();
-        $this->actingAs($admin);
-
-        $product = Product::factory()->create(['product_base_id' => null]);
+        $product = Product::factory()->create();
 
         Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
             ->assertSchemaStateSet(['embedding_status' => 'Assente']);
@@ -278,38 +266,22 @@ class ProductResourceViewTest extends TestCase
         Queue::assertNotPushed(ClassifyProductsBatchJob::class);
     }
 
-    public function test_view_page_regenerate_product_base_embedding_dispatches_job(): void
+    public function test_view_page_regenerate_embedding_dispatches_job(): void
     {
         $admin = User::factory()->create();
         $this->actingAs($admin);
 
-        $productBase = ProductBase::factory()->create();
-        $product = Product::factory()->create(['product_base_id' => $productBase->id]);
+        $product = Product::factory()->create();
 
         Queue::fake();
 
         Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
-            ->callAction('regenerateProductBaseEmbedding')
+            ->callAction('regenerateEmbedding')
             ->assertNotified();
 
         Queue::assertPushed(
-            GenerateProductBaseEmbeddingJob::class,
-            static fn (GenerateProductBaseEmbeddingJob $job): bool => $job->productBaseId === $productBase->id,
+            GenerateProductEmbeddingJob::class,
+            static fn (GenerateProductEmbeddingJob $job): bool => $job->productId === $product->id,
         );
-    }
-
-    public function test_view_page_regenerate_product_base_embedding_is_disabled_when_product_has_no_base(): void
-    {
-        $admin = User::factory()->create();
-        $this->actingAs($admin);
-
-        $product = Product::factory()->create(['product_base_id' => null]);
-
-        Queue::fake();
-
-        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
-            ->assertActionDisabled('regenerateProductBaseEmbedding');
-
-        Queue::assertNotPushed(GenerateProductBaseEmbeddingJob::class);
     }
 }

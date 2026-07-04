@@ -4,10 +4,9 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Jobs\ClassifyProductsBatchJob;
-use App\Jobs\GenerateProductBaseEmbeddingJob;
+use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\Product;
-use App\Models\ProductBase;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -23,11 +22,12 @@ use Tests\TestCase;
  *  - AC2: "relaunchAiClassification" queues ClassifyProductsBatchJob for that
  *    product only, regardless of its current enrichment_status, and shows a
  *    confirmation notification.
- *  - AC3: "regenerateProductBaseEmbedding" queues GenerateProductBaseEmbeddingJob
- *    for the linked product-base only and shows a confirmation notification.
+ *  - AC3: "regenerateEmbedding" queues GenerateProductEmbeddingJob for that
+ *    product only and shows a confirmation notification (US-046: embedding
+ *    is generated from the product's own product_type/brand, so it no
+ *    longer depends on a linked product-base).
  *  - AC5: the classification action is disabled (and defensively guarded)
- *    when the product has no description; the embedding action is disabled
- *    when the product has no linked product-base.
+ *    when the product has no description.
  */
 class ProductManualActionsTest extends TestCase
 {
@@ -100,38 +100,27 @@ class ProductManualActionsTest extends TestCase
         Queue::assertNotPushed(ClassifyProductsBatchJob::class);
     }
 
-    public function test_regenerate_product_base_embedding_dispatches_job_for_linked_base_only(): void
+    public function test_regenerate_embedding_dispatches_job_for_that_product_only(): void
     {
         $admin = User::factory()->create();
         $this->actingAs($admin);
 
-        $productBase = ProductBase::factory()->create();
-        $product = Product::factory()->create(['product_base_id' => $productBase->id]);
+        $product = Product::factory()->create();
+        $other = Product::factory()->create();
 
         Queue::fake();
 
         Livewire::test(ListProducts::class)
-            ->callTableAction('regenerateProductBaseEmbedding', $product)
+            ->callTableAction('regenerateEmbedding', $product)
             ->assertNotified();
 
         Queue::assertPushed(
-            GenerateProductBaseEmbeddingJob::class,
-            static fn (GenerateProductBaseEmbeddingJob $job): bool => $job->productBaseId === $productBase->id,
+            GenerateProductEmbeddingJob::class,
+            static fn (GenerateProductEmbeddingJob $job): bool => $job->productId === $product->id,
         );
-    }
-
-    public function test_regenerate_product_base_embedding_is_disabled_when_product_has_no_base(): void
-    {
-        $admin = User::factory()->create();
-        $this->actingAs($admin);
-
-        $product = Product::factory()->create(['product_base_id' => null]);
-
-        Queue::fake();
-
-        Livewire::test(ListProducts::class)
-            ->assertTableActionDisabled('regenerateProductBaseEmbedding', $product);
-
-        Queue::assertNotPushed(GenerateProductBaseEmbeddingJob::class);
+        Queue::assertNotPushed(
+            GenerateProductEmbeddingJob::class,
+            static fn (GenerateProductEmbeddingJob $job): bool => $job->productId === $other->id,
+        );
     }
 }

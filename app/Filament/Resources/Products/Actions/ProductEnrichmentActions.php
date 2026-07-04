@@ -5,7 +5,7 @@ namespace App\Filament\Resources\Products\Actions;
 use App\Filament\Resources\Products\Pages\ViewProduct;
 use App\Filament\Resources\Products\Tables\ProductsTable;
 use App\Jobs\ClassifyProductsBatchJob;
-use App\Jobs\GenerateProductBaseEmbeddingJob;
+use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\Product;
 use Filament\Actions\Action;
@@ -76,28 +76,20 @@ class ProductEnrichmentActions
     }
 
     /**
-     * Regenerates the embedding of the product's linked product-base via
-     * {@see GenerateProductBaseEmbeddingJob}, which overwrites any existing
-     * embedding for that (product_base_id, model) pair. Disabled when the
-     * product is not linked to a product-base (AC5).
+     * Regenerates this product's own embedding via
+     * {@see GenerateProductEmbeddingJob} (US-046), which overwrites any
+     * existing embedding for that (product_id, model) pair. Since embedding
+     * content is derived from the product's own product_type/brand (falling
+     * back to description_clean), this no longer depends on the product
+     * being linked to a product-base.
      */
-    public static function regenerateProductBaseEmbedding(): Action
+    public static function regenerateEmbedding(): Action
     {
-        return Action::make('regenerateProductBaseEmbedding')
-            ->label('Rigenera embedding prodotto-base')
+        return Action::make('regenerateEmbedding')
+            ->label('Rigenera embedding')
             ->icon(Heroicon::OutlinedCpuChip)
-            ->disabled(fn (Product $record): bool => $record->product_base_id === null)
             ->action(function (Product $record): void {
-                if ($record->product_base_id === null) {
-                    Notification::make()
-                        ->title('Impossibile rigenerare: nessun prodotto-base collegato')
-                        ->danger()
-                        ->send();
-
-                    return;
-                }
-
-                GenerateProductBaseEmbeddingJob::dispatch($record->product_base_id);
+                GenerateProductEmbeddingJob::dispatch($record->id);
 
                 Notification::make()
                     ->title('Rigenerazione embedding accodata')

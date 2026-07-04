@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\EnrichmentLog;
 use App\Models\ImportBatch;
 use App\Models\Product;
-use App\Models\ProductBase;
 use App\Models\ProductEmbedding;
 use App\Models\StagingArticolo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -13,10 +12,11 @@ use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
 /**
- * US-005/US-018 acceptance criteria — relations, JSON casts and audit token counting:
+ * US-005/US-018/US-046 acceptance criteria — relations, JSON casts and audit
+ * token counting:
  *  - EnrichmentLog stores input/output JSON with a clean array round-trip.
  *  - EnrichmentLog records step, confidence, model and token counts.
- *  - ProductBase hasOne embedding; Product hasMany enrichmentLogs;
+ *  - Product hasOne embedding; Product hasMany enrichmentLogs;
  *    ImportBatch hasMany stagingArticoli.
  *  - Cascade / nullOnDelete behave as declared.
  *
@@ -31,11 +31,12 @@ class VectorStagingAuditRelationsTest extends TestCase
     {
         parent::setUp();
 
-        // ProductBaseObserver auto-dispatches GenerateProductBaseEmbeddingJob
-        // synchronously (QUEUE_CONNECTION=sync) whenever a ProductBase with a
-        // description_ai is created via factory. Pointing the provider at an
-        // unreachable host makes that job fail harmlessly instead of hitting
-        // the real Ollama service and creating an unwanted embedding row.
+        // ProductObserver auto-dispatches GenerateProductEmbeddingJob
+        // synchronously (QUEUE_CONNECTION=sync) whenever a Product with a
+        // product_type/description_clean/brand_id is created via factory.
+        // Pointing the provider at an unreachable host makes that job fail
+        // harmlessly instead of hitting the real Ollama service and creating
+        // an unwanted embedding row.
         config()->set('services.embedding.base_url', 'https://embedding.test');
     }
 
@@ -79,15 +80,15 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertSame('ART-9', $fresh->raw_row['codice_articolo']);
     }
 
-    public function test_product_base_has_one_embedding(): void
+    public function test_product_has_one_embedding(): void
     {
-        $productBase = ProductBase::factory()->create();
+        $product = Product::factory()->create();
         ProductEmbedding::factory()->create([
-            'product_base_id' => $productBase->id, 'model' => 'model-a',
+            'product_id' => $product->id, 'model' => 'model-a',
         ]);
 
-        $this->assertInstanceOf(ProductEmbedding::class, $productBase->embedding);
-        $this->assertSame('model-a', $productBase->embedding->model);
+        $this->assertInstanceOf(ProductEmbedding::class, $product->embedding);
+        $this->assertSame('model-a', $product->embedding->model);
     }
 
     public function test_product_has_many_enrichment_logs(): void
@@ -99,15 +100,15 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertInstanceOf(EnrichmentLog::class, $product->enrichmentLogs->first());
     }
 
-    public function test_embedding_belongs_to_product_base_and_log_belongs_to_product(): void
+    public function test_embedding_belongs_to_product_and_log_belongs_to_product(): void
     {
-        $productBase = ProductBase::factory()->create();
-        $embedding = ProductEmbedding::factory()->create(['product_base_id' => $productBase->id]);
+        $embeddingProduct = Product::factory()->create();
+        $embedding = ProductEmbedding::factory()->create(['product_id' => $embeddingProduct->id]);
 
         $product = Product::factory()->create();
         $log = EnrichmentLog::factory()->create(['product_id' => $product->id]);
 
-        $this->assertSame($productBase->id, $embedding->productBase->id);
+        $this->assertSame($embeddingProduct->id, $embedding->product->id);
         $this->assertSame($product->id, $log->product->id);
     }
 
@@ -120,12 +121,12 @@ class VectorStagingAuditRelationsTest extends TestCase
         $this->assertSame($batch->id, $batch->stagingArticoli->first()->importBatch->id);
     }
 
-    public function test_deleting_product_base_cascades_to_embeddings(): void
+    public function test_deleting_product_cascades_to_embeddings(): void
     {
-        $productBase = ProductBase::factory()->create();
-        ProductEmbedding::factory()->create(['product_base_id' => $productBase->id]);
+        $product = Product::factory()->create();
+        ProductEmbedding::factory()->create(['product_id' => $product->id]);
 
-        $productBase->delete();
+        $product->delete();
 
         $this->assertDatabaseCount('product_embeddings', 0);
     }

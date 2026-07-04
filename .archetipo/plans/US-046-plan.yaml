@@ -1,0 +1,158 @@
+schema: archetipo/plan/v2
+spec_code: US-046
+body: |
+  # US-046: Embedding e indice full-text per singolo prodotto — Implementation Plan
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-04
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-009 — Normalizzazione AI e Ricerca a Prodotto Singolo
+  **Priorità:** HIGH | **Punti:** 5
+
+  **User Story**
+  Come utente della ricerca, voglio che ogni singolo prodotto abbia embedding e indice full-text propri, basati su tipo prodotto e marca, così che la ricerca possa restituire direttamente lo SKU giusto.
+
+  **Criteri di Accettazione**
+  - `product_embeddings` riferisce `product_id` (unico per prodotto+modello); l'aggancio a `product_base_id` è dismesso
+  - Contenuto embedding = `product_type` + marca, con fallback sulla descrizione pulita quando `product_type` è assente
+  - Contenuti identici tra varianti riusano lo stesso vettore (dedup per hash del contenuto): nessuna chiamata duplicata al provider
+  - `search_vector` (tsvector) creato su `products`, alimentato da tipo prodotto, marca e descrizione
+  - Comando di backfill che rigenera embedding e search_vector per il catalogo esistente
+
+  ---
+
+  ## Technical Solution
+
+  Questa spec sposta l'unità di embedding/full-text da `ProductBase` a `Product`, ma **non** rimuove ancora `ProductBase`/`GroupingResolver` né riscrive `SearchService` in chiave flat: quella rimozione è esplicitamente ambito di US-047 (bloccata da questa spec). Qui `SearchService` resta raggruppato per `ProductBase` ma legge il vettore tramite `product_id`, così l'app continua a funzionare end-to-end tra una spec e l'altra della pipeline.
+
+  - **`product_embeddings`**: nuova migrazione sostituisce `product_base_id` con `product_id` (FK `products`, cascade on delete) e aggiunge `content_hash` (indicizzato, non unico da solo — più prodotti possono condividere lo stesso hash+model per costruzione). Vincolo unico `(product_id, model)`. I dati esistenti sono azzerati (`truncate`) nella stessa migrazione: sono interamente rigenerabili dal comando di backfill (US-018 non aveva ancora traffico reale), evitando una mappatura fragile base→prodotto rappresentante.
+  - **Contenuto embedding**: nuovo `Product::composeEmbeddingContent()` (analogo a `ProductBase::composeDescriptionAi()` che resta invariato per ora): se `product_type` è valorizzato, contenuto = `product_type` + `brand->name`; altrimenti fallback su `description_clean`. Poiché tutte le varianti dello stesso modello condividono `product_type`+marca, il contenuto — e quindi l'hash — è identico per costruzione tra varianti.
+  - **Dedup per hash**: `GenerateProductEmbeddingJob` (sostituisce `GenerateProductBaseEmbeddingJob`) calcola `content_hash = sha256(content)` e, prima di chiamare `EmbeddingClient`, cerca una riga `product_embeddings` esistente con lo stesso `model` + `content_hash` (qualunque prodotto): se trovata, riusa vettore/dimensioni senza nuova chiamata al provider; altrimenti chiama il provider e salva. `updateOrCreate` su `(product_id, model)` come oggi.
+  - **Osservazione automatica**: `ProductObserver` (sostituisce `ProductBaseObserver`) si registra su `Product` e accoda il job quando `product_type`, `description_clean` o `brand_id` cambiano (o alla creazione, se uno di questi è già valorizzato) — stesso pattern di guardia (`wasChanged`) di oggi.
+  - **`products.search_vector`**: nuova colonna generata (`storedAs` su Postgres, testo semplice su SQLite come per `product_bases.search_vector`) da `to_tsvector('italian', coalesce(product_type,'') || ' ' || coalesce(descrizione_marca,'') || ' ' || coalesce(description_clean,''))` — tutte colonne native di `products`, nessun riferimento cross-tabella necessario per la colonna generata. Indice GIN dedicato `products_search_vector_gin_idx`.
+  - **Backfill**: riutilizzati i due comandi esistenti invece di introdurne uno nuovo, coerente con le convenzioni già in uso — `catalog:embed --missing` accoda ora `GenerateProductEmbeddingJob` per `Product` privi di embedding per il model configurato; `catalog:reindex` gestisce anche l'indice GIN e il fallback di ricalcolo per `products.search_vector`, in aggiunta alla gestione già esistente di `product_bases`.
+  - **Compatibilità con `SearchService` (temporanea, fino a US-047)**: `applyRanking()` non fa più join diretto su `product_embeddings.product_base_id` (colonna dismessa). Il punteggio vettoriale per riga `ProductBase` è ottenuto da una subquery correlata: `product_embeddings` → `products` (per `products.product_base_id = product_bases.id` e `products.id = product_embeddings.product_id`), con `ORDER BY ... LIMIT 1` per garantire una sola riga per base. Poiché tutte le varianti condividono lo stesso vettore per costruzione (assunzione esplicita della spec), il risultato è invariato rispetto a oggi. `variants_count`/`power_range` e la struttura per-base restano intatti: la vera ricerca flat a livello di prodotto è ambito di US-047.
+
+  ---
+
+  ## Test Strategy
+
+  Nessuna interfaccia utente coinvolta (spec di livello dati/servizio) — nessuna strategia e2e richiesta.
+
+  - Test di schema/relazione aggiornati per le due migrazioni (`product_embeddings.product_id`+`content_hash`, `products.search_vector`).
+  - Nuovo `GenerateProductEmbeddingJobTest`: creazione/aggiornamento riga, skip su contenuto vuoto, log su errore provider, **e nuovo caso di dedup** — due prodotti con contenuto identico (stesso `product_type`+marca) generano una sola chiamata HTTP al provider.
+  - `ProductObserverTest` copre i tre trigger (`product_type`, `description_clean`, `brand_id`) e il no-op quando nessuno dei tre cambia.
+  - `CatalogEmbedCommandTest` e test del comando `catalog:reindex` aggiornati al livello `Product`.
+  - Le suite `SearchService*` (FusionRanking, Grouping, ExactCodeMatch, Filters, RelevanceCutoff, Performance) e `VectorEmbeddingPgvectorTest` aggiornate per inserire l'embedding agganciato a un `Product` figlio della `ProductBase` di test, invece che direttamente sulla base — nessun cambio di asserzioni di ranking, solo del fixture setup.
+  - Regressione sui test Filament/pagina di ricerca che referenziano embedding (`ProductBaseResourceTest`, `ProductManualActionsTest`, `ProductResourceViewTest`, `ProductSearchPageTest`, `Browser/ProductSearchTest`).
+
+  ---
+
+  _Plan generato via ARchetipo Planning — 2026-07-04_
+tasks:
+  - id: TASK-01
+    title: 'Migrazione: product_id + content_hash su product_embeddings'
+    description: Nuova migrazione che rimuove unique/FK/colonna product_base_id da product_embeddings (con truncate preventivo, dati rigenerabili via backfill), aggiunge product_id (FK products, cascade) e content_hash (indicizzato), con unique (product_id, model).
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: 'Migrazione: search_vector su products'
+    description: Nuova colonna tsvector generata su products (fallback testo su SQLite) alimentata da product_type + descrizione_marca + description_clean, con indice GIN dedicato products_search_vector_gin_idx.
+    type: Impl
+    status: DONE
+    ref: TASK-02
+  - id: TASK-03
+    title: Aggiornare test di schema/relazioni
+    description: Aggiornare VectorStagingAuditSchemaTest e VectorStagingAuditRelationsTest alle nuove colonne product_embeddings.product_id/content_hash e products.search_vector, e alla relazione Product-embedding.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+    ref: TASK-03
+  - id: TASK-04
+    title: Aggiornare modello ProductEmbedding e factory
+    description: 'Fillable product_id/content_hash, relazione product(): BelongsTo<Product>, rimozione productBase(); ProductEmbeddingFactory usa Product::factory() e calcola content_hash.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-04
+  - id: TASK-05
+    title: Product::composeEmbeddingContent()
+    description: 'Nuovo metodo su Product: product_type + brand->name quando product_type è valorizzato, fallback su description_clean altrimenti — sorgente del contenuto embedding per singolo prodotto.'
+    type: Impl
+    status: DONE
+    ref: TASK-05
+  - id: TASK-06
+    title: GenerateProductEmbeddingJob con dedup per hash
+    description: 'Sostituisce GenerateProductBaseEmbeddingJob: calcola content+content_hash via composeEmbeddingContent(), riusa un embedding esistente con stesso model+content_hash quando presente (nessuna chiamata provider duplicata), altrimenti chiama EmbeddingClient e fa updateOrCreate su (product_id, model).'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-04
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: Test GenerateProductEmbeddingJob
+    description: 'Migrare GenerateProductBaseEmbeddingJobTest al nuovo job: dispatch su coda embed, creazione/aggiornamento riga, skip su contenuto vuoto, log su errore provider, e nuovo caso di dedup (due prodotti a contenuto identico → una sola chiamata HTTP).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-06
+    ref: TASK-07
+  - id: TASK-08
+    title: ProductObserver sostituisce ProductBaseObserver
+    description: Nuovo observer su Product che accoda GenerateProductEmbeddingJob quando product_type, description_clean o brand_id cambiano (o sono già valorizzati alla creazione); registrazione in AppServiceProvider al posto di ProductBase::observe().
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-06
+    ref: TASK-08
+  - id: TASK-09
+    title: Test ProductObserver
+    description: 'Migrare ProductBaseObserverTest al nuovo ProductObserver: copre i tre trigger e il no-op quando nessuno dei tre campi cambia.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-08
+    ref: TASK-09
+  - id: TASK-10
+    title: 'Backfill: catalog:embed e catalog:reindex a livello Product'
+    description: catalog:embed --missing accoda GenerateProductEmbeddingJob per Product privi di embedding sul model configurato; catalog:reindex estende la gestione indice GIN/fallback ricalcolo anche a products.search_vector, in aggiunta al comportamento esistente su product_bases.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-06
+    ref: TASK-10
+  - id: TASK-11
+    title: Test backfill embedding + search_vector
+    description: Aggiornare CatalogEmbedCommandTest al livello Product e aggiungere copertura per il ricalcolo di products.search_vector in catalog:reindex sui driver non-pgsql.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-10
+    ref: TASK-11
+  - id: TASK-12
+    title: Adattare SearchService::applyRanking() al nuovo aggancio
+    description: Sostituire il join diretto su product_embeddings.product_base_id (dismessa) con una subquery correlata product_embeddings→products (products.product_base_id = product_bases.id, products.id = product_embeddings.product_id, LIMIT 1) per il punteggio vettoriale; nessun altro cambio di struttura (flat search rimandata a US-047).
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-04
+    ref: TASK-12
+  - id: TASK-13
+    title: Aggiornare le suite SearchService* e collaterali
+    description: Aggiornare SearchServiceFusionRankingTest, SearchServiceGroupingTest, SearchServiceExactCodeMatchTest, SearchServiceFiltersTest, SearchServiceRelevanceCutoffTest, SearchServicePerformanceTest, VectorEmbeddingPgvectorTest e i test Filament/pagina di ricerca (ProductBaseResourceTest, ProductManualActionsTest, ProductResourceViewTest, ProductSearchPageTest, Browser/ProductSearchTest) per inserire l'embedding via un Product figlio invece che direttamente su ProductBase.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-12
+    ref: TASK-13

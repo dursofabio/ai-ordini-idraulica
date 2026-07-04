@@ -2,8 +2,8 @@
 
 namespace App\Providers;
 
-use App\Models\ProductBase;
-use App\Observers\ProductBaseObserver;
+use App\Models\Product;
+use App\Observers\ProductObserver;
 use App\Services\Ai\AiClient;
 use App\Services\Ai\ClaudeClient;
 use App\Services\Ai\OpenRouterClient;
@@ -27,6 +27,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        ProductBase::observe(ProductBaseObserver::class);
+        Product::observe(ProductObserver::class);
     }
 }
