@@ -1,0 +1,35 @@
+schema: archetipo/spec/v2
+code: US-042
+title: Registro attributi con unità canoniche e migrazione delle chiavi esistenti
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 5
+status: REVIEW
+scope: MVP
+body: |-
+  #### US-042: Registro attributi con unità canoniche e migrazione delle chiavi esistenti
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come gestore del catalogo,
+  voglio un registro centrale delle chiavi attributo con tipo dato e unità canonica,
+  così che ogni grandezza fisica abbia una sola chiave e una sola unità in tutto il catalogo.
+
+  **Dimostra**
+  Dopo questa spec, in `product_attributes` non esistono più righe `potenza_watt`: sono state convertite in `potenza_kw`, e un servizio deterministico converte 3500 W → 3.5 kW usando i fattori del registro.
+
+  **Criteri di Accettazione**
+  - [ ] Tabella `attribute_definitions`: `key` univoca, `data_type` (numerico/testuale), `canonical_unit`, unità accettate in input con fattore di conversione, `description`
+  - [ ] Seeder che popola il registro con le chiavi già in uso nel catalogo (le 10 da estrazione regex più le chiavi AI ricorrenti), con unità canoniche decise
+  - [ ] Servizio di conversione deterministico valore+unità → unità canonica; unità sconosciuta produce un errore esplicito, mai una scrittura silenziosa
+  - [ ] Migrazione di backfill: le righe `potenza_watt` diventano `potenza_kw` (valore/1000, unit kW) conservando source e confidence; se il prodotto ha già una riga `potenza_kw`, vince quella con confidenza maggiore
+  - [ ] Le righe già in unità canonica restano invariate
+
+  **Assunzioni**
+  - La conversione di unità è sempre deterministica lato applicazione, guidata dai fattori del registro: l'AI non esegue mai aritmetica di conversione.
+  - La chiave canonica della potenza è `potenza_kw` (già la più diffusa e usata da `SearchService`); `potenza_watt` viene dismessa via backfill.
+  - Il registro si aggancia a `product_attributes.key` per valore stringa: nessuna FK, lo schema EAV resta invariato.

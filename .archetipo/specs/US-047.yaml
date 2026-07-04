@@ -1,0 +1,34 @@
+schema: archetipo/spec/v2
+code: US-047
+title: Ricerca flat a livello di prodotto e rimozione di ProductBase
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 5
+status: REVIEW
+blocked_by:
+  - US-046
+scope: MVP
+body: |-
+  #### US-047: Ricerca flat a livello di prodotto e rimozione di ProductBase
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-046
+
+  **User Story**
+  Come utente della ricerca,
+  voglio risultati a livello di singolo prodotto ordinati per rilevanza,
+  così da trovare lo SKU esatto invece di un gruppo di varianti.
+
+  **Dimostra**
+  La pagina di ricerca e `GET /api/search` restituiscono singoli prodotti; `ProductBase` e `GroupingResolver` non esistono più nel codice.
+
+  **Criteri di Accettazione**
+  - [ ] `SearchService` opera su `Product`: filtri attributi diretti sul prodotto, ranking con join su `product_embeddings.product_id`, match esatto su `codice_articolo` sempre in cima
+  - [ ] `variants_count` e `power_range` rimossi da risultati, API e pagina Filament; lista piatta senza deduplica (decisione confermata)
+  - [ ] `ProductBase` (modello e tabella), `GroupingResolver` e i job/resource collegati rimossi, con migrazioni di dismissione
+  - [ ] `GET /api/search` e la pagina di ricerca funzionano invariati nell'interfaccia esterna, con i test aggiornati e verdi
+
+  **Assunzioni**
+  - Nessuna deduplica/collasso in UI: le varianti quasi identiche escono adiacenti nel ranking e si restringono con i filtri (decisione confermata nel documento di handoff).

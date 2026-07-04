@@ -1,0 +1,36 @@
+schema: archetipo/spec/v2
+code: US-043
+title: Estrazione attributi solo AI ancorata al registro (dismissione regex)
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 5
+status: REVIEW
+blocked_by:
+  - US-042
+scope: MVP
+body: |-
+  #### US-043: Estrazione attributi solo AI ancorata al registro (dismissione regex)
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-042
+
+  **User Story**
+  Come gestore del catalogo,
+  voglio che l'estrazione degli attributi passi esclusivamente dalla classificazione AI vincolata al vocabolario del registro,
+  così da eliminare la frammentazione delle chiavi e la manutenzione degli estrattori regex.
+
+  **Dimostra**
+  Classificando un prodotto che riporta "3500 W" nel testo, in `product_attributes` compare `potenza_kw = 3.5` con source `ai`; `AttributeResolver` non esiste più e la pipeline di import non lo invoca.
+
+  **Criteri di Accettazione**
+  - [ ] Il prompt di classificazione include il vocabolario globale del registro (chiave, tipo, unità canonica, descrizione) e impone l'uso delle chiavi canoniche
+  - [ ] L'AI restituisce per ogni attributo valore e unità come letti nel testo; la conversione all'unità canonica avviene lato applicazione (servizio di US-042), mai delegata all'AI
+  - [ ] Un attributo con unità non convertibile non viene scritto: resta come proposta pending nella coda di revisione
+  - [ ] `AttributeResolver` e il relativo passo di pipeline rimossi, test aggiornati
+  - [ ] Le righe esistenti con source `regex` restano valide e sovrascrivibili dall'AI (guardia delle sorgenti autorevoli invariata)
+
+  **Assunzioni**
+  - Le righe `source = 'regex'` esistenti non vengono rigenerate in massa via AI (costo ingiustificato): si estinguono naturalmente man mano che l'AI le sovrascrive.
+  - Trade-off accettato: senza estrazione regex, un prodotto non ancora classificato dall'AI (es. per tetto di spesa US-016) non ha attributi finché non passa dalla classificazione.

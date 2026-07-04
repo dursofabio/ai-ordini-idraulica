@@ -1,0 +1,36 @@
+schema: archetipo/spec/v2
+code: US-046
+title: Embedding e indice full-text per singolo prodotto
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 5
+status: REVIEW
+blocked_by:
+  - US-045
+scope: MVP
+body: |-
+  #### US-046: Embedding e indice full-text per singolo prodotto
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-045
+
+  **User Story**
+  Come utente della ricerca,
+  voglio che ogni singolo prodotto abbia embedding e indice full-text propri, basati su tipo prodotto e marca,
+  così che la ricerca possa restituire direttamente lo SKU giusto.
+
+  **Dimostra**
+  Il job di embedding genera righe `product_embeddings` agganciate a `product_id`; due varianti dello stesso modello condividono lo stesso contenuto e non generano due chiamate al provider.
+
+  **Criteri di Accettazione**
+  - [ ] `product_embeddings` riferisce `product_id` (unico per prodotto+modello); l'aggancio a `product_base_id` è dismesso
+  - [ ] Contenuto embedding = `product_type` + marca, con fallback sulla descrizione pulita quando `product_type` è assente
+  - [ ] Contenuti identici tra varianti riusano lo stesso vettore (dedup per hash del contenuto): nessuna chiamata duplicata al provider
+  - [ ] `search_vector` (tsvector) creato su `products`, alimentato da tipo prodotto, marca e descrizione
+  - [ ] Comando di backfill che rigenera embedding e search_vector per il catalogo esistente
+
+  **Assunzioni**
+  - Le varianti dello stesso modello hanno per costruzione vettori identici: è voluto (la disambiguazione avviene via filtri attributi e margine di confidenza, US-049), ma il calcolo va deduplicato per non pagare embedding ripetuti.
+  - `search_vector` e `description_ai` oggi vivono su `product_bases`: la ricostruzione dell'indice full-text su `products` è parte di questa spec.

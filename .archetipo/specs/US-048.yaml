@@ -1,0 +1,36 @@
+schema: archetipo/spec/v2
+code: US-048
+title: Parser AI della query in linguaggio naturale con filtro rigido sugli attributi
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 5
+status: REVIEW
+blocked_by:
+  - US-042
+  - US-047
+scope: MVP
+body: |-
+  #### US-048: Parser AI della query in linguaggio naturale con filtro rigido sugli attributi
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-042, US-047
+
+  **User Story**
+  Come utente del catalogo,
+  voglio scrivere cosa cerco in linguaggio naturale,
+  così che il sistema riconosca tipo prodotto e vincoli tecnici e li applichi come filtri esatti prima del ranking.
+
+  **Dimostra**
+  Cercando "tubo inox 1 pollice", il sistema applica i filtri `attacco_pollici = 1` e materiale inox (in unità canoniche), fa il ranking semantico solo sul testo residuo e mostra l'interpretazione applicata.
+
+  **Criteri di Accettazione**
+  - [ ] Componente parser AI: query → parte descrittiva + attributi espliciti {chiave canonica, valore o min/max in unità canonica}, con il registro come vocabolario chiuso
+  - [ ] Gli attributi estratti diventano filtri duri prima dello scoring; il testo residuo alimenta la fusione vettoriale + full-text esistente
+  - [ ] Le menzioni non riconducibili al registro restano nel testo semantico: nessun filtro inventato
+  - [ ] La risposta (API e pagina) espone l'interpretazione: tipo riconosciuto e filtri applicati
+  - [ ] Il risultato del parsing è messo in cache per query identiche (contenimento costo AI)
+
+  **Assunzioni**
+  - Il filtro duro esclude anche i prodotti a cui l'attributo non è mai stato estratto (semantica attuale di `applyFilters`): trade-off accettato, mitigato dall'esposizione dei filtri applicati nella risposta.

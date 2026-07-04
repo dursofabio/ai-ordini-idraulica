@@ -1,0 +1,35 @@
+schema: archetipo/spec/v2
+code: US-044
+title: Proposta e revisione di nuove chiavi attributo
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: MEDIUM
+points: 3
+status: TODO
+blocked_by:
+  - US-043
+scope: MVP
+body: |-
+  #### US-044: Proposta e revisione di nuove chiavi attributo
+
+  **Epica:** EP-009 | **Priorità:** MEDIUM | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-043
+
+  **User Story**
+  Come revisore del catalogo,
+  voglio che le chiavi attributo nuove proposte dall'AI passino dalla coda di revisione prima di diventare canoniche,
+  così da evitare che la frammentazione si ricrei a livello di registro.
+
+  **Dimostra**
+  L'AI propone la chiave `portata_lmin` non a registro: in coda di revisione appare una proposta di nuova definizione con accanto le chiavi esistenti più simili; approvandola la chiave entra nel registro, scartandola non succede nulla.
+
+  **Criteri di Accettazione**
+  - [ ] Un attributo AI con chiave fuori registro non scrive `product_attributes`: genera una proposta di tipo "definizione attributo" (estensione di `enrichment_proposals`) con key, tipo, unità e descrizione proposti
+  - [ ] La coda di revisione mostra queste proposte affiancate alle chiavi esistenti più simili, per il controllo di equivalenza semantica
+  - [ ] Approvazione → riga creata in `attribute_definitions`; scarto → proposta rifiutata senza effetti
+  - [ ] Proposte ripetute per la stessa chiave non ancora revisionata si accorpano invece di intasare la coda
+
+  **Assunzioni**
+  - Si riusa `enrichment_proposals` e la coda di revisione esistente (US-040/041) con un nuovo tipo di proposta: nessuna tabella dedicata.
+  - Il controllo di equivalenza semantica è umano in prima battuta, assistito dal suggerimento delle chiavi simili.

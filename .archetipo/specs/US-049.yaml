@@ -1,0 +1,36 @@
+schema: archetipo/spec/v2
+code: US-049
+title: Margine di confidenza top-1/top-2 e match automatico
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 3
+status: REVIEW
+blocked_by:
+  - US-048
+scope: MVP
+body: |-
+  #### US-049: Margine di confidenza top-1/top-2 e match automatico
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 3 | **Stato:** TODO
+  **Bloccata da:** US-048
+
+  **User Story**
+  Come utente del catalogo,
+  voglio che la ricerca dichiari quando il primo risultato è un match sicuro,
+  così da avere il prodotto confermato automaticamente oppure una disambiguazione guidata tra i candidati.
+
+  **Dimostra**
+  Una query specifica produce esito "match automatico" con un solo prodotto; una query ambigua tra due varianti produce esito "da disambiguare" con la lista dei candidati.
+
+  **Criteri di Accettazione**
+  - [ ] Margine relativo `(score1 − score2) / score1` calcolato sulla sola componente coseno del set di candidati della query, mai sul `combined_score` grezzo
+  - [ ] Soglie configurabili in `config/search.php`; esito tri-stato: match automatico / disambiguazione / nessun risultato
+  - [ ] Match esatto su `codice_articolo` → sempre match automatico
+  - [ ] Parità di punteggio (varianti con embedding identico) → mai match automatico, esito disambiguazione
+  - [ ] L'API restituisce esito, margine e candidati
+
+  **Assunzioni**
+  - I valori numerici delle soglie si tarano in implementazione su un set di query di prova: la spec richiede la configurabilità, non un numero specifico.
+  - Il `ts_rank` non è comparabile tra query diverse: per questo il margine usa la sola componente coseno, normalizzata sul set di candidati.

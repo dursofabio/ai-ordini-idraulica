@@ -19,6 +19,8 @@ epics:
     title: Backoffice Filament
   - code: EP-008
     title: Comandi e Scheduling
+  - code: EP-009
+    title: Normalizzazione AI e Ricerca a Prodotto Singolo
 order:
   - US-001
   - US-002
@@ -61,3 +63,11 @@ order:
   - US-039
   - US-040
   - US-041
+  - US-042
+  - US-043
+  - US-044
+  - US-045
+  - US-046
+  - US-047
+  - US-048
+  - US-049

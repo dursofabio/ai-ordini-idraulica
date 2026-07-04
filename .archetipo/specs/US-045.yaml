@@ -1,0 +1,32 @@
+schema: archetipo/spec/v2
+code: US-045
+title: Persistenza di product_type pulito
+epic:
+  code: EP-009
+  title: Normalizzazione AI e Ricerca a Prodotto Singolo
+priority: HIGH
+points: 2
+status: REVIEW
+scope: MVP
+body: |-
+  #### US-045: Persistenza di product_type pulito
+
+  **Epica:** EP-009 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come gestore del catalogo,
+  voglio che il tipo prodotto già restituito dall'AI venga salvato su `products` come nome pulito del tipo,
+  così da avere una base testuale affidabile per embedding e ricerca.
+
+  **Dimostra**
+  Dopo una classificazione, il prodotto ha `product_type` valorizzato (es. "Caldaia a condensazione"), senza marca né valori di attributi.
+
+  **Criteri di Accettazione**
+  - [ ] Colonna `product_type` su `products`, popolata da `EnrichmentApplier` secondo le stesse fasce di confidenza degli altri campi AI
+  - [ ] Istruzione di prompt ristretta: `product_type` contiene solo il nome/tipo del prodotto, esplicitamente senza marca, famiglia, sottofamiglia o valori di attributi
+  - [ ] `enriched_description` resta invariata (continua a vivere solo nel log di arricchimento)
+  - [ ] Una riclassificazione aggiorna il valore esistente
+
+  **Assunzioni**
+  - Si riusa il campo `product_type` già presente nel contratto AI (`ClassifiedProduct`/`ClassificationResponseValidator`): nessun campo nuovo nel contratto.
