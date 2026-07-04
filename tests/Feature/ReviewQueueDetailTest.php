@@ -298,6 +298,44 @@ class ReviewQueueDetailTest extends TestCase
     }
 
     /**
+     * US-045: this page has no field to correct `product_type` (out of
+     * scope), so saving brand/family/subfamily corrections must leave an
+     * independent pending `product_type` proposal on the same product
+     * genuinely `pending` instead of silently marking it `applied`.
+     */
+    public function test_save_leaves_an_independent_pending_product_type_proposal_untouched(): void
+    {
+        $admin = User::factory()->create();
+        $correctedBrand = Brand::factory()->create();
+        $correctedFamily = Family::factory()->create();
+        $correctedSubfamily = Subfamily::factory()->create(['family_id' => $correctedFamily->id]);
+        $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
+
+        $pendingProductTypeProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'product_type',
+            'value_text' => 'Caldaia a condensazione',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueueDetail::class, ['record' => $product->getRouteKey()])
+            ->fillForm([
+                'brand_id' => $correctedBrand->id,
+                'family_id' => $correctedFamily->id,
+                'subfamily_id' => $correctedSubfamily->id,
+            ])
+            ->call('save')
+            ->assertRedirect(ReviewQueue::getUrl());
+
+        $pendingProductTypeProposal->refresh();
+
+        $this->assertSame('pending', $pendingProductTypeProposal->status);
+        $this->assertNull($product->fresh()->product_type);
+    }
+
+    /**
      * Regression guard: a `pending` attribute proposal whose confidence was
      * too low to ever be written to `product_attributes` (see
      * {@see EnrichmentApplier}) never materializes a

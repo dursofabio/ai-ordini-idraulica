@@ -115,6 +115,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                         'family' => 'Famiglia',
                         'subfamily' => 'Sottofamiglia',
                         'attribute' => 'Attributo',
+                        'product_type' => 'Tipo prodotto',
                     ]),
                 SelectFilter::make('confidence_band')
                     ->label('Fascia di confidenza')
@@ -257,7 +258,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                 ],
             })
             ->fillForm(fn (EnrichmentProposal $record): array => match ($record->field) {
-                'attribute' => [
+                'attribute', 'product_type' => [
                     'value_text' => $record->value_text,
                     'value_num' => $record->value_num,
                     'unit' => $record->unit,
@@ -361,7 +362,9 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
      * (and `confidence = $confidence`, mirroring
      * {@see EnrichmentApplier::writeAttribute()} —
      * only passed by {@see applyConfirm()}, since a manual correction has no
-     * meaningful confidence score to carry over).
+     * meaningful confidence score to carry over). `product_type` (US-045)
+     * has no `_id`/`_source` columns: it writes the plain text value
+     * directly onto the `product_type` column instead.
      *
      * @param  array{value_id: ?int, value_text: ?string, value_num: ?float, unit: ?string}  $values
      */
@@ -378,6 +381,14 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                     'confidence' => $confidence,
                 ],
             );
+
+            return;
+        }
+
+        if ($proposal->field === 'product_type') {
+            $proposal->product->update([
+                'product_type' => $values['value_text'],
+            ]);
 
             return;
         }
@@ -410,6 +421,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'family' => 'Famiglia',
             'subfamily' => 'Sottofamiglia',
             'attribute' => "Attributo: {$proposal->attribute_key}",
+            'product_type' => 'Tipo prodotto',
             default => $proposal->field,
         };
     }
@@ -426,6 +438,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'family' => Family::query()->find($proposal->value_id)?->name ?? '—',
             'subfamily' => Subfamily::query()->find($proposal->value_id)?->name ?? '—',
             'attribute' => self::attributeValueLabel($proposal),
+            'product_type' => $proposal->value_text ?? '—',
             default => '—',
         };
     }

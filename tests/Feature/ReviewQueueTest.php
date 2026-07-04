@@ -468,6 +468,100 @@ class ReviewQueueTest extends TestCase
     }
 
     /**
+     * US-045 AC1: confirming a `product_type` proposal writes the plain
+     * text value directly to `products.product_type` (there is no
+     * `product_type_id`/`product_type_source`), and marks the proposal
+     * `applied`.
+     */
+    public function test_confirm_action_writes_product_type_value_and_marks_proposal_applied(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'product_type',
+            'value_text' => 'Caldaia a condensazione',
+            'origin' => 'ai',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('confirm', $proposal);
+
+        $proposal->refresh();
+
+        $this->assertSame('Caldaia a condensazione', $product->fresh()->product_type);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * US-045 AC1: the correction form for a `product_type` proposal is
+     * prevalorized from `value_text` (like an attribute), not `value_id`.
+     */
+    public function test_correct_action_product_type_form_is_prefilled_with_current_text_value(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'product_type',
+            'value_text' => 'Miscelatore',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet(['value_text' => 'Miscelatore']);
+    }
+
+    /**
+     * US-045 AC1: correcting a `product_type` proposal writes the submitted
+     * text value directly to `products.product_type` and marks the proposal
+     * `applied`.
+     */
+    public function test_correct_action_saves_submitted_product_type_value(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'product_type',
+            'value_text' => 'Miscelatore',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('correct', $proposal, ['value_text' => 'Caldaia a condensazione']);
+
+        $proposal->refresh();
+
+        $this->assertSame('Caldaia a condensazione', $product->fresh()->product_type);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * US-045: the `field` filter must include `product_type` so an admin can
+     * isolate pending product-type proposals.
+     */
+    public function test_field_filter_narrows_the_queue_to_product_type_proposals(): void
+    {
+        $admin = User::factory()->create();
+        $productTypeProposal = EnrichmentProposal::factory()->create(['field' => 'product_type', 'status' => 'pending']);
+        $brandProposal = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('field', 'product_type')
+            ->assertCanSeeTableRecords([$productTypeProposal])
+            ->assertCanNotSeeTableRecords([$brandProposal]);
+    }
+
+    /**
      * US-041 AC2: confirming an attribute proposal writes the technical
      * attribute row (creating it if missing) with `source` set to the
      * proposal's own `origin`, and marks the proposal `applied`.

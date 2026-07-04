@@ -301,7 +301,7 @@ class ReviewQueueDetail extends Page implements HasActions, HasSchemas
             ->where('product_id', $this->product->id)
             ->where('status', 'pending')
             ->where(function (Builder $query) use ($resolvedAttributeKeys): void {
-                $query->where('field', '!=', 'attribute')
+                $query->whereIn('field', ['brand', 'family', 'subfamily'])
                     ->orWhereIn('attribute_key', $resolvedAttributeKeys);
             })
             ->update(['status' => 'applied']);

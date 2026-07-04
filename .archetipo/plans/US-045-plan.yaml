@@ -1,0 +1,126 @@
+schema: archetipo/plan/v2
+spec_code: US-045
+body: |-
+  # US-045: Persistenza di product_type pulito — Piano di Implementazione
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-04
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-009 — Normalizzazione AI e Ricerca a Prodotto Singolo
+  **Priorità:** HIGH | **Punti:** 2
+
+  **User Story**
+  Come gestore del catalogo, voglio che il tipo prodotto già restituito dall'AI venga salvato su `products` come nome pulito del tipo, così da avere una base testuale affidabile per embedding e ricerca.
+
+  **Criteri di Accettazione**
+  - Colonna `product_type` su `products`, popolata da `EnrichmentApplier` secondo le stesse fasce di confidenza degli altri campi AI
+  - Istruzione di prompt ristretta: `product_type` contiene solo il nome/tipo del prodotto, esplicitamente senza marca, famiglia, sottofamiglia o valori di attributi
+  - `enriched_description` resta invariata (continua a vivere solo nel log di arricchimento)
+  - Una riclassificazione aggiorna il valore esistente
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Il campo `product_type` è già richiesto all'AI e già validato/parsato da `ClassificationResponseValidator`/`ClassifiedProduct` (nessuna modifica al contratto AI, come da Assunzioni dello spec): oggi viene solo loggato in `EnrichmentLog` e scartato. Il lavoro consiste nell'aggiungere la colonna mancante su `products` e nel far scrivere quel valore da `EnrichmentApplier`, riusando esattamente lo stesso meccanismo a fasce di confidenza già applicato a brand/family/subfamily — nessuna nuova soglia, nessun nuovo stato.
+
+  - **Migrazione**: nuova colonna `products.product_type` (string, nullable), posizionata dopo `description_clean`. Nessuna colonna `product_type_source` aggiuntiva: lo spec non la richiede esplicitamente (unica colonna elencata nelle AC) e il campo non passa da una tassonomia chiusa da validare — si comporta come un valore AI a fasce di confidenza generiche, senza guardia per-campo contro un override manuale, in modo coerente con l'AC4 ("una riclassificazione aggiorna il valore esistente": nessuna protezione da sovrascrittura è quindi accettata come trade-off esplicito, non un difetto).
+  - **`EnrichmentApplier::resolvedAttributes()`**: aggiunge `product_type` all'array `$attributes` quando `$result->productType !== null`, esattamente come già avviene per brand/family/subfamily. Il gate di confidenza esistente in `apply()` (branch `< LOW_CONFIDENCE_THRESHOLD` → solo proposta pending, nessuna scrittura; branch `>= LOW_CONFIDENCE_THRESHOLD` → scrittura + `enrichment_status` derivato) si applica automaticamente anche a questo campo, senza toccare `apply()`.
+  - **`EnrichmentApplier::recordResolvedProposals()`**: brand/family/subfamily oggi sono loggati cercando la chiave `"{$field}_id"`; `product_type` non ha un `_id` (nessuna riga di tassonomia da referenziare), quindi va loggato con un ramo dedicato che usa `value_text` invece di `value_id` sulla stessa tabella `enrichment_proposals` (colonna già esistente, usata oggi dagli attributi tecnici).
+  - **`ClassificationPromptBuilder`**: la prompt attuale chiede già "marca, famiglia, sottofamiglia e tipo prodotto" ma non vieta esplicitamente di mescolare marca/famiglia/attributi dentro `product_type`. Aggiunge una frase dedicata e restrittiva (es. "il campo product_type deve contenere ESCLUSIVAMENTE il nome/tipo del prodotto ... MAI marca, famiglia, sottofamiglia o valori di attributi") accanto alla sezione che già descrive lo schema JSON di risposta.
+  - **`Product` model**: aggiunge `product_type` alla lista `#[Fillable]`, altrimenti `EnrichmentApplier::apply()`'s `$product->fill($attributes)` scarterebbe silenziosamente il campo.
+  - **Effetto collaterale da correggere in `enrichment_proposals`/Review Queue (US-039/040/041)**: introdurre un nuovo valore di `field` (`product_type`) nel registro condiviso rompe due punti che oggi assumono solo `brand|family|subfamily|attribute`:
+    - `ReviewQueue::writeProposalValue()` non ha un ramo per `product_type` e cadrebbe nel ramo di default (taxonomy `{field}_id`/`{field}_source`), tentando un update su colonne inesistenti (`product_type_id`, `product_type_source`) e generando un errore SQL a runtime quando un admin conferma o corregge una proposta pending di tipo `product_type`. Va aggiunto un ramo dedicato che scrive direttamente sulla colonna `product_type`.
+    - `ReviewQueue::correctAction()->fillForm()` sceglie tra `value_id` (default) e `value_text/value_num/unit` (solo per `'attribute'`): per `product_type` cadrebbe nel default e prevalorizzerebbe con `value_id` (sempre null) invece che con `value_text`. Va generalizzato il match per trattare `product_type` come `attribute` ai fini del form di correzione (input di solo testo).
+    - `ReviewQueueDetail::save()` marca `applied` ogni proposta pending con `field != 'attribute'` per evitare proposte "fantasma" quando l'admin salva la form brand/family/subfamily — ma quella pagina non ha (e non deve avere, fuori scope per 2 SP) un campo per correggere `product_type`. Senza fix, salvare correzioni di brand/family/subfamily marcherebbe silenziosamente `applied` anche una proposta pending di `product_type` mai realmente scritta sul prodotto. Va ristretta la condizione a `whereIn('field', ['brand', 'family', 'subfamily'])`, lasciando `product_type` genuinamente pending (comunque gestibile dalle azioni riga di `ReviewQueue`).
+    - `fieldLabel()`/`proposedValueLabel()`/filtro `SelectFilter('field')` ricevono un caso `'product_type' => 'Tipo prodotto'` per coerenza di UI (senza questo, il default esistente già evita crash — `fieldLabel()` e `proposedValueLabel()` hanno un `default` — ma il filtro a tendina non permetterebbe di isolare le proposte di tipo prodotto).
+
+  ---
+
+  ## Strategia di Test
+
+  Nessuna interfaccia nuova: la copertura è interamente a livello Feature test (PHPUnit), niente e2e.
+
+  - `ClassificationPromptBuilderTest`: verifica che il prompt generato contenga l'istruzione restrittiva su `product_type` (assenza di marca/attributi).
+  - `EnrichmentApplierTest`: estende i casi esistenti (che già passano `productType` nel costruttore di `ClassifiedProduct` senza asserirlo) con asserzioni esplicite su `products.product_type` e sulla riga `enrichment_proposals` (`field = 'product_type'`, `value_text`) per: confidenza alta (scritto, `status = applied`), confidenza bassa (non scritto, `status = pending`), riclassificazione che aggiorna un valore già presente.
+  - `ReviewQueueTest`: nuovo caso di conferma/correzione di una proposta pending `field = 'product_type'` — verifica che `confirmAction`/`correctAction` scrivano `products.product_type` (non `product_type_id`) senza sollevare eccezioni, e che il filtro `field` includa l'opzione `product_type`.
+  - `ReviewQueueDetailTest`: verifica che salvare correzioni brand/family/subfamily da questa pagina non marchi `applied` una proposta pending `product_type` indipendente sullo stesso prodotto (resta `pending`).
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-04_
+tasks:
+  - id: TASK-01
+    title: 'Migrazione: colonna product_type su products'
+    description: Nuova migrazione che aggiunge `product_type` (string, nullable) a `products`, posizionata dopo `description_clean`, con `down()` simmetrico.
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: 'Product model: aggiungere product_type ai fillable'
+    description: Aggiunge `product_type` alla lista `#[Fillable]` di `App\Models\Product`, altrimenti `EnrichmentApplier` non riesce a scriverlo via `fill()`.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Restringere l'istruzione di prompt su product_type
+    description: In `ClassificationPromptBuilder`, aggiunge una frase esplicita che vieta di includere marca/famiglia/sottofamiglia/attributi dentro `product_type`, mantenendo `enriched_description` invariato.
+    type: Impl
+    status: DONE
+    ref: TASK-03
+  - id: TASK-04
+    title: 'Test: prompt restringe product_type'
+    description: Nuovo test in `ClassificationPromptBuilderTest` che verifica la presenza dell'istruzione restrittiva su `product_type` nel testo del prompt generato.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: 'EnrichmentApplier: persistere product_type a fasce di confidenza'
+    description: Estende `resolvedAttributes()` per includere `product_type` (quando non null) nell'array scritto su `$product`, riusando il gate di confidenza esistente in `apply()`; estende `recordResolvedProposals()` con un ramo dedicato che registra la proposta `field = 'product_type'` usando `value_text` invece di `value_id`.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-02
+    ref: TASK-05
+  - id: TASK-06
+    title: 'Test: persistenza e riclassificazione di product_type'
+    description: 'Estende `EnrichmentApplierTest` con asserzioni esplicite su `products.product_type` e sulla riga `enrichment_proposals` corrispondente per i casi: confidenza alta (scritto + proposal applied), confidenza bassa (non scritto + proposal pending), riclassificazione che sovrascrive un valore già presente.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: 'ReviewQueue: gestire il nuovo field product_type'
+    description: 'In `app/Filament/Pages/ReviewQueue.php`: ramo dedicato in `writeProposalValue()` che scrive direttamente sulla colonna `product_type` (non `{field}_id`/`{field}_source`); allinea `correctAction()->fillForm()` a trattare `product_type` come `attribute` (prevalorizza `value_text`, non `value_id`); aggiunge l''etichetta `''product_type'' => ''Tipo prodotto''` a `fieldLabel()`, `proposedValueLabel()` e alle opzioni del `SelectFilter(''field'')`.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-07
+  - id: TASK-08
+    title: 'ReviewQueueDetail: non auto-risolvere proposte product_type'
+    description: In `app/Filament/Pages/ReviewQueueDetail.php::save()`, restringe la query di auto-`applied` da `field != 'attribute'` a `whereIn('field', ['brand', 'family', 'subfamily'])`, così una proposta pending `product_type` indipendente non viene marcata applied quando questa pagina salva solo brand/family/subfamily.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-08
+  - id: TASK-09
+    title: 'Test: Review Queue e dettaglio con proposte product_type'
+    description: Estende `ReviewQueueTest` con casi di conferma/correzione di una proposta `field = 'product_type'` (scrittura corretta su `products.product_type`, filtro per campo) ed estende `ReviewQueueDetailTest` per verificare che salvare correzioni brand/family/subfamily lasci `pending` una proposta `product_type` indipendente sullo stesso prodotto.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-07
+      - TASK-08
+    ref: TASK-09
