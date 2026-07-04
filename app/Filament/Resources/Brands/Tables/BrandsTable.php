@@ -23,6 +23,10 @@ class BrandsTable
                 TextColumn::make('aliases')
                     ->label('N. alias')
                     ->state(fn (Brand $record): int => count($record->aliases ?? [])),
+                TextColumn::make('products_count')
+                    ->label('N. prodotti')
+                    ->counts('products')
+                    ->sortable(),
             ])
             ->filters([
                 //
