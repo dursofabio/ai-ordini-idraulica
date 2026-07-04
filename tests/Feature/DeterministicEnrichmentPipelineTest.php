@@ -3,28 +3,29 @@
 namespace Tests\Feature;
 
 use App\Models\Brand;
-use App\Models\Family;
 use App\Models\Product;
-use App\Models\ProductBase;
 use App\Services\Ai\TaxonomyCatalog;
-use App\Services\Enrichment\AttributeResolver;
 use App\Services\Enrichment\BrandResolver;
 use App\Services\Enrichment\DeterministicEnrichmentPipeline;
 use App\Services\Enrichment\EnrichmentProposalRecorder;
-use App\Services\Enrichment\FamilyPropagationResolver;
 use App\Services\Enrichment\FileTaxonomyResolver;
-use App\Services\Enrichment\GroupingResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
 /**
- * US-026 acceptance criteria — Step A orchestration:
- *  - Runs brand resolution before grouping (grouping requires a resolved
- *    brand), and family propagation only after a product_base is assigned.
+ * US-026 acceptance criteria — Step A orchestration (US-047 flattens this
+ * onto a single `Product` row: grouping/family-propagation no longer exist):
+ *  - Runs FileTaxonomyResolver first, so its *_source = 'file' idempotency
+ *    guards make BrandResolver no-op on whatever it already linked.
  *  - Returns accurate counts for each resolver stage.
  *  - No-ops (all counts zero) for a product that is not enrichment_status
  *    pending.
+ *
+ * US-043 removed the regex attribute extraction pass from this pipeline
+ * (technical attributes are now extracted exclusively by AI classification,
+ * anchored to the attribute registry): this suite covers brand/file-linking
+ * orchestration only.
  *
  * Runs against in-memory SQLite via RequiresDatabase, matching the sibling
  * resolver test suites.
@@ -39,13 +40,10 @@ class DeterministicEnrichmentPipelineTest extends TestCase
         return new DeterministicEnrichmentPipeline(
             new FileTaxonomyResolver(new TaxonomyCatalog, new EnrichmentProposalRecorder),
             new BrandResolver(new EnrichmentProposalRecorder),
-            new AttributeResolver(new EnrichmentProposalRecorder),
-            new GroupingResolver,
-            new FamilyPropagationResolver(new EnrichmentProposalRecorder),
         );
     }
 
-    public function test_resolves_brand_before_grouping_so_a_product_base_is_assigned(): void
+    public function test_resolves_brand_for_a_pending_product(): void
     {
         Brand::factory()->create(['name' => 'Vaillant', 'aliases' => ['VAI']]);
 
@@ -54,59 +52,16 @@ class DeterministicEnrichmentPipelineTest extends TestCase
             'description_clean' => null,
             'enrichment_status' => 'pending',
             'brand_id' => null,
-            'product_base_id' => null,
         ]);
 
         $summary = $this->pipeline()->run($product);
 
         $product->refresh();
-        $this->assertNotNull($product->brand_id, 'Brand should be resolved before grouping runs.');
-        $this->assertNotNull($product->product_base_id, 'Grouping should succeed once the brand is resolved.');
+        $this->assertNotNull($product->brand_id, 'Brand should be resolved.');
         $this->assertSame(1, $summary['brands_resolved']);
-        $this->assertSame(1, $summary['groups_resolved']);
-        $this->assertGreaterThan(0, $summary['attributes_written']);
     }
 
-    public function test_propagates_family_to_sibling_variant_after_grouping(): void
-    {
-        $brand = Brand::factory()->create(['name' => 'Vaillant', 'aliases' => ['VAI']]);
-        $family = Family::factory()->create();
-
-        $base = ProductBase::factory()->create([
-            'grouping_key' => hash('sha256', $brand->id.'|VAI 8 WNI'),
-            'brand_id' => $brand->id,
-        ]);
-
-        // Sibling already in the group, carrying the family that should
-        // propagate to the pending product once it joins the same base.
-        Product::factory()->create([
-            'description_clean' => 'VAI 8-035 WNI',
-            'brand_id' => $brand->id,
-            'product_base_id' => $base->id,
-            'grouping_key' => $base->grouping_key,
-            'family_id' => $family->id,
-            'enrichment_status' => 'enriched',
-        ]);
-
-        $product = Product::factory()->create([
-            'description_raw' => 'VAI 8-025 WNI',
-            'description_clean' => null,
-            'enrichment_status' => 'pending',
-            'brand_id' => $brand->id,
-            'product_base_id' => null,
-            'family_id' => null,
-        ]);
-
-        $summary = $this->pipeline()->run($product);
-
-        $product->refresh();
-        $this->assertSame($base->id, $product->product_base_id);
-        $this->assertSame($family->id, $product->family_id);
-        $this->assertSame('propagated', $product->family_source);
-        $this->assertGreaterThan(0, $summary['families_propagated']);
-    }
-
-    public function test_file_taxonomy_link_wins_over_textual_brand_deduction_and_still_feeds_grouping(): void
+    public function test_file_taxonomy_link_wins_over_textual_brand_deduction(): void
     {
         $fileBrand = Brand::factory()->create(['name' => 'WAVIN', 'slug' => 'wavin']);
         Brand::factory()->create(['name' => 'Vaillant', 'aliases' => ['VAI']]);
@@ -121,7 +76,6 @@ class DeterministicEnrichmentPipelineTest extends TestCase
             'descrizione_marca' => null,
             'enrichment_status' => 'pending',
             'brand_id' => null,
-            'product_base_id' => null,
         ]);
 
         $summary = $this->pipeline()->run($product);
@@ -131,9 +85,6 @@ class DeterministicEnrichmentPipelineTest extends TestCase
         $this->assertSame('file', $product->brand_source);
         $this->assertSame(1, $summary['brands_linked_from_file']);
         $this->assertSame(0, $summary['brands_resolved'], 'BrandResolver must no-op once the file has already linked a brand.');
-
-        $this->assertNotNull($product->product_base_id, 'Grouping must still run using the brand linked from file.');
-        $this->assertSame($fileBrand->id, $product->productBase->brand_id);
     }
 
     public function test_is_a_noop_for_a_product_that_is_not_pending(): void
@@ -142,18 +93,13 @@ class DeterministicEnrichmentPipelineTest extends TestCase
             'description_raw' => 'CALDAIA VAI 8-025 WNI',
             'enrichment_status' => 'enriched',
             'brand_id' => null,
-            'product_base_id' => null,
         ]);
 
         $summary = $this->pipeline()->run($product);
 
         $product->refresh();
         $this->assertNull($product->brand_id);
-        $this->assertNull($product->product_base_id);
         $this->assertSame(0, $summary['brands_resolved']);
-        $this->assertSame(0, $summary['attributes_written']);
-        $this->assertSame(0, $summary['groups_resolved']);
-        $this->assertSame(0, $summary['families_propagated']);
     }
 
     public function test_is_a_noop_for_an_already_enriched_product(): void
@@ -163,13 +109,11 @@ class DeterministicEnrichmentPipelineTest extends TestCase
             'description_raw' => 'CALDAIA VAI 8-025 WNI',
             'enrichment_status' => 'needs_review',
             'brand_id' => $brand->id,
-            'product_base_id' => null,
         ]);
 
         $summary = $this->pipeline()->run($product);
 
         $product->refresh();
-        $this->assertNull($product->product_base_id);
-        $this->assertSame(0, $summary['groups_resolved']);
+        $this->assertSame(0, $summary['brands_resolved']);
     }
 }

@@ -1,0 +1,119 @@
+schema: archetipo/plan/v2
+spec_code: US-043
+body: |-
+  ## Soluzione Tecnica
+
+  L'estrazione degli attributi tecnici passa esclusivamente dalla classificazione AI, ancorata al vocabolario globale del registro `attribute_definitions` introdotto da US-042 (contratti riusati, non ridefiniti: modello `AttributeDefinition`, servizio `App\Services\Enrichment\AttributeUnitConverter::convertToCanonical(AttributeDefinition $definition, float $value, ?string $unit): float` con `UnknownAttributeUnitException` per unità sconosciute, seeder con le 9 chiavi canoniche + `portata_lmin` e `description` italiane pensate come grounding del prompt). L'AI riporta valore e unità come letti nel testo; la conversione all'unità canonica avviene sempre in `EnrichmentApplier` via `AttributeUnitConverter`, mai delegata al modello. `AttributeResolver` e il relativo passo di pipeline vengono rimossi.
+
+  - **Nuovo servizio `App\Services\Ai\AttributeVocabulary`** — speculare a `TaxonomyCatalog`: collezione di `AttributeDefinition` lazy-loaded e memoizzata per istanza (una sola query per job batch). API: `toPromptText(): string` che rende una riga per definizione nel formato `- chiave | tipo (numeric/text) | unità canonica (o “testo libero”) | descrizione` (le `description` italiane del seeder US-042 fanno da grounding), e `definitionFor(string $key): ?AttributeDefinition` con matching esatto sulla chiave dopo trim (le chiavi canoniche sono snake_case; nessun fuzzy matching: una chiave fuori registro deve fallire il lookup, non essere “aggiustata”).
+  - **`ClassificationPromptBuilder` ancorato al registro** — la firma diventa `build(Collection $products, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary, string $model)`. Nel prompt: (1) si sostituisce l'istruzione a chiave libera (`"chiave libera, in snake_case, es. portata_lmin"`) con l'obbligo di usare ESCLUSIVAMENTE le chiavi del registro riportato nel prompt (chiave, tipo, unità canonica, descrizione da `toPromptText()`), omettendo l'attributo se nessuna chiave del registro è pertinente; (2) si impone di riportare `value_num`/`value_text` e `unit` ESATTAMENTE come letti nel testo del prodotto, vietando qualunque conversione di unità (es. "3500 W" → `value_num: 3500, unit: "W"`, NON `3.5 kW`: la conversione è responsabilità dell'applicazione). Il blocco `knownAttributesText` (attributi già noti come contesto) resta invariato nel comportamento, con docblock aggiornato (non esiste più l'estrazione regex come origine futura).
+  - **`ClassificationResponseValidator` invariato** — le chiavi fuori registro NON vengono scartate nel validator: il filtro sta in `EnrichmentApplier`, perché deve coprire anche il percorso cache (`EnrichmentCache`, US-016) che bypassa il validator e può riproporre risultati pre-registro con chiavi libere (es. `potenza_watt`). Lo scarto nel solo validator lascerebbe un buco sul replay da cache.
+  - **`EnrichmentApplier`: conversione e guardie** — costruttore esteso con `AttributeUnitConverter` (stateless, container-resolvable); `apply()` accetta il quarto parametro `AttributeVocabulary $vocabulary` (stessa istanza costruita dal job, una query per batch). In `applyAttributes()`, per ogni attributo proposto, nell'ordine: (1) guardia delle sorgenti autorevoli INVARIATA (una riga esistente con source diverso da `null`/`regex`/`ai` blocca scrittura e proposta: le righe `regex` esistenti restano valide e sovrascrivibili dall'AI, nessuna rigenerazione di massa); (2) chiave assente dal registro → NON scritta e NESSUNA proposta registrata (comportamento minimo di US-043: il flusso di proposta/revisione delle definizioni fuori registro è perimetro esplicito di US-044 — registrare oggi una proposta `pending` su chiave non canonica creerebbe righe che la Review Queue di US-041 non può applicare coerentemente); (3) confidenza sotto soglia → proposta `pending` con valore/unità come letti, invariato; (4) definizione `numeric` con `value_num` presente → `convertToCanonical(definition, value_num, unit)`; successo → scrittura con `value_num` convertito e `unit = canonical_unit`, `source='ai'`, confidence, più proposta `applied` (con valore/unità originali come letti dall'AI, fedeltà di audit); `UnknownAttributeUnitException` → NON scritta, proposta `pending` (con valore/unità originali) che resta in coda di revisione — il prodotto non è forzato a `needs_review` (stesso trattamento del ramo bassa confidenza già esistente, coerente con US-041 dove le proposte attributo pending senza riga materializzata restano `pending`); (5) definizione `text` con `value_text` presente → scrittura pass-through con `unit = null` (nessuna conversione, mai chiamato il converter su `data_type='text'` che lancerebbe `LogicException`); (6) mismatch di tipo (definizione `numeric` senza `value_num`, o `text` senza `value_text`) → stesso percorso dell'unità non convertibile: non scritta, proposta `pending`. I docblock della classe vengono aggiornati (riferimenti a `AttributeResolver::writeAttribute()` rimossi).
+  - **Wiring in `ClassifyProductsBatchJob`** — `handle()` istanzia `new AttributeVocabulary` accanto a `new TaxonomyCatalog` e la passa a entrambe le chiamate `promptBuilder->build()` (batch fast e escalation smart) e a ogni `applier->apply()` (`applyCachedResults` e `logResults`): il percorso cache riusa la stessa istanza, quindi anche i risultati cached passano dal filtro registro e dalla conversione.
+  - **Rimozione `AttributeResolver` e passo di pipeline** — cancellati `app/Services/Enrichment/AttributeResolver.php` e `tests/Feature/AttributeResolverTest.php` (rimozione test esplicitamente richiesta dal criterio di accettazione della spec). `DeterministicEnrichmentPipeline`: rimossi il parametro costruttore, l'invocazione e la chiave `attributes_written` dal summary (e dal PHPDoc array-shape). `CatalogEnrichCommand`: rimossi l'inizializzazione della chiave, l'accumulo e la riga di output `"Attributi scritti"`. Docblock stale ripuliti in `EnrichmentProposalRecorder`, `EnrichmentApplier`, `SearchService` (riga 28), `ProductSearch` (riga 66) e `DeterministicEnrichmentPipeline`. Nessun down-path dati: le righe `product_attributes` con `source='regex'` restano a DB, valide e sovrascrivibili (guardia invariata), e si estinguono naturalmente.
+
+  ## Strategia di Test
+
+  Spec interamente backend (nessuna nuova UI): niente mockup e niente scenari e2e; copertura feature-test PHPUnit. I test che coinvolgono il vocabolario seedano il registro con `AttributeDefinitionSeeder` (o factory US-042 per casi mirati).
+
+  - `tests/Feature/AttributeVocabularyTest.php` (nuovo): `toPromptText()` contiene chiave, tipo, unità canonica e descrizione di ogni definizione seedata; `definitionFor()` risolve una chiave canonica e ritorna `null` su chiave fuori registro; memoizzazione (una sola query su chiamate ripetute, verificabile con conteggio query).
+  - `tests/Feature/ClassificationPromptBuilderTest.php` (aggiornato): adeguamento di tutte le chiamate alla nuova firma; nuovi test: il prompt include il vocabolario del registro (chiave, tipo, unità canonica, descrizione); il prompt impone l'uso esclusivo delle chiavi canoniche e non contiene più l'istruzione a chiave libera; il prompt impone valore/unità come letti nel testo e vieta la conversione.
+  - `tests/Feature/EnrichmentApplierTest.php` (aggiornato): setUp con seeding del registro e adeguamento delle chiamate `apply()`. Nuovi casi: il caso "Dimostra" — attributo AI `potenza_kw` con `value_num=3500, unit='W'` ad alta confidenza → riga `product_attributes` `potenza_kw = 3.5`, `unit='kW'`, `source='ai'`; unità non convertibile (es. `potenza_kw` con `unit='CV'`) → riga NON scritta e proposta `pending` in `enrichment_proposals` con valore/unità originali; chiave fuori registro → non scritta e nessuna proposta; attributo testuale (`materiale`) → pass-through con `unit=null`; mismatch di tipo → non scritto, proposta `pending`; riga esistente `source='regex'` sovrascritta dall'AI (guardia invariata) e riga `source='manual'` mai sovrascritta (regressione); `unit=null` su definizione numerica → valore scritto invariato in unità canonica.
+  - `tests/Feature/ClassifyProductsBatchJobTest.php` (aggiornato): seeding del registro dove i test esercitano attributi; verifica che il percorso cache-hit applichi il filtro registro/conversione (risultato cached con chiave fuori registro non scrive la riga).
+  - `tests/Feature/DeterministicEnrichmentPipelineTest.php` (aggiornato): rimozione del costruttore `AttributeResolver` e delle asserzioni su `attributes_written`; la pipeline continua a risolvere brand/grouping/famiglie.
+  - `tests/Feature/AttributeResolverTest.php`: eliminato (criterio di accettazione della spec).
+  - Regressione: rieseguire `AttributeUnitConverterTest` (US-042), `EnrichmentProposalRecorderTest`/`ReviewQueueDetailTest` (le proposte pending restano coerenti con US-041), `SearchServiceFiltersTest` e `CatalogEnrichCommand`-related suite; `vendor/bin/sail bin pint --dirty` a chiusura.
+
+  **Assunzioni registrate** (sessione autonoma, nessun chiarimento richiesto): (1) US-042 è PLANNED ma non ancora implementata: questo piano dipende dai suoi artefatti (`AttributeDefinition`, `AttributeUnitConverter`, `UnknownAttributeUnitException`, `AttributeDefinitionSeeder`) e l'implementazione di US-043 deve partire solo a US-042 DONE; (2) chiave fuori registro → scartata senza scrittura né proposta: il flusso di proposta di nuove definizioni è perimetro di US-044, e una proposta pending su chiave non canonica sarebbe inapplicabile dalla Review Queue attuale; (3) unità non convertibile → proposta `pending` senza forzare `needs_review` sul prodotto, speculare al ramo bassa confidenza esistente (la proposta resta visibile nel registro proposte, come già documentato in US-041 per le proposte mai materializzate); (4) le proposte registrate conservano valore/unità come letti dall'AI (fedeltà di audit), mentre la riga `product_attributes` riceve il valore convertito con `unit = canonical_unit`; (5) mismatch di tipo valore/definizione trattato come non applicabile (proposta `pending`), non come errore di validazione; (6) il filtro registro sta in `EnrichmentApplier` e non nel validator per coprire il replay da `EnrichmentCache` con risultati pre-registro; (7) matching della chiave esatto dopo trim, nessuna normalizzazione fuzzy lato applicazione — è il prompt a imporre le chiavi canoniche.
+tasks:
+  - id: TASK-01
+    title: Creare il servizio AttributeVocabulary
+    description: 'App\Services\Ai\AttributeVocabulary speculare a TaxonomyCatalog: collezione di AttributeDefinition lazy-loaded e memoizzata, toPromptText() (chiave | tipo | unità canonica | descrizione per riga) e definitionFor(string $key): ?AttributeDefinition con matching esatto dopo trim.'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test di AttributeVocabulary
+    description: 'tests/Feature/AttributeVocabularyTest.php: toPromptText() contiene chiave/tipo/unità canonica/descrizione delle definizioni seedate, definitionFor() risolve chiavi canoniche e ritorna null su chiavi fuori registro, memoizzazione con una sola query.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Ancorare ClassificationPromptBuilder al registro
+    description: 'Nuova firma build(Collection $products, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary, string $model); nel prompt: vocabolario del registro via toPromptText(), obbligo di chiavi canoniche (rimossa l''istruzione a chiave libera), obbligo di valore/unità come letti nel testo con divieto esplicito di conversione; docblock di knownAttributesText aggiornato.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: Test del prompt ancorato al registro
+    description: 'tests/Feature/ClassificationPromptBuilderTest.php: adeguamento alla nuova firma; nuovi test su presenza del vocabolario (chiave, tipo, unità canonica, descrizione), obbligo di chiavi canoniche, assenza dell''istruzione a chiave libera, istruzione valore/unità come letti senza conversione.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Conversione e guardie di registro in EnrichmentApplier
+    description: 'Iniettare AttributeUnitConverter nel costruttore ed estendere apply() con AttributeVocabulary; in applyAttributes(): guardia sorgenti autorevoli invariata, chiave fuori registro scartata senza proposta, conversione a unità canonica per definizioni numeric (scrittura con unit = canonical_unit), UnknownAttributeUnitException e mismatch di tipo → non scritto + proposta pending con valore/unità originali, definizioni text pass-through con unit null; docblock aggiornati.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-05
+  - id: TASK-06
+    title: 'Test di EnrichmentApplier: conversione, pending, guardie'
+    description: 'tests/Feature/EnrichmentApplierTest.php: caso Dimostra (value_num 3500 unit W su potenza_kw → riga 3.5 kW source ai), unità non convertibile → nessuna riga + proposta pending, chiave fuori registro → nessuna riga né proposta, attributo testuale pass-through, mismatch di tipo → pending, riga regex sovrascritta dall''AI e riga manual protetta, unit null numerica scritta invariata; seeding del registro in setUp e adeguamento delle chiamate esistenti.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: Wiring del vocabolario in ClassifyProductsBatchJob
+    description: handle() istanzia AttributeVocabulary accanto a TaxonomyCatalog e la propaga a entrambe le chiamate promptBuilder->build() (batch e escalation) e a ogni applier->apply() (percorso cache-hit incluso), così anche i risultati da EnrichmentCache passano da filtro registro e conversione.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-03
+      - TASK-05
+    ref: TASK-07
+  - id: TASK-08
+    title: Test del job batch con registro e percorso cache
+    description: 'tests/Feature/ClassifyProductsBatchJobTest.php: adeguamento alle nuove firme, seeding del registro dove servono attributi, verifica che un risultato cache-hit con chiave fuori registro non scriva la riga e che un attributo con unità non canonica venga convertito in scrittura.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-07
+    ref: TASK-08
+  - id: TASK-09
+    title: Rimuovere AttributeResolver e il passo di pipeline
+    description: Cancellare app/Services/Enrichment/AttributeResolver.php; rimuovere parametro costruttore, invocazione e chiave attributes_written da DeterministicEnrichmentPipeline (incluso PHPDoc array-shape); ripulire CatalogEnrichCommand (chiave summary e riga di output) e i docblock stale in EnrichmentProposalRecorder, EnrichmentApplier, SearchService e ProductSearch.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-07
+    ref: TASK-09
+  - id: TASK-10
+    title: Aggiornare i test della pipeline e rimuovere AttributeResolverTest
+    description: Eliminare tests/Feature/AttributeResolverTest.php (richiesto dal criterio di accettazione); aggiornare tests/Feature/DeterministicEnrichmentPipelineTest.php rimuovendo il costruttore AttributeResolver e le asserzioni su attributes_written, mantenendo la copertura su brand/grouping/famiglie.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-09
+    ref: TASK-10
+  - id: TASK-11
+    title: Regressione suite correlate e formattazione
+    description: Rieseguire AttributeUnitConverterTest, ReviewQueueDetailTest, SearchServiceFiltersTest e le suite toccate per confermare l'assenza di regressioni su product_attributes ed enrichment_proposals; eseguire vendor/bin/sail bin pint --dirty sui file toccati.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-04
+      - TASK-06
+      - TASK-08
+      - TASK-10
+    ref: TASK-11

@@ -10,9 +10,10 @@ use Illuminate\Support\Carbon;
 /**
  * Records every brand/family/subfamily/attribute proposal made by
  * deterministic resolvers (e.g. {@see FileTaxonomyResolver},
- * {@see BrandResolver}, {@see AttributeResolver}) and the AI classifier
- * (e.g. {@see EnrichmentApplier}) into `enrichment_proposals`, independent
- * of whether the value was actually applied to the product.
+ * {@see BrandResolver}) and the AI classifier (e.g. {@see EnrichmentApplier},
+ * the sole source of attribute proposals since US-043 removed the regex
+ * extraction pass) into `enrichment_proposals`, independent of whether the
+ * value was actually applied to the product.
  *
  * This is a pure logging service: it never mutates the product itself and
  * never changes any existing direct-write behavior. Callers decide whether

@@ -2,7 +2,9 @@
 
 namespace App\Services\Enrichment;
 
+use App\Models\AttributeDefinition;
 use App\Models\Product;
+use App\Services\Ai\AttributeVocabulary;
 use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\TaxonomyCatalog;
 
@@ -22,12 +24,19 @@ use App\Services\Ai\TaxonomyCatalog;
  * `*_source = 'manual'` or `*_source = 'file'` (US-032) is never
  * overwritten, regardless of confidence.
  *
- * Every brand/family/subfamily/attribute value produced by the AI — whether
- * actually written to the product or not — is also logged via
+ * `product_type` (US-045) is a plain cleaned-up product name/type with no
+ * taxonomy to resolve against and no `*_source` column: it follows the same
+ * confidence gate as brand/family/subfamily but is always overwritten by a
+ * later reclassification, with no manual/file guard.
+ *
+ * Every brand/family/subfamily/product_type/attribute value produced by the
+ * AI — whether actually written to the product or not — is also logged via
  * {@see EnrichmentProposalRecorder}: `status = 'applied'` when written,
- * `status = 'pending'` when confidence was too low to write it. A field that
- * doesn't resolve against the taxonomy, or is guarded by a manual/file/other
- * authoritative source, never generates a proposal.
+ * `status = 'pending'` when confidence was too low to write it, or when the
+ * value couldn't be converted/typed against the attribute registry (US-043).
+ * A field that doesn't resolve against the taxonomy, or is guarded by a
+ * manual/file/other authoritative source, never generates a proposal; the
+ * same is true for an attribute key absent from the registry.
  */
 class EnrichmentApplier
 {
@@ -44,12 +53,13 @@ class EnrichmentApplier
 
     public function __construct(
         private readonly EnrichmentProposalRecorder $recorder,
+        private readonly AttributeUnitConverter $converter,
     ) {}
 
     /**
      * Apply the classification result to the product and persist it.
      */
-    public function apply(Product $product, ClassifiedProduct $result, TaxonomyCatalog $taxonomy): void
+    public function apply(Product $product, ClassifiedProduct $result, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary): void
     {
         $confidence = $result->confidence ?? 0;
 
@@ -57,7 +67,7 @@ class EnrichmentApplier
         // overall brand/family/subfamily confidence branch below: a single
         // attribute can carry its own high confidence even when the rest of
         // the classification is too weak to trust.
-        $attributesForceReview = $this->applyAttributes($product, $result);
+        $attributesForceReview = $this->applyAttributes($product, $result, $vocabulary);
 
         // Resolved unconditionally, even below the low-confidence threshold,
         // so every field that *would* resolve against the taxonomy is still
@@ -91,6 +101,9 @@ class EnrichmentApplier
      * Extra keys the caller may have merged in (`enrichment_status`,
      * `source`, `confidence`) are simply ignored.
      *
+     * `product_type` (US-045) has no taxonomy row to reference — it is
+     * logged in a dedicated branch using `value_text` instead of `value_id`.
+     *
      * @param  array<string, mixed>  $attributes
      */
     private function recordResolvedProposals(Product $product, array $attributes, string $status, int $confidence): void
@@ -109,6 +122,17 @@ class EnrichmentApplier
                 valueId: $attributes["{$field}_id"],
             );
         }
+
+        if (array_key_exists('product_type', $attributes)) {
+            $this->recorder->record(
+                product: $product,
+                field: 'product_type',
+                origin: 'ai',
+                status: $status,
+                confidence: $confidence,
+                valueText: $attributes['product_type'],
+            );
+        }
     }
 
     /**
@@ -122,17 +146,31 @@ class EnrichmentApplier
      *  - confidence >= {@see self::HIGH_CONFIDENCE_THRESHOLD}: written without
      *    forcing anything; the final status follows the overall branch.
      * An existing row whose `source` is not `null`, `regex`, or `ai` (e.g.
-     * `manual`) is never overwritten, mirroring the guard already applied by
-     * {@see AttributeResolver::writeAttribute()} for the regex extraction pass.
-     * That same guard is checked first, before the confidence bands: if it
-     * blocks the write, no proposal is recorded either. Otherwise, a
-     * proposal is recorded for every attribute regardless of its confidence
-     * band — `pending` when skipped for low confidence, `applied` when
-     * written.
+     * `manual`) is never overwritten — this guard predates US-043's removal
+     * of the regex extraction pass and is checked first, before anything
+     * else: if it blocks the write, no proposal is recorded either.
+     *
+     * A key absent from {@see AttributeVocabulary} (US-043) is discarded
+     * entirely — not written, no proposal recorded — since the AI is
+     * instructed to only ever use canonical keys and a stray free key is not
+     * actionable by the current review queue.
+     *
+     * For a key present in the registry: below the low-confidence threshold,
+     * a `pending` proposal is recorded with the value/unit exactly as read
+     * from the AI (unconverted), same as before. At or above the threshold,
+     * a `numeric` definition's `value_num` is converted to the canonical
+     * unit via {@see AttributeUnitConverter}; a `text` definition's
+     * `value_text` is written as-is (`unit` always `null`). Whenever the
+     * value can't be converted ({@see UnknownAttributeUnitException}) or
+     * doesn't match the definition's declared type (a `numeric` definition
+     * with no `value_num`, or a `text` definition with no `value_text`), the
+     * attribute is left unwritten and a `pending` proposal is recorded with
+     * the original value/unit instead — mirroring the low-confidence branch,
+     * without forcing the product into `needs_review`.
      *
      * @return bool whether at least one written attribute forces `needs_review`
      */
-    private function applyAttributes(Product $product, ClassifiedProduct $result): bool
+    private function applyAttributes(Product $product, ClassifiedProduct $result, AttributeVocabulary $vocabulary): bool
     {
         $forcesReview = false;
 
@@ -141,37 +179,31 @@ class EnrichmentApplier
                 continue;
             }
 
+            $definition = $vocabulary->definitionFor($key);
+
+            if ($definition === null) {
+                continue;
+            }
+
             $confidence = $attribute['confidence'] ?? 0;
 
             if ($confidence < self::LOW_CONFIDENCE_THRESHOLD) {
-                $this->recorder->record(
-                    product: $product,
-                    field: 'attribute',
-                    origin: 'ai',
-                    status: 'pending',
-                    confidence: $confidence,
-                    attributeKey: $key,
-                    valueNum: $attribute['value_num'] ?? null,
-                    valueText: $attribute['value_text'] ?? null,
-                    unit: $attribute['unit'] ?? null,
-                );
+                $this->recordAttributeProposal($product, $key, $attribute, 'pending', $confidence);
 
                 continue;
             }
 
-            $this->writeAttribute($product, $key, $attribute, $confidence);
+            $converted = $this->convertedAttribute($definition, $attribute);
 
-            $this->recorder->record(
-                product: $product,
-                field: 'attribute',
-                origin: 'ai',
-                status: 'applied',
-                confidence: $confidence,
-                attributeKey: $key,
-                valueNum: $attribute['value_num'] ?? null,
-                valueText: $attribute['value_text'] ?? null,
-                unit: $attribute['unit'] ?? null,
-            );
+            if ($converted === null) {
+                $this->recordAttributeProposal($product, $key, $attribute, 'pending', $confidence);
+
+                continue;
+            }
+
+            $this->writeAttribute($product, $key, $converted, $confidence);
+
+            $this->recordAttributeProposal($product, $key, $attribute, 'applied', $confidence);
 
             if ($confidence < self::HIGH_CONFIDENCE_THRESHOLD) {
                 $forcesReview = true;
@@ -179,6 +211,65 @@ class EnrichmentApplier
         }
 
         return $forcesReview;
+    }
+
+    /**
+     * Normalizes a proposed attribute against its registry definition ahead
+     * of the write: a `numeric` definition converts `value_num`/`unit` to the
+     * canonical unit, a `text` definition passes `value_text` through
+     * unchanged with `unit` forced to `null` (never handed to the converter,
+     * which would raise on a textual definition). Returns `null` when the
+     * value doesn't match the definition's type (missing `value_num`/
+     * `value_text`) or when the unit can't be converted, signaling the caller
+     * to fall back to a `pending` proposal instead of writing.
+     *
+     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     * @return array{value_num?: float, value_text?: string, unit?: string}|null
+     */
+    private function convertedAttribute(AttributeDefinition $definition, array $attribute): ?array
+    {
+        if ($definition->data_type === 'numeric') {
+            if (! array_key_exists('value_num', $attribute) || $attribute['value_num'] === null) {
+                return null;
+            }
+
+            try {
+                $canonicalValue = $this->converter->convertToCanonical($definition, (float) $attribute['value_num'], $attribute['unit'] ?? null);
+            } catch (UnknownAttributeUnitException) {
+                return null;
+            }
+
+            return ['value_num' => $canonicalValue, 'unit' => $definition->canonical_unit];
+        }
+
+        if (! array_key_exists('value_text', $attribute) || $attribute['value_text'] === null) {
+            return null;
+        }
+
+        return ['value_text' => $attribute['value_text'], 'unit' => null];
+    }
+
+    /**
+     * Records a proposal for a technical attribute, always with the
+     * value/unit exactly as read from the AI — never the converted
+     * canonical value — so the proposal audit trail reflects what the AI
+     * actually reported (US-043).
+     *
+     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     */
+    private function recordAttributeProposal(Product $product, string $key, array $attribute, string $status, int $confidence): void
+    {
+        $this->recorder->record(
+            product: $product,
+            field: 'attribute',
+            origin: 'ai',
+            status: $status,
+            confidence: $confidence,
+            attributeKey: $key,
+            valueNum: $attribute['value_num'] ?? null,
+            valueText: $attribute['value_text'] ?? null,
+            unit: $attribute['unit'] ?? null,
+        );
     }
 
     /**
@@ -215,6 +306,11 @@ class EnrichmentApplier
      * attributes to persist, skipping any field already set manually or
      * whose AI value doesn't resolve to an existing taxonomy record.
      *
+     * `product_type` (US-045) is a plain text value with no taxonomy to
+     * resolve against and no `*_source` guard: it always overwrites any
+     * previous value once confidence clears the write threshold, so a
+     * reclassification keeps it in sync with the AI's current answer.
+     *
      * @return array<string, mixed>
      */
     private function resolvedAttributes(Product $product, ClassifiedProduct $result, TaxonomyCatalog $taxonomy): array
@@ -246,6 +342,10 @@ class EnrichmentApplier
                 $attributes['subfamily_id'] = $subfamily->id;
                 $attributes['subfamily_source'] = 'ai';
             }
+        }
+
+        if ($result->productType !== null) {
+            $attributes['product_type'] = $result->productType;
         }
 
         return $attributes;

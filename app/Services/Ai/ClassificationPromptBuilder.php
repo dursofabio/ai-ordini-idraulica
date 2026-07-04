@@ -8,11 +8,14 @@ use Illuminate\Support\Collection;
 
 /**
  * Builds the Anthropic Messages API payload used to classify a batch of
- * products against the closed catalog taxonomy. The prompt instructs the
- * model to return strict JSON matching the `{results: [...]}` schema
- * expected by {@see ClassificationResponseValidator}, and embeds the full
- * list of assignable brands/families/subfamilies so the model cannot invent
- * values outside the existing taxonomy.
+ * products against the closed catalog taxonomy and the closed attribute
+ * registry. The prompt instructs the model to return strict JSON matching
+ * the `{results: [...]}` schema expected by {@see ClassificationResponseValidator},
+ * and embeds the full list of assignable brands/families/subfamilies (so the
+ * model cannot invent values outside the existing taxonomy) plus the full
+ * attribute registry (US-043: only canonical keys from
+ * {@see AttributeVocabulary} may be used — the AI never invents a free-form
+ * key, and never converts a value's unit itself).
  *
  * Product descriptions are internal catalog data (not third-party user
  * input) and are embedded verbatim without sanitization. A description
@@ -38,7 +41,7 @@ class ClassificationPromptBuilder
      * @param  Collection<int, Product>  $products
      * @return array<string, mixed>
      */
-    public function build(Collection $products, TaxonomyCatalog $taxonomy, string $model): array
+    public function build(Collection $products, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary, string $model): array
     {
         return [
             'model' => $model,
@@ -46,7 +49,7 @@ class ClassificationPromptBuilder
             'messages' => [
                 [
                     'role' => 'user',
-                    'content' => $this->prompt($products, $taxonomy),
+                    'content' => $this->prompt($products, $taxonomy, $vocabulary),
                 ],
             ],
         ];
@@ -55,7 +58,7 @@ class ClassificationPromptBuilder
     /**
      * @param  Collection<int, Product>  $products
      */
-    private function prompt(Collection $products, TaxonomyCatalog $taxonomy): string
+    private function prompt(Collection $products, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary): string
     {
         $items = $products
             ->map(fn (Product $product): string => sprintf(
@@ -67,25 +70,36 @@ class ClassificationPromptBuilder
             ->implode("\n");
 
         $taxonomyText = $taxonomy->toPromptText();
+        $vocabularyText = $vocabulary->toPromptText();
 
         return <<<PROMPT
         Sei un classificatore di catalogo per una ditta di forniture idrauliche e termoidrauliche.
         Per ciascun prodotto elencato sotto, assegna marca, famiglia, sottofamiglia e tipo prodotto
         usando ESCLUSIVAMENTE i valori della tassonomia chiusa riportata più sotto. Non inventare
         marche, famiglie o sottofamiglie che non compaiono nell'elenco: se non sei sicuro, lascia il
-        campo a null. Includi anche una breve descrizione arricchita e un livello di confidenza
-        (intero 0-100) per ciascun prodotto.
+        campo a null. Il campo "product_type" deve contenere ESCLUSIVAMENTE il nome/tipo del
+        prodotto (es. "Caldaia a condensazione"): MAI la marca, la famiglia, la sottofamiglia o
+        valori di attributi tecnici. Includi anche una breve descrizione arricchita e un livello di
+        confidenza (intero 0-100) per ciascun prodotto.
 
         Per ciascun prodotto sono elencati anche gli attributi tecnici già noti (chiave, valore,
         unità di misura e origine). Valida quegli attributi correggendoli se il valore non è
-        coerente con la descrizione, e proponi eventuali altri attributi tecnici rilevanti anche
-        con chiavi non presenti nell'elenco (chiave libera, in snake_case, es. "portata_lmin").
-        Per ciascun attributo proposto indica un valore numerico ("value_num") o testuale
-        ("value_text"), l'eventuale unità di misura ("unit") e un livello di confidenza (intero
-        0-100) specifico per quell'attributo. Se non sei sicuro di un attributo, non includerlo.
+        coerente con la descrizione, e proponi eventuali altri attributi tecnici rilevanti. Usa
+        ESCLUSIVAMENTE le chiavi del registro attributi riportato più sotto (chiave, tipo, unità
+        canonica, descrizione): NON inventare chiavi libere. Se nessuna chiave del registro è
+        pertinente per un dato attributo, ometti semplicemente quell'attributo. Per ciascun
+        attributo proposto riporta il valore ("value_num" o "value_text") e l'unità di misura
+        ("unit") ESATTAMENTE come letti nel testo del prodotto: NON convertire mai il valore
+        nell'unità canonica del registro (es. per "3500 W" riporta value_num: 3500, unit: "W", MAI
+        3.5 e "kW" — la conversione all'unità canonica è responsabilità dell'applicazione, non tua).
+        Includi anche un livello di confidenza (intero 0-100) specifico per quell'attributo. Se non
+        sei sicuro di un attributo, non includerlo.
 
         Tassonomia chiusa:
         {$taxonomyText}
+
+        Registro attributi (chiave | tipo | unità canonica | descrizione):
+        {$vocabularyText}
 
         Prodotti da classificare:
         {$items}
@@ -120,10 +134,11 @@ class ClassificationPromptBuilder
     }
 
     /**
-     * Renders the product's already-known technical attributes (extracted by
-     * regex or previously proposed by AI) as inline prompt context, so the
-     * model can validate/correct them instead of guessing blind. Returns an
-     * empty string when the product has no known attributes.
+     * Renders the product's already-known technical attributes (legacy
+     * `source = 'regex'` rows still being phased out, or previously proposed
+     * by AI) as inline prompt context, so the model can validate/correct them
+     * instead of guessing blind. Returns an empty string when the product has
+     * no known attributes.
      */
     private function knownAttributesText(Product $product): string
     {

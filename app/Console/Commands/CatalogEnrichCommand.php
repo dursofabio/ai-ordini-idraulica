@@ -14,8 +14,10 @@ use Throwable;
  * product, then dispatches Step B AI classification for whatever remains
  * unresolved (via {@see ClassificationBatchDispatcher}) — unless `--skip-ai`
  * is passed, in which case Step B is never queued, so the deterministic
- * result (file link, brand/attribute/grouping/family) can be inspected on
- * its own without incurring any AI classification cost.
+ * result (file link, brand/family) can be inspected on its own without
+ * incurring any AI classification cost. Technical attributes are extracted
+ * exclusively by Step B since US-043: skipping it via `--skip-ai` leaves a
+ * pending product without any attributes until it is classified.
  *
  * `--only=pending` is the sole supported filter for MVP: it is accepted as a
  * no-op (the command already scopes to pending products by definition) so the
@@ -69,9 +71,6 @@ class CatalogEnrichCommand extends Command
         $this->line("  Famiglie collegate da file: {$summary['families_linked_from_file']}");
         $this->line("  Sottofamiglie collegate da file: {$summary['subfamilies_linked_from_file']}");
         $this->line("  Brand risolti (testuale): {$summary['brands_resolved']}");
-        $this->line("  Attributi scritti: {$summary['attributes_written']}");
-        $this->line("  Gruppi (product_base) risolti: {$summary['groups_resolved']}");
-        $this->line("  Famiglie propagate: {$summary['families_propagated']}");
 
         if ($this->option('skip-ai')) {
             $this->info('Step B (classificazione AI) saltato per via di --skip-ai.');
@@ -93,7 +92,7 @@ class CatalogEnrichCommand extends Command
     }
 
     /**
-     * @return array{processed: int, brands_linked_from_file: int, families_linked_from_file: int, subfamilies_linked_from_file: int, brands_resolved: int, attributes_written: int, groups_resolved: int, families_propagated: int}
+     * @return array{processed: int, brands_linked_from_file: int, families_linked_from_file: int, subfamilies_linked_from_file: int, brands_resolved: int}
      */
     private function runStepA(DeterministicEnrichmentPipeline $pipeline): array
     {
@@ -103,9 +102,6 @@ class CatalogEnrichCommand extends Command
             'families_linked_from_file' => 0,
             'subfamilies_linked_from_file' => 0,
             'brands_resolved' => 0,
-            'attributes_written' => 0,
-            'groups_resolved' => 0,
-            'families_propagated' => 0,
         ];
 
         Product::query()

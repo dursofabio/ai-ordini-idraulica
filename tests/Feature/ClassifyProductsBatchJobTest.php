@@ -14,12 +14,14 @@ use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\ClaudeClient;
 use App\Services\Enrichment\AiSpendGuard;
 use App\Services\Enrichment\EnrichmentCache;
+use Database\Seeders\AttributeDefinitionSeeder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Queue\Middleware\ThrottlesExceptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
 
@@ -68,6 +70,22 @@ class ClassifyProductsBatchJobTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // The job's write-back can set product_type/description_clean/brand_id,
+        // which would otherwise make ProductObserver (US-046) synchronously
+        // dispatch GenerateProductEmbeddingJob — and its own HTTP call would
+        // be caught by this test's wildcard Http::fake(), polluting the
+        // classification-specific request-count assertions below. This test
+        // only calls ClassifyProductsBatchJob::handle() directly (not via the
+        // queue), so faking the queue only suppresses that unrelated
+        // dispatch, not the job under test.
+        Queue::fake();
+
+        // US-043: attribute extraction is anchored to the registry —
+        // seed the canonical keys the tests below reference (potenza_kw,
+        // portata_lmin) so the applier's registry filter/conversion doesn't
+        // silently discard them.
+        $this->seed(AttributeDefinitionSeeder::class);
 
         config()->set('cache.default', 'array');
 
@@ -471,9 +489,9 @@ class ClassifyProductsBatchJobTest extends TestCase
 
         // Simulate a reimport: a second product row with the same
         // description_raw, created upfront (like the original) so both
-        // rows' ProductBase-creation side effects (embedding dispatch) run
-        // before Http::fake() is armed below and are not counted as
-        // classification calls.
+        // rows' embedding-dispatch side effects (ProductObserver) run before
+        // Http::fake() is armed below and are not counted as classification
+        // calls.
         $reimportedProduct = Product::factory()->create([
             'enrichment_status' => 'pending',
             'description_raw' => 'Rubinetto a sfera 3/4 pollice',
@@ -847,5 +865,88 @@ class ClassifyProductsBatchJobTest extends TestCase
         $this->assertEquals(10.0, $attribute->value_num);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(90, $attribute->confidence);
+    }
+
+    /**
+     * US-043: the cache-hit path ({@see ClassifyProductsBatchJob::applyCachedResults()})
+     * must apply the same registry filter as the live classification path —
+     * a cached result carrying an attribute key that pre-dates the registry
+     * (or was never registered) must not write a `product_attributes` row.
+     */
+    public function test_cache_hit_with_attribute_key_outside_the_registry_does_not_write_the_row(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $cachedProduct = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'description_raw' => 'Miscelatore da cucina Grohe cromato',
+        ]);
+
+        (new EnrichmentCache)->put($cachedProduct, new ClassifiedProduct(
+            codiceArticolo: $cachedProduct->codice_articolo,
+            brand: 'Grohe',
+            family: null,
+            subfamily: null,
+            productType: 'Miscelatore',
+            enrichedDescription: 'Descrizione arricchita cacheata',
+            confidence: 92,
+            attributes: [
+                'chiave_pre_registro' => ['value_num' => 42.0, 'unit' => 'x', 'confidence' => 90],
+            ],
+        ));
+
+        Http::fake();
+
+        (new ClassifyProductsBatchJob([$cachedProduct->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        Http::assertNothingSent();
+
+        $this->assertNull($cachedProduct->attributes()->where('key', 'chiave_pre_registro')->first());
+    }
+
+    /**
+     * US-043 "Dimostra" case exercised end-to-end through the job: the AI
+     * reports the value/unit exactly as read from the text (3500 W), and
+     * {@see EnrichmentApplier} converts it to the registry's canonical unit
+     * (kW) before writing.
+     */
+    public function test_batch_classification_converts_a_non_canonical_unit_to_the_canonical_unit_on_write(): void
+    {
+        Brand::factory()->create(['name' => 'Grohe']);
+
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $batchBody = [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'results' => [
+                        $this->resultFor($product, confidence: 90, attributes: [
+                            ['key' => 'potenza_kw', 'value_num' => 3500, 'unit' => 'W', 'confidence' => 92],
+                        ]),
+                    ],
+                ], JSON_UNESCAPED_UNICODE),
+            ]],
+            'usage' => ['input_tokens' => 100, 'output_tokens' => 40],
+        ];
+
+        Http::fake(['*' => Http::response($batchBody)]);
+
+        (new ClassifyProductsBatchJob([$product->id]))->handle(
+            app(ClaudeClient::class),
+            app(ClassificationPromptBuilder::class),
+            app(ClassificationResponseValidator::class),
+        );
+
+        $potenza = $product->attributes()->where('key', 'potenza_kw')->first();
+        $this->assertNotNull($potenza);
+        $this->assertEquals(3.5, $potenza->value_num);
+        $this->assertSame('kW', $potenza->unit);
+        $this->assertSame('ai', $potenza->source);
+        $this->assertSame(92, $potenza->confidence);
     }
 }

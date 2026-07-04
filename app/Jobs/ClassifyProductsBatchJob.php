@@ -6,6 +6,7 @@ use App\Exceptions\InvalidClassificationResponseException;
 use App\Models\EnrichmentLog;
 use App\Models\Product;
 use App\Services\Ai\AiClient;
+use App\Services\Ai\AttributeVocabulary;
 use App\Services\Ai\ClassificationPromptBuilder;
 use App\Services\Ai\ClassificationResponseValidator;
 use App\Services\Ai\ClassifiedProduct;
@@ -204,6 +205,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         }
 
         $taxonomy = new TaxonomyCatalog;
+        $vocabulary = new AttributeVocabulary;
         $modelFast = $client->modelFast();
         $cache = new EnrichmentCache;
         $spendGuard = new AiSpendGuard;
@@ -211,7 +213,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         [$cached, $toClassify, $notCached] = $this->partitionByCache($products, $cache);
 
         // Apply cache hits immediately; nothing to classify for them.
-        $this->applyCachedResults($cached, $taxonomy, app(EnrichmentApplier::class));
+        $this->applyCachedResults($cached, $taxonomy, $vocabulary, app(EnrichmentApplier::class));
 
         if ($toClassify->isEmpty()) {
             return;
@@ -230,7 +232,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
 
         $expectedCodici = $toClassify->pluck('codice_articolo');
 
-        $validated = $this->classifyWithRetry($client, $promptBuilder, $validator, $toClassify, $taxonomy, $modelFast, $expectedCodici);
+        $validated = $this->classifyWithRetry($client, $promptBuilder, $validator, $toClassify, $taxonomy, $vocabulary, $modelFast, $expectedCodici);
 
         if ($validated === null) {
             $this->markNeedsReview($notCached, $this->lastValidationError ?? 'Risposta AI non valida dopo un retry.', $modelFast);
@@ -242,9 +244,9 @@ class ClassifyProductsBatchJob implements ShouldQueue
 
         $spendGuard->spend($this->runId, $spendGuard->estimateCost($modelFast, $tokensIn, $tokensOut));
 
-        $this->escalateLowConfidenceResults($client, $promptBuilder, $validator, $toClassify, $taxonomy, $classification, $spendGuard);
+        $this->escalateLowConfidenceResults($client, $promptBuilder, $validator, $toClassify, $taxonomy, $vocabulary, $classification, $spendGuard);
 
-        $this->logResults($notCached, $toClassify->count(), $classification, $taxonomy, $modelFast, $tokensIn, $tokensOut, $cache);
+        $this->logResults($notCached, $toClassify->count(), $classification, $taxonomy, $vocabulary, $modelFast, $tokensIn, $tokensOut, $cache);
     }
 
     /**
@@ -304,10 +306,10 @@ class ClassifyProductsBatchJob implements ShouldQueue
      *
      * @param  SupportCollection<int, array{product: Product, result: ClassifiedProduct}>  $cached
      */
-    private function applyCachedResults(SupportCollection $cached, TaxonomyCatalog $taxonomy, EnrichmentApplier $applier): void
+    private function applyCachedResults(SupportCollection $cached, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary, EnrichmentApplier $applier): void
     {
         foreach ($cached as $entry) {
-            $applier->apply($entry['product'], $entry['result'], $taxonomy);
+            $applier->apply($entry['product'], $entry['result'], $taxonomy, $vocabulary);
         }
     }
 
@@ -394,10 +396,11 @@ class ClassifyProductsBatchJob implements ShouldQueue
         ClassificationResponseValidator $validator,
         EloquentCollection $products,
         TaxonomyCatalog $taxonomy,
+        AttributeVocabulary $vocabulary,
         string $model,
         SupportCollection $expectedCodici,
     ): ?array {
-        $payload = $promptBuilder->build($products, $taxonomy, $model);
+        $payload = $promptBuilder->build($products, $taxonomy, $vocabulary, $model);
 
         for ($attempt = 1; $attempt <= 2; $attempt++) {
             $response = $client->messages($payload);
@@ -432,6 +435,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         ClassificationResponseValidator $validator,
         EloquentCollection $products,
         TaxonomyCatalog $taxonomy,
+        AttributeVocabulary $vocabulary,
         ValidatedClassification $classification,
         AiSpendGuard $spendGuard,
     ): void {
@@ -460,7 +464,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
             }
 
             $singleBatch = collect([$product]);
-            $payload = $promptBuilder->build($singleBatch, $taxonomy, $modelSmart);
+            $payload = $promptBuilder->build($singleBatch, $taxonomy, $vocabulary, $modelSmart);
             $response = $client->messages($payload);
 
             $spendGuard->spend($this->runId, $spendGuard->estimateCost($modelSmart, $response->tokensIn, $response->tokensOut));
@@ -508,6 +512,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
         int $representativeCount,
         ValidatedClassification $classification,
         TaxonomyCatalog $taxonomy,
+        AttributeVocabulary $vocabulary,
         string $modelFast,
         int $batchTokensIn,
         int $batchTokensOut,
@@ -552,7 +557,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 'updated_at' => $now,
             ];
 
-            $applier->apply($product, $result, $taxonomy);
+            $applier->apply($product, $result, $taxonomy, $vocabulary);
             $cache->put($product, $result);
         }
 

@@ -2,15 +2,19 @@
 
 namespace Tests\Feature;
 
+use App\Models\AttributeDefinition;
 use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
 use App\Models\Subfamily;
+use App\Services\Ai\AttributeVocabulary;
 use App\Services\Ai\ClassifiedProduct;
 use App\Services\Ai\TaxonomyCatalog;
+use App\Services\Enrichment\AttributeUnitConverter;
 use App\Services\Enrichment\EnrichmentApplier;
 use App\Services\Enrichment\EnrichmentProposalRecorder;
+use Database\Seeders\AttributeDefinitionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -24,12 +28,39 @@ use Tests\TestCase;
  *  - Every application at confidence >= 60 sets source = 'ai' and
  *    confidence = <received value> on the product.
  *
+ * US-043 acceptance criteria — attribute extraction anchored to the
+ * `AttributeDefinition` registry:
+ *  - The spec's "Dimostra" case: value_num 3500 / unit W on `potenza_kw` is
+ *    converted and written as 3.5 kW, source 'ai'.
+ *  - A non-convertible unit is not written; a pending proposal keeps the
+ *    original value/unit.
+ *  - A key absent from the registry is neither written nor proposed.
+ *  - A textual attribute is written pass-through, with `unit = null`.
+ *  - A value/definition type mismatch is not written; a pending proposal
+ *    keeps the original value/unit.
+ *  - An existing `source = 'regex'` row is still overwritten by the AI, and
+ *    an existing `source = 'manual'` row is still protected.
+ *  - A `null` unit on a numeric definition is written unchanged (already
+ *    canonical).
+ *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
 class EnrichmentApplierTest extends TestCase
 {
     use RefreshDatabase;
     use RequiresDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->seed(AttributeDefinitionSeeder::class);
+    }
+
+    private function makeApplier(): EnrichmentApplier
+    {
+        return new EnrichmentApplier(new EnrichmentProposalRecorder, new AttributeUnitConverter);
+    }
 
     public function test_high_confidence_result_is_applied_and_marks_product_enriched(): void
     {
@@ -48,7 +79,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertSame($brand->id, $fresh->brand_id);
@@ -102,7 +133,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 70,
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertSame($brand->id, $fresh->brand_id);
@@ -136,7 +167,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 40,
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertNull($fresh->brand_id);
@@ -177,7 +208,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertSame($manualBrand->id, $fresh->brand_id);
@@ -225,7 +256,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertSame($fileBrand->id, $fresh->brand_id);
@@ -252,7 +283,7 @@ class EnrichmentApplierTest extends TestCase
             confidence: 90,
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertNull($fresh->brand_id);
@@ -262,7 +293,11 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame(90, $fresh->confidence);
     }
 
-    public function test_new_key_attribute_is_written_at_high_confidence(): void
+    /**
+     * US-043 "Dimostra" case: 3500 W as read from the text is converted to
+     * the canonical unit (kW) before being written.
+     */
+    public function test_registered_numeric_attribute_is_converted_to_canonical_unit_at_high_confidence(): void
     {
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
 
@@ -275,27 +310,173 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'portata_lmin' => ['value_num' => 12.5, 'unit' => 'L/min', 'confidence' => 90],
+                'potenza_kw' => ['value_num' => 3500, 'unit' => 'W', 'confidence' => 90],
             ],
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
-        $attribute = $product->attributes()->where('key', 'portata_lmin')->first();
+        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertNotNull($attribute);
-        $this->assertEquals(12.5, $attribute->value_num);
-        $this->assertSame('L/min', $attribute->unit);
+        $this->assertEquals(3.5, $attribute->value_num);
+        $this->assertSame('kW', $attribute->unit);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(90, $attribute->confidence);
 
         $this->assertDatabaseHas('enrichment_proposals', [
             'product_id' => $product->id,
             'field' => 'attribute',
-            'attribute_key' => 'portata_lmin',
+            'attribute_key' => 'potenza_kw',
             'origin' => 'ai',
             'status' => 'applied',
             'confidence' => 90,
+            'value_num' => 3500,
+            'unit' => 'W',
         ]);
+    }
+
+    public function test_non_convertible_unit_is_not_written_and_recorded_as_pending(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'potenza_kw' => ['value_num' => 5, 'unit' => 'CV', 'confidence' => 90],
+            ],
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $this->assertNull($product->attributes()->where('key', 'potenza_kw')->first());
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 90,
+            'value_num' => 5,
+            'unit' => 'CV',
+        ]);
+    }
+
+    public function test_key_outside_registry_is_neither_written_nor_proposed(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'chiave_libera_inventata' => ['value_num' => 42, 'unit' => 'x', 'confidence' => 95],
+            ],
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $this->assertNull($product->attributes()->where('key', 'chiave_libera_inventata')->first());
+
+        $this->assertDatabaseMissing('enrichment_proposals', [
+            'product_id' => $product->id,
+            'attribute_key' => 'chiave_libera_inventata',
+        ]);
+    }
+
+    public function test_textual_attribute_is_written_pass_through_with_null_unit(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'materiale' => ['value_text' => 'ottone', 'confidence' => 90],
+            ],
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $attribute = $product->attributes()->where('key', 'materiale')->first();
+        $this->assertNotNull($attribute);
+        $this->assertSame('ottone', $attribute->value_text);
+        $this->assertNull($attribute->unit);
+        $this->assertSame('ai', $attribute->source);
+    }
+
+    public function test_type_mismatch_is_not_written_and_recorded_as_pending(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                // 'potenza_kw' is a numeric definition; only value_text supplied.
+                'potenza_kw' => ['value_text' => 'forte', 'confidence' => 90],
+            ],
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $this->assertNull($product->attributes()->where('key', 'potenza_kw')->first());
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 90,
+            'value_text' => 'forte',
+        ]);
+    }
+
+    public function test_null_unit_on_numeric_definition_is_written_unchanged(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: null,
+            enrichedDescription: null,
+            confidence: null,
+            attributes: [
+                'potenza_kw' => ['value_num' => 2.5, 'confidence' => 90],
+            ],
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
+        $this->assertNotNull($attribute);
+        $this->assertEquals(2.5, $attribute->value_num);
+        $this->assertSame('kW', $attribute->unit);
     }
 
     public function test_existing_regex_attribute_is_corrected_by_ai_at_high_confidence(): void
@@ -322,7 +503,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
         $this->assertNotNull($attribute);
@@ -348,7 +529,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $this->assertNull($product->attributes()->where('key', 'materiale')->first());
 
@@ -382,7 +563,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $fresh = $product->fresh();
         $this->assertSame($brand->id, $fresh->brand_id);
@@ -393,6 +574,96 @@ class EnrichmentApplierTest extends TestCase
         $this->assertNotNull($attribute);
         $this->assertSame('RAL 9010', $attribute->value_text);
         $this->assertSame(70, $attribute->confidence);
+    }
+
+    /**
+     * US-045 AC1/AC2: `product_type` follows the same confidence gate as
+     * brand/family/subfamily — written and logged `applied` at high
+     * confidence, left unwritten and logged `pending` below the low
+     * threshold.
+     */
+    public function test_high_confidence_product_type_is_persisted_and_logged_applied(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: 'Caldaia a condensazione',
+            enrichedDescription: null,
+            confidence: 90,
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $fresh = $product->fresh();
+        $this->assertSame('Caldaia a condensazione', $fresh->product_type);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'product_type',
+            'origin' => 'ai',
+            'status' => 'applied',
+            'confidence' => 90,
+            'value_text' => 'Caldaia a condensazione',
+        ]);
+    }
+
+    public function test_low_confidence_product_type_is_not_persisted_and_logged_pending(): void
+    {
+        $product = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: 'Caldaia a condensazione',
+            enrichedDescription: null,
+            confidence: 40,
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $fresh = $product->fresh();
+        $this->assertNull($fresh->product_type);
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'product_type',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 40,
+            'value_text' => 'Caldaia a condensazione',
+        ]);
+    }
+
+    /**
+     * US-045 AC4: a reclassification updates the existing `product_type`
+     * value — there is no `*_source` guard against overwriting it.
+     */
+    public function test_reclassification_overwrites_the_existing_product_type(): void
+    {
+        $product = Product::factory()->create([
+            'enrichment_status' => 'pending',
+            'product_type' => 'Miscelatore',
+        ]);
+
+        $result = new ClassifiedProduct(
+            codiceArticolo: $product->codice_articolo,
+            brand: null,
+            family: null,
+            subfamily: null,
+            productType: 'Caldaia a condensazione',
+            enrichedDescription: null,
+            confidence: 90,
+        );
+
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+
+        $this->assertSame('Caldaia a condensazione', $product->fresh()->product_type);
     }
 
     public function test_manual_source_attribute_is_never_overwritten_by_ai_proposal(): void
@@ -419,7 +690,7 @@ class EnrichmentApplierTest extends TestCase
             ],
         );
 
-        (new EnrichmentApplier(new EnrichmentProposalRecorder))->apply($product, $result, new TaxonomyCatalog);
+        $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $attribute = $product->attributes()->where('key', 'materiale')->first();
         $this->assertNotNull($attribute);
