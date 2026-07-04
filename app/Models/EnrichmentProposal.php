@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'value_num',
     'value_text',
     'unit',
+    'data_type',
     'origin',
     'confidence',
     'status',

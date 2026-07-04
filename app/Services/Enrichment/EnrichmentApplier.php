@@ -35,8 +35,11 @@ use App\Services\Ai\TaxonomyCatalog;
  * `status = 'pending'` when confidence was too low to write it, or when the
  * value couldn't be converted/typed against the attribute registry (US-043).
  * A field that doesn't resolve against the taxonomy, or is guarded by a
- * manual/file/other authoritative source, never generates a proposal; the
- * same is true for an attribute key absent from the registry.
+ * manual/file/other authoritative source, never generates a proposal. An
+ * attribute key absent from the registry is never written to
+ * `product_attributes`, but — since US-044 — generates its own
+ * `attribute_definition` proposal instead of disappearing silently, so a
+ * reviewer can add it to the registry (or reject it) from the review queue.
  */
 class EnrichmentApplier
 {
@@ -150,10 +153,14 @@ class EnrichmentApplier
      * of the regex extraction pass and is checked first, before anything
      * else: if it blocks the write, no proposal is recorded either.
      *
-     * A key absent from {@see AttributeVocabulary} (US-043) is discarded
-     * entirely — not written, no proposal recorded — since the AI is
-     * instructed to only ever use canonical keys and a stray free key is not
-     * actionable by the current review queue.
+     * A key absent from {@see AttributeVocabulary} is never written to
+     * `product_attributes` — the AI is instructed to only ever use canonical
+     * keys, so a stray free key is not trusted for a direct write — but,
+     * since US-044, it is no longer discarded outright either: it generates
+     * an `attribute_definition` proposal via
+     * {@see EnrichmentProposalRecorder::recordAttributeDefinitionProposal()}
+     * so a reviewer can register it (or reject it) instead of the
+     * fragmentation silently reappearing at the registry level.
      *
      * For a key present in the registry: below the low-confidence threshold,
      * a `pending` proposal is recorded with the value/unit exactly as read
@@ -182,6 +189,8 @@ class EnrichmentApplier
             $definition = $vocabulary->definitionFor($key);
 
             if ($definition === null) {
+                $this->recorder->recordAttributeDefinitionProposal($product, $key, $attribute);
+
                 continue;
             }
 

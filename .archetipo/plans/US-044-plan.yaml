@@ -37,77 +37,88 @@ tasks:
     title: Estendere lo schema di enrichment_proposals
     description: Nuova migration che aggiunge la colonna nullable data_type (string) a enrichment_proposals per portare il tipo proposto quando field='attribute_definition'; aggiornare il fillable/i cast di EnrichmentProposal e aggiungere uno stato attributeDefinition() alla factory.
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-01
   - id: TASK-02
     title: Creare SimilarAttributeKeyFinder
     description: 'App\Services\Enrichment\SimilarAttributeKeyFinder: servizio stateless che confronta una chiave proposta con tutte le AttributeDefinition esistenti tramite distanza di Levenshtein normalizzata (calcolo in memoria) e restituisce le N piu'' simili (chiave, tipo, unita'' canonica, descrizione) ordinate per vicinanza crescente.'
     type: Impl
-    status: TODO
+    status: DONE
+    ref: TASK-02
   - id: TASK-03
     title: Test di SimilarAttributeKeyFinder
     description: 'tests/Feature/SimilarAttributeKeyFinderTest.php: con registro seedato una chiave quasi identica a una esistente risulta la piu'' simile; il limite N di risultati e'' rispettato; con registro vuoto ritorna una collezione vuota senza errori.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-02
+    ref: TASK-03
   - id: TASK-04
     title: Accorpamento proposte in EnrichmentProposalRecorder
     description: 'Nuovo metodo recordAttributeDefinitionProposal(Product $product, string $key, array $attribute): se esiste gia'' una proposta pending con field=''attribute_definition'' per la stessa attribute_key non crea una seconda riga (AC4); altrimenti crea la riga con field=''attribute_definition'', attribute_key, data_type inferito (numeric se value_num presente altrimenti text), unit come letto, value_text=null (descrizione da completare in revisione), origin=''ai'', status=''pending'', confidence.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
+    ref: TASK-04
   - id: TASK-05
     title: Test dell'accorpamento nel recorder
     description: 'tests/Feature/EnrichmentProposalRecorderTest.php aggiornato: prima proposta per chiave fuori registro crea la riga attribute_definition; seconda proposta per la stessa chiave ancora pending non crea una seconda riga; una proposta precedente scartata per la stessa chiave non blocca una nuova proposta.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-05
   - id: TASK-06
     title: Collegare EnrichmentApplier alla proposta di definizione
     description: In applyAttributes(), quando vocabulary->definitionFor($key) e' null, sostituire il continue silenzioso con la chiamata a recorder->recordAttributeDefinitionProposal(...) (nessuna scrittura su product_attributes, invariato per AC1); aggiornare il docblock di classe che oggi documenta lo scarto totale della chiave fuori registro.
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-04
+    ref: TASK-06
   - id: TASK-07
     title: Test end-to-end della proposta di definizione nell'applier
     description: 'tests/Feature/EnrichmentApplierTest.php aggiornato: sostituire il test sullo scarto totale con un caso che verifica nessuna riga in product_attributes e una riga enrichment_proposals field=''attribute_definition''/status=''pending'' con attribute_key/data_type/unit coerenti; due classificazioni consecutive con la stessa chiave sconosciuta producono una sola proposta pending.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-06
+    ref: TASK-07
   - id: TASK-08
     title: Estendere la coda di revisione per le nuove definizioni attributo
     description: 'App\Filament\Pages\ReviewQueue: nuova opzione attribute_definition nel SelectFilter field; nuovi case in fieldLabel()/proposedValueLabel(); nuovo ramo di correctAction() con schema chiave/tipo (Select numeric/text)/unita'' canonica/descrizione prevalorizzato dalla proposta piu'' un blocco di sola lettura con le chiavi simili da SimilarAttributeKeyFinder; fillForm() prevalorizzato da attribute_key/data_type/unit/value_text; writeProposalValue() nuovo ramo che crea (firstOrCreate sulla chiave) la riga in attribute_definitions invece di scrivere su product_attributes o sul prodotto; applyConfirm()/applyCorrection() propagano anche attribute_key/data_type ai valori scritti.'
     type: Impl
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-01
       - TASK-02
+    ref: TASK-08
   - id: TASK-09
     title: Test Livewire della coda per le nuove definizioni attributo
     description: 'tests/Feature/ReviewQueueTest.php aggiornato: filtro field include attribute_definition; fieldLabel()/proposedValueLabel() per questo tipo; schema di correctAction() prevalorizzato e chiavi simili mostrate; Conferma crea la riga in attribute_definitions e marca la proposta applied; Correggi con valori modificati crea la riga con i valori corretti; Scarta marca discarded senza creare nulla in attribute_definitions; una chiave gia'' presente in attribute_definitions al momento dell''approvazione non genera duplicato ne'' errore.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-09
   - id: TASK-10
     title: Estendere lo scenario e2e Dusk della coda di revisione
     description: 'Estendere tests/Browser/ReviewQueueTriageTest.php (stesso ARTIFACT_DIR docs/test-results/US-041/, screenshot per-step, nessuna registrazione video nativa in Dusk) con due nuovi passaggi: approvazione di una proposta ''Nuova chiave attributo'' dopo aver controllato le chiavi simili suggerite, e scarto di una proposta di definizione duplicata/errata; verificare gli effetti su attribute_definitions.'
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-08
+    ref: TASK-10
   - id: TASK-11
     title: Regressione suite correlate e formattazione
     description: Rieseguire AttributeDefinitionTest, AttributeDefinitionSeederTest e ReviewQueueDetailTest per confermare l'assenza di regressioni sui tipi di proposta esistenti (brand/family/subfamily/attribute/product_type); eseguire vendor/bin/sail bin pint --dirty sui file toccati.
     type: Test
-    status: TODO
+    status: DONE
     dependencies:
       - TASK-03
       - TASK-05
       - TASK-07
       - TASK-09
       - TASK-10
+    ref: TASK-11

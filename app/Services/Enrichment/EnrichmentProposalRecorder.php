@@ -5,6 +5,7 @@ namespace App\Services\Enrichment;
 use App\Jobs\ClassifyProductsBatchJob;
 use App\Models\EnrichmentProposal;
 use App\Models\Product;
+use App\Services\Ai\AttributeVocabulary;
 use Illuminate\Support\Carbon;
 
 /**
@@ -35,6 +36,7 @@ class EnrichmentProposalRecorder
         ?float $valueNum = null,
         ?string $valueText = null,
         ?string $unit = null,
+        ?string $dataType = null,
     ): EnrichmentProposal {
         return $product->enrichmentProposals()->create([
             'field' => $field,
@@ -43,6 +45,7 @@ class EnrichmentProposalRecorder
             'value_num' => $valueNum,
             'value_text' => $valueText,
             'unit' => $unit,
+            'data_type' => $dataType,
             'origin' => $origin,
             'confidence' => $confidence,
             'status' => $status,
@@ -88,5 +91,58 @@ class EnrichmentProposalRecorder
         );
 
         EnrichmentProposal::query()->insert($normalizedRows);
+    }
+
+    /**
+     * US-044 AC1/AC4: records a proposal for a new `attribute_definition`
+     * registry entry when the AI reports a `$key` absent from
+     * {@see AttributeVocabulary} — the safety net that keeps
+     * an out-of-registry key from silently disappearing (US-043 behavior)
+     * while still not writing anything to `product_attributes`.
+     *
+     * Accorpamento (AC4): if a `pending` `attribute_definition` proposal for
+     * the same `$key` already exists — regardless of which product
+     * originated it, since the proposal is about the registry, not a single
+     * product — no second row is created, so repeated occurrences of the
+     * same unknown key don't flood the queue. A previously `discarded`
+     * proposal for the same key does not block a new one: discarding a
+     * proposal is a decision about that one occurrence, not a permanent ban
+     * on the key ever being proposed again.
+     *
+     * `data_type` is inferred deterministically from which of
+     * `value_num`/`value_text` the AI populated for this attribute — no
+     * extra AI call. `unit` is kept exactly as read (unconverted, there is no
+     * registry entry yet to convert against). `value_text` is left `null`:
+     * the proposed description is filled in later by the reviewer, not by
+     * the AI (US-044 assumption).
+     *
+     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     */
+    public function recordAttributeDefinitionProposal(Product $product, string $key, array $attribute): void
+    {
+        $alreadyPending = EnrichmentProposal::query()
+            ->where('field', 'attribute_definition')
+            ->where('attribute_key', $key)
+            ->where('status', 'pending')
+            ->exists();
+
+        if ($alreadyPending) {
+            return;
+        }
+
+        $dataType = array_key_exists('value_num', $attribute) && $attribute['value_num'] !== null
+            ? 'numeric'
+            : 'text';
+
+        $this->record(
+            product: $product,
+            field: 'attribute_definition',
+            origin: 'ai',
+            status: 'pending',
+            confidence: $attribute['confidence'] ?? null,
+            attributeKey: $key,
+            unit: $attribute['unit'] ?? null,
+            dataType: $dataType,
+        );
     }
 }

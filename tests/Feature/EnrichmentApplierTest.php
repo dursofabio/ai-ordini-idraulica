@@ -34,7 +34,6 @@ use Tests\TestCase;
  *    converted and written as 3.5 kW, source 'ai'.
  *  - A non-convertible unit is not written; a pending proposal keeps the
  *    original value/unit.
- *  - A key absent from the registry is neither written nor proposed.
  *  - A textual attribute is written pass-through, with `unit = null`.
  *  - A value/definition type mismatch is not written; a pending proposal
  *    keeps the original value/unit.
@@ -42,6 +41,14 @@ use Tests\TestCase;
  *    an existing `source = 'manual'` row is still protected.
  *  - A `null` unit on a numeric definition is written unchanged (already
  *    canonical).
+ *
+ * US-044 acceptance criteria — a key absent from the registry is never
+ * written, but proposes a new `attribute_definition` instead of vanishing
+ * entirely:
+ *  - A key absent from the registry generates a `pending`
+ *    `attribute_definition` proposal.
+ *  - Repeated occurrences of the same unknown key across classifications
+ *    accorpate into a single pending proposal.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
@@ -368,7 +375,12 @@ class EnrichmentApplierTest extends TestCase
         ]);
     }
 
-    public function test_key_outside_registry_is_neither_written_nor_proposed(): void
+    /**
+     * US-044 AC1: a key absent from the registry is never written to
+     * `product_attributes`, but generates a `pending` `attribute_definition`
+     * proposal instead of disappearing entirely.
+     */
+    public function test_key_outside_registry_is_not_written_but_generates_a_definition_proposal(): void
     {
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
 
@@ -389,9 +401,52 @@ class EnrichmentApplierTest extends TestCase
 
         $this->assertNull($product->attributes()->where('key', 'chiave_libera_inventata')->first());
 
-        $this->assertDatabaseMissing('enrichment_proposals', [
+        $this->assertDatabaseHas('enrichment_proposals', [
             'product_id' => $product->id,
+            'field' => 'attribute_definition',
             'attribute_key' => 'chiave_libera_inventata',
+            'data_type' => 'numeric',
+            'unit' => 'x',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 95,
+        ]);
+    }
+
+    /**
+     * US-044 AC4: two consecutive classifications reporting the same
+     * out-of-registry key must not flood the queue with duplicate
+     * `attribute_definition` proposals.
+     */
+    public function test_repeated_unknown_key_across_classifications_produces_a_single_pending_proposal(): void
+    {
+        $firstProduct = Product::factory()->create(['enrichment_status' => 'pending']);
+        $secondProduct = Product::factory()->create(['enrichment_status' => 'pending']);
+
+        $applier = $this->makeApplier();
+
+        foreach ([$firstProduct, $secondProduct] as $product) {
+            $result = new ClassifiedProduct(
+                codiceArticolo: $product->codice_articolo,
+                brand: null,
+                family: null,
+                subfamily: null,
+                productType: null,
+                enrichedDescription: null,
+                confidence: null,
+                attributes: [
+                    'chiave_libera_inventata' => ['value_num' => 42, 'unit' => 'x', 'confidence' => 95],
+                ],
+            );
+
+            $applier->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
+        }
+
+        $this->assertDatabaseCount('enrichment_proposals', 1);
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'field' => 'attribute_definition',
+            'attribute_key' => 'chiave_libera_inventata',
+            'status' => 'pending',
         ]);
     }
 

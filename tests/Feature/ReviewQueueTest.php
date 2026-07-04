@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Filament\Pages\ReviewQueue;
 use App\Filament\Pages\ReviewQueueDetail;
+use App\Models\AttributeDefinition;
 use App\Models\Brand;
 use App\Models\EnrichmentProposal;
 use App\Models\Family;
@@ -559,6 +560,205 @@ class ReviewQueueTest extends TestCase
             ->filterTable('field', 'product_type')
             ->assertCanSeeTableRecords([$productTypeProposal])
             ->assertCanNotSeeTableRecords([$brandProposal]);
+    }
+
+    /**
+     * US-044: the `field` filter must include `attribute_definition` so an
+     * admin can isolate pending "new attribute key" proposals.
+     */
+    public function test_field_filter_narrows_the_queue_to_attribute_definition_proposals(): void
+    {
+        $admin = User::factory()->create();
+        $definitionProposal = EnrichmentProposal::factory()->attributeDefinition()->create();
+        $brandProposal = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('field', 'attribute_definition')
+            ->assertCanSeeTableRecords([$definitionProposal])
+            ->assertCanNotSeeTableRecords([$brandProposal]);
+    }
+
+    /**
+     * US-044: the "Campo" column shows a generic "Nuova chiave attributo"
+     * label for an `attribute_definition` proposal, and "Valore proposto"
+     * summarizes the proposed key/type/unit.
+     */
+    public function test_field_and_proposed_value_columns_show_attribute_definition_summary(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $proposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+            'attribute_key' => 'portata_lmin',
+            'data_type' => 'numeric',
+            'unit' => 'l/min',
+        ]);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $this->assertSame('Nuova chiave attributo', $this->formattedColumnState($component, 'field', $proposal));
+
+        Livewire::test(ReviewQueue::class)
+            ->assertTableColumnStateSet('proposed_value', 'portata_lmin (numeric, l/min)', $proposal);
+    }
+
+    /**
+     * US-044 AC2: opening "Correggi" on an `attribute_definition` proposal
+     * prevalorizes the form from the proposal's key/type/unit/description and
+     * shows the existing registry keys most similar to the proposed one, so
+     * the reviewer can catch a near-duplicate before approving.
+     */
+    public function test_correct_action_attribute_definition_form_is_prefilled_and_shows_similar_keys(): void
+    {
+        $admin = User::factory()->create();
+        AttributeDefinition::factory()->create([
+            'key' => 'portata_l_min',
+            'data_type' => 'numeric',
+            'canonical_unit' => 'l/min',
+        ]);
+        $proposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+            'attribute_key' => 'portata_lmin',
+            'data_type' => 'numeric',
+            'unit' => 'l/min',
+            'value_text' => null,
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet([
+                'attribute_key' => 'portata_lmin',
+                'data_type' => 'numeric',
+                'unit' => 'l/min',
+                'value_text' => null,
+            ])
+            ->assertMountedActionModalSee('portata_l_min');
+    }
+
+    /**
+     * US-044 AC3: confirming an `attribute_definition` proposal as-is creates
+     * the registry row with the AI-proposed key/type/unit, and marks the
+     * proposal `applied` without touching any product.
+     */
+    public function test_confirm_action_creates_attribute_definition_and_marks_proposal_applied(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+            'attribute_key' => 'portata_lmin',
+            'data_type' => 'numeric',
+            'unit' => 'l/min',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('confirm', $proposal);
+
+        $proposal->refresh();
+
+        $this->assertDatabaseHas(AttributeDefinition::class, [
+            'key' => 'portata_lmin',
+            'data_type' => 'numeric',
+            'canonical_unit' => 'l/min',
+        ]);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * US-044 AC3/AC2: correcting an `attribute_definition` proposal with a
+     * reviewer-edited key/type/unit/description creates the registry row
+     * with the corrected values instead of the AI-proposed ones.
+     */
+    public function test_correct_action_saves_corrected_attribute_definition_values(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+            'attribute_key' => 'portata_lmin',
+            'data_type' => 'numeric',
+            'unit' => 'l/min',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('correct', $proposal, [
+                'attribute_key' => 'portata_l_min',
+                'data_type' => 'numeric',
+                'unit' => 'l/min',
+                'value_text' => 'Portata nominale in litri al minuto',
+            ]);
+
+        $proposal->refresh();
+
+        $this->assertDatabaseHas(AttributeDefinition::class, [
+            'key' => 'portata_l_min',
+            'data_type' => 'numeric',
+            'canonical_unit' => 'l/min',
+            'description' => 'Portata nominale in litri al minuto',
+        ]);
+        $this->assertDatabaseMissing(AttributeDefinition::class, ['key' => 'portata_lmin']);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * US-044 AC3: discarding an `attribute_definition` proposal only marks it
+     * `discarded` — no registry row is created.
+     */
+    public function test_discard_action_on_attribute_definition_creates_no_registry_row(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+            'attribute_key' => 'portata_lmin',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('discard', $proposal);
+
+        $proposal->refresh();
+
+        $this->assertSame('discarded', $proposal->status);
+        $this->assertDatabaseMissing(AttributeDefinition::class, ['key' => 'portata_lmin']);
+    }
+
+    /**
+     * US-044 AC4/idempotency: a key already registered by the time the
+     * proposal is approved (e.g. a concurrent duplicate proposal was
+     * approved first) must not create a duplicate row or raise an error.
+     */
+    public function test_confirm_action_on_attribute_definition_is_idempotent_when_key_already_registered(): void
+    {
+        $admin = User::factory()->create();
+        AttributeDefinition::factory()->create([
+            'key' => 'portata_lmin',
+            'data_type' => 'text',
+            'canonical_unit' => null,
+            'description' => 'Descrizione originale',
+        ]);
+        $proposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+            'attribute_key' => 'portata_lmin',
+            'data_type' => 'numeric',
+            'unit' => 'l/min',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('confirm', $proposal);
+
+        $proposal->refresh();
+
+        $this->assertSame('applied', $proposal->status);
+        $this->assertDatabaseCount(AttributeDefinition::class, 1);
+        $this->assertDatabaseHas(AttributeDefinition::class, [
+            'key' => 'portata_lmin',
+            'data_type' => 'text',
+            'description' => 'Descrizione originale',
+        ]);
     }
 
     /**

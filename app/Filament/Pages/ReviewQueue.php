@@ -2,11 +2,13 @@
 
 namespace App\Filament\Pages;
 
+use App\Models\AttributeDefinition;
 use App\Models\Brand;
 use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Subfamily;
 use App\Services\Enrichment\EnrichmentApplier;
+use App\Services\Enrichment\SimilarAttributeKeyFinder;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
@@ -16,6 +18,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\Text;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
 use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Support\Icons\Heroicon;
@@ -116,6 +119,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                         'subfamily' => 'Sottofamiglia',
                         'attribute' => 'Attributo',
                         'product_type' => 'Tipo prodotto',
+                        'attribute_definition' => 'Nuova chiave attributo',
                     ]),
                 SelectFilter::make('confidence_band')
                     ->label('Fascia di confidenza')
@@ -247,6 +251,24 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                         ->options(fn (): array => Subfamily::query()->orderBy('name')->pluck('name', 'id')->all())
                         ->searchable(),
                 ],
+                'attribute_definition' => [
+                    TextInput::make('attribute_key')
+                        ->label('Chiave')
+                        ->required(),
+                    Select::make('data_type')
+                        ->label('Tipo')
+                        ->options([
+                            'numeric' => 'Numerico',
+                            'text' => 'Testo',
+                        ])
+                        ->required(),
+                    TextInput::make('unit')
+                        ->label('Unità canonica'),
+                    TextInput::make('value_text')
+                        ->label('Descrizione'),
+                    Text::make('Chiavi esistenti più simili: '.self::similarKeysSummary($record))
+                        ->color('gray'),
+                ],
                 default => [
                     TextInput::make('value_text')
                         ->label('Valore testuale'),
@@ -262,6 +284,12 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                     'value_text' => $record->value_text,
                     'value_num' => $record->value_num,
                     'unit' => $record->unit,
+                ],
+                'attribute_definition' => [
+                    'attribute_key' => $record->attribute_key,
+                    'data_type' => $record->data_type,
+                    'unit' => $record->unit,
+                    'value_text' => $record->value_text,
                 ],
                 default => ['value_id' => $record->value_id],
             })
@@ -333,6 +361,8 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'value_text' => $proposal->value_text,
             'value_num' => $proposal->value_num,
             'unit' => $proposal->unit,
+            'attribute_key' => $proposal->attribute_key,
+            'data_type' => $proposal->data_type,
         ], $proposal->confidence);
 
         $proposal->update(['status' => 'applied']);
@@ -349,6 +379,8 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'value_text' => $data['value_text'] ?? null,
             'value_num' => $data['value_num'] ?? null,
             'unit' => $data['unit'] ?? null,
+            'attribute_key' => $data['attribute_key'] ?? null,
+            'data_type' => $data['data_type'] ?? null,
         ]);
 
         $proposal->update(['status' => 'applied']);
@@ -364,12 +396,29 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
      * only passed by {@see applyConfirm()}, since a manual correction has no
      * meaningful confidence score to carry over). `product_type` (US-045)
      * has no `_id`/`_source` columns: it writes the plain text value
-     * directly onto the `product_type` column instead.
+     * directly onto the `product_type` column instead. `attribute_definition`
+     * (US-044 AC3) doesn't touch the product at all: it creates the new
+     * `AttributeDefinition` registry row instead, via `firstOrCreate` on the
+     * key so an already-registered key (e.g. approved from a concurrent
+     * duplicate proposal) is not re-created or errored on.
      *
-     * @param  array{value_id: ?int, value_text: ?string, value_num: ?float, unit: ?string}  $values
+     * @param  array{value_id: ?int, value_text: ?string, value_num: ?float, unit: ?string, attribute_key?: ?string, data_type?: ?string}  $values
      */
     private function writeProposalValue(EnrichmentProposal $proposal, string $source, array $values, ?int $confidence = null): void
     {
+        if ($proposal->field === 'attribute_definition') {
+            AttributeDefinition::query()->firstOrCreate(
+                ['key' => $values['attribute_key']],
+                [
+                    'data_type' => $values['data_type'],
+                    'canonical_unit' => $values['unit'],
+                    'description' => $values['value_text'],
+                ],
+            );
+
+            return;
+        }
+
         if ($proposal->field === 'attribute') {
             $proposal->product->attributes()->updateOrCreate(
                 ['key' => $proposal->attribute_key],
@@ -422,6 +471,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'subfamily' => 'Sottofamiglia',
             'attribute' => "Attributo: {$proposal->attribute_key}",
             'product_type' => 'Tipo prodotto',
+            'attribute_definition' => 'Nuova chiave attributo',
             default => $proposal->field,
         };
     }
@@ -439,8 +489,44 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'subfamily' => Subfamily::query()->find($proposal->value_id)?->name ?? '—',
             'attribute' => self::attributeValueLabel($proposal),
             'product_type' => $proposal->value_text ?? '—',
+            'attribute_definition' => self::attributeDefinitionValueLabel($proposal),
             default => '—',
         };
+    }
+
+    /**
+     * US-044: summarizes a proposed new registry definition as
+     * "key (data_type, unit)" (e.g. "portata_lmin (numeric, l/min)"), or
+     * without the unit part when the AI reported none.
+     */
+    private static function attributeDefinitionValueLabel(EnrichmentProposal $proposal): string
+    {
+        $unit = filled($proposal->unit) ? ", {$proposal->unit}" : '';
+
+        return "{$proposal->attribute_key} ({$proposal->data_type}{$unit})";
+    }
+
+    /**
+     * AC2: human-readable summary of the existing registry keys closest to
+     * the proposal's `attribute_key`, shown as a read-only hint inside
+     * {@see correctAction()}'s form so the reviewer can catch a
+     * near-duplicate before registering a new definition.
+     */
+    private static function similarKeysSummary(EnrichmentProposal $proposal): string
+    {
+        $similar = (new SimilarAttributeKeyFinder)->find($proposal->attribute_key);
+
+        if ($similar->isEmpty()) {
+            return 'Nessuna chiave simile trovata nel registro.';
+        }
+
+        return $similar
+            ->map(function (array $definition): string {
+                $unit = filled($definition['canonical_unit']) ? ", {$definition['canonical_unit']}" : '';
+
+                return "{$definition['key']} ({$definition['data_type']}{$unit})";
+            })
+            ->implode('; ');
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace Tests\Browser;
 
+use App\Models\AttributeDefinition;
 use App\Models\Brand;
 use App\Models\EnrichmentProposal;
 use App\Models\Family;
@@ -22,6 +23,11 @@ use Tests\DuskTestCase;
  * product carrying two pending proposals keeps showing its second proposal
  * once the first one is resolved, proving the proposals are triaged
  * independently of each other.
+ *
+ * US-044 extends this same scenario with the "Nuova chiave attributo"
+ * proposal type: the admin approves one after checking the existing
+ * registry keys suggested as similar, and discards a second one that turns
+ * out to be a near-duplicate of an already registered key.
  *
  * Per-step screenshots are stored in docs/test-results/US-041/ as the visual
  * artifact of the run (Dusk does not record video, same convention as
@@ -129,6 +135,14 @@ class ReviewQueueTriageTest extends DuskTestCase
         /** @var EnrichmentProposal|null $bulkDiscardSecondProposal */
         $bulkDiscardSecondProposal = null;
 
+        // US-044: same reasoning as the bulk products above — created by
+        // reference inside the closure so they don't inflate the earlier
+        // queue-count assertions.
+        /** @var EnrichmentProposal|null $definitionApproveProposal */
+        $definitionApproveProposal = null;
+        /** @var EnrichmentProposal|null $definitionDiscardProposal */
+        $definitionDiscardProposal = null;
+
         $this->browse(function (Browser $browser) use (
             $admin,
             $toConfirm,
@@ -143,6 +157,8 @@ class ReviewQueueTriageTest extends DuskTestCase
             &$bulkConfirmSecondProposal,
             &$bulkDiscardFirstProposal,
             &$bulkDiscardSecondProposal,
+            &$definitionApproveProposal,
+            &$definitionDiscardProposal,
         ) {
             // 1. The admin logs in to the Filament backoffice.
             $browser->visit('/admin/login')
@@ -394,6 +410,112 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->assertPresent($this->rowSelector($attributeProposalOnToCorrect))
                 ->pause(1500)
                 ->screenshot('16-after-bulk-discard');
+
+            // 11. US-044: an already-registered key ('portata_l_min') is
+            // seeded so the "similar keys" suggestion has something genuine
+            // to surface, then two more products enter the queue carrying a
+            // "Nuova chiave attributo" proposal each — one to approve, one
+            // to discard as a near-duplicate.
+            AttributeDefinition::factory()->create([
+                'key' => 'portata_l_min',
+                'data_type' => 'numeric',
+                'canonical_unit' => 'l/min',
+                'description' => 'Portata nominale',
+            ]);
+
+            $definitionApproveProduct = Product::factory()->create([
+                'codice_articolo' => 'DEF-APPROVE-008',
+                'description_raw' => 'Miscelatore con nuova chiave attributo da approvare',
+            ]);
+            $definitionApproveProposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+                'product_id' => $definitionApproveProduct->id,
+                'attribute_key' => 'pressione_bar',
+                'data_type' => 'numeric',
+                'unit' => 'bar',
+                'confidence' => 55,
+            ]);
+
+            $definitionDiscardProduct = Product::factory()->create([
+                'codice_articolo' => 'DEF-DISCARD-009',
+                'description_raw' => 'Rubinetto con chiave attributo duplicata da scartare',
+            ]);
+            $definitionDiscardProposal = EnrichmentProposal::factory()->attributeDefinition()->create([
+                'product_id' => $definitionDiscardProduct->id,
+                'attribute_key' => 'portata_lmin',
+                'data_type' => 'numeric',
+                'unit' => 'l/min',
+                'confidence' => 45,
+            ]);
+
+            $browser->visit('/admin/review-queue')
+                ->waitForText('articoli da revisionare')
+                ->assertSee('3 articoli da revisionare')
+                ->assertSee('Nuova chiave attributo')
+                ->pause(400)
+                ->screenshot('17-attribute-definition-queue-before');
+
+            // 12. The admin opens "Correggi" on the genuinely new key: the
+            // similar-keys hint has nothing close enough to flag, so the
+            // admin fills in a description and approves it.
+            $browser->with($this->rowSelector($definitionApproveProposal), function (Browser $row) {
+                $row->press('Correggi');
+            });
+
+            $browser->pause(500)
+                ->waitForText('Correggi')
+                ->screenshot('18-attribute-definition-correct-modal-open');
+
+            $browser->waitFor('#mountedActionSchema0\\.value_text')
+                ->type('#mountedActionSchema0\\.value_text', 'Pressione di esercizio nominale')
+                ->pause(400)
+                ->screenshot('19-attribute-definition-description-filled');
+
+            $browser->with('.fi-modal-open', function (Browser $modal) {
+                $modal->press('Submit');
+            });
+
+            $browser->pause(800)
+                ->waitUntilMissing($this->rowSelector($definitionApproveProposal))
+                ->assertSee('2 articoli da revisionare')
+                ->screenshot('20-after-attribute-definition-approve');
+
+            // 13. The admin opens the second proposal: its key
+            // ('portata_lmin') is a near-duplicate of the already registered
+            // 'portata_l_min', surfaced by the similar-keys hint, so the
+            // admin discards it instead of approving a fragmenting variant.
+            $browser->with($this->rowSelector($definitionDiscardProposal), function (Browser $row) {
+                $row->press('Correggi');
+            });
+
+            $browser->pause(500)
+                ->waitForText('Correggi')
+                ->assertSee('portata_l_min')
+                ->screenshot('21-attribute-definition-duplicate-suggested');
+
+            $browser->with('.fi-modal-open', function (Browser $modal) {
+                $modal->press('Cancel');
+            });
+
+            $browser->pause(400);
+
+            $browser->with($this->rowSelector($definitionDiscardProposal), function (Browser $row) {
+                $row->press('Scarta');
+            });
+
+            $browser->pause(500)
+                ->waitFor('.fi-modal-open')
+                ->screenshot('22-attribute-definition-discard-confirmation');
+
+            $browser->with('.fi-modal-open', function (Browser $modal) {
+                $modal->press('Confirm');
+            });
+
+            $browser->pause(800)
+                ->waitUntilMissing($this->rowSelector($definitionDiscardProposal))
+                ->assertSee('1 articoli da revisionare')
+                ->assertPresent($this->rowSelector($attributeProposalOnToCorrect))
+                ->pause(1500)
+                ->screenshot('23-after-attribute-definition-discard');
         });
 
         $toConfirm->refresh();
@@ -454,6 +576,26 @@ class ReviewQueueTriageTest extends DuskTestCase
 
         $this->assertSame('discarded', $bulkDiscardSecondProposal->status);
         $this->assertSame(0, $bulkDiscardSecondProposal->product->attributes()->count());
+
+        // US-044: the approved definition proposal registered its key with
+        // the admin-filled description; the discarded one never touched the
+        // registry, so the near-duplicate key was never added.
+        $this->assertNotNull($definitionApproveProposal);
+        $this->assertNotNull($definitionDiscardProposal);
+
+        $definitionApproveProposal->refresh();
+        $definitionDiscardProposal->refresh();
+
+        $this->assertSame('applied', $definitionApproveProposal->status);
+        $this->assertDatabaseHas('attribute_definitions', [
+            'key' => 'pressione_bar',
+            'data_type' => 'numeric',
+            'canonical_unit' => 'bar',
+            'description' => 'Pressione di esercizio nominale',
+        ]);
+
+        $this->assertSame('discarded', $definitionDiscardProposal->status);
+        $this->assertDatabaseMissing('attribute_definitions', ['key' => 'portata_lmin']);
 
         // Sanity check: across the whole scenario, exactly one proposal is
         // still pending — the attribute proposal that survived its sibling
