@@ -6,7 +6,6 @@ use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
-use App\Models\ProductBase;
 use App\Services\Search\SearchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -17,6 +16,8 @@ use Tests\TestCase;
  * US-019 acceptance criteria — structured filters (brand, family, numeric
  * attribute ranges) reduce the result pool before ranking, independently of
  * the free-text/vector search term.
+ *
+ * US-047 flattens search onto a single `Product` row (no more grouping).
  */
 class SearchServiceFiltersTest extends TestCase
 {
@@ -43,50 +44,48 @@ class SearchServiceFiltersTest extends TestCase
         ]);
     }
 
-    public function test_brand_filter_returns_only_matching_product_bases(): void
+    public function test_brand_filter_returns_only_matching_products(): void
     {
         $brandA = Brand::factory()->create();
         $brandB = Brand::factory()->create();
 
-        $matching = ProductBase::factory()->create(['brand_id' => $brandA->id]);
-        ProductBase::factory()->create(['brand_id' => $brandB->id]);
+        $matching = Product::factory()->create(['brand_id' => $brandA->id]);
+        Product::factory()->create(['brand_id' => $brandB->id]);
 
         $results = app(SearchService::class)
             ->search('scaldabagno', ['brand_id' => $brandA->id]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($matching->id, $results->first()->productBase->id);
+        $this->assertSame($matching->id, $results->first()->product->id);
     }
 
-    public function test_family_filter_returns_only_matching_product_bases(): void
+    public function test_family_filter_returns_only_matching_products(): void
     {
         $familyA = Family::factory()->create();
         $familyB = Family::factory()->create();
 
-        $matching = ProductBase::factory()->create(['family_id' => $familyA->id]);
-        ProductBase::factory()->create(['family_id' => $familyB->id]);
+        $matching = Product::factory()->create(['family_id' => $familyA->id]);
+        Product::factory()->create(['family_id' => $familyB->id]);
 
         $results = app(SearchService::class)
             ->search('scaldabagno', ['family_id' => $familyA->id]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($matching->id, $results->first()->productBase->id);
+        $this->assertSame($matching->id, $results->first()->product->id);
     }
 
-    public function test_attribute_range_filter_returns_only_product_bases_within_range(): void
+    public function test_attribute_range_filter_returns_only_products_within_range(): void
     {
-        $inRange = ProductBase::factory()->create();
-        $product = Product::factory()->create(['product_base_id' => $inRange->id]);
+        $inRange = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $product->id,
+            'product_id' => $inRange->id,
             'key' => 'potenza_kw',
             'value_num' => 2.5,
         ]);
 
-        $outOfRange = ProductBase::factory()->create();
-        $otherProduct = Product::factory()->create(['product_base_id' => $outOfRange->id]);
+        $outOfRange = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $otherProduct->id,
+            'product_id' => $outOfRange->id,
             'key' => 'potenza_kw',
             'value_num' => 10,
         ]);
@@ -99,24 +98,22 @@ class SearchServiceFiltersTest extends TestCase
             ]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($inRange->id, $results->first()->productBase->id);
+        $this->assertSame($inRange->id, $results->first()->product->id);
     }
 
     public function test_text_attribute_filter_matches_value_case_insensitively(): void
     {
-        $inox = ProductBase::factory()->create();
-        $inoxProduct = Product::factory()->create(['product_base_id' => $inox->id]);
+        $inox = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $inoxProduct->id,
+            'product_id' => $inox->id,
             'key' => 'materiale',
             'value_num' => null,
             'value_text' => 'INOX',
         ]);
 
-        $pvc = ProductBase::factory()->create();
-        $pvcProduct = Product::factory()->create(['product_base_id' => $pvc->id]);
+        $pvc = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $pvcProduct->id,
+            'product_id' => $pvc->id,
             'key' => 'materiale',
             'value_num' => null,
             'value_text' => 'PVC',
@@ -130,23 +127,21 @@ class SearchServiceFiltersTest extends TestCase
             ]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($inox->id, $results->first()->productBase->id);
+        $this->assertSame($inox->id, $results->first()->product->id);
     }
 
     public function test_open_ended_attribute_range_filters_with_only_min_or_only_max(): void
     {
-        $small = ProductBase::factory()->create();
-        $smallProduct = Product::factory()->create(['product_base_id' => $small->id]);
+        $small = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $smallProduct->id,
+            'product_id' => $small->id,
             'key' => 'capacita_litri',
             'value_num' => 80,
         ]);
 
-        $large = ProductBase::factory()->create();
-        $largeProduct = Product::factory()->create(['product_base_id' => $large->id]);
+        $large = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $largeProduct->id,
+            'product_id' => $large->id,
             'key' => 'capacita_litri',
             'value_num' => 300,
         ]);
@@ -159,7 +154,7 @@ class SearchServiceFiltersTest extends TestCase
             ]);
 
         $this->assertCount(1, $minOnly);
-        $this->assertSame($large->id, $minOnly->first()->productBase->id);
+        $this->assertSame($large->id, $minOnly->first()->product->id);
 
         $maxOnly = app(SearchService::class)
             ->search('bollitore', [
@@ -169,35 +164,33 @@ class SearchServiceFiltersTest extends TestCase
             ]);
 
         $this->assertCount(1, $maxOnly);
-        $this->assertSame($small->id, $maxOnly->first()->productBase->id);
+        $this->assertSame($small->id, $maxOnly->first()->product->id);
     }
 
     public function test_text_and_numeric_attribute_filters_combine(): void
     {
-        $matching = ProductBase::factory()->create();
-        $matchingProduct = Product::factory()->create(['product_base_id' => $matching->id]);
+        $matching = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $matchingProduct->id,
+            'product_id' => $matching->id,
             'key' => 'materiale',
             'value_num' => null,
             'value_text' => 'INOX',
         ]);
         ProductAttribute::factory()->create([
-            'product_id' => $matchingProduct->id,
+            'product_id' => $matching->id,
             'key' => 'capacita_litri',
             'value_num' => 200,
         ]);
 
-        $wrongCapacity = ProductBase::factory()->create();
-        $wrongCapacityProduct = Product::factory()->create(['product_base_id' => $wrongCapacity->id]);
+        $wrongCapacity = Product::factory()->create();
         ProductAttribute::factory()->create([
-            'product_id' => $wrongCapacityProduct->id,
+            'product_id' => $wrongCapacity->id,
             'key' => 'materiale',
             'value_num' => null,
             'value_text' => 'INOX',
         ]);
         ProductAttribute::factory()->create([
-            'product_id' => $wrongCapacityProduct->id,
+            'product_id' => $wrongCapacity->id,
             'key' => 'capacita_litri',
             'value_num' => 80,
         ]);
@@ -211,7 +204,7 @@ class SearchServiceFiltersTest extends TestCase
             ]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($matching->id, $results->first()->productBase->id);
+        $this->assertSame($matching->id, $results->first()->product->id);
     }
 
     public function test_combined_filters_narrow_the_pool_regardless_of_search_term(): void
@@ -219,14 +212,14 @@ class SearchServiceFiltersTest extends TestCase
         $brand = Brand::factory()->create();
         $family = Family::factory()->create();
 
-        $matching = ProductBase::factory()->create([
+        $matching = Product::factory()->create([
             'brand_id' => $brand->id,
             'family_id' => $family->id,
         ]);
 
-        ProductBase::factory()->create(['brand_id' => $brand->id]);
-        ProductBase::factory()->create(['family_id' => $family->id]);
-        ProductBase::factory()->create();
+        Product::factory()->create(['brand_id' => $brand->id]);
+        Product::factory()->create(['family_id' => $family->id]);
+        Product::factory()->create();
 
         $results = app(SearchService::class)
             ->search('qualsiasi termine', [
@@ -235,6 +228,6 @@ class SearchServiceFiltersTest extends TestCase
             ]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($matching->id, $results->first()->productBase->id);
+        $this->assertSame($matching->id, $results->first()->product->id);
     }
 }

@@ -3,7 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\Product;
-use App\Models\ProductBase;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -29,8 +28,6 @@ class ProductFactory extends Factory
             'giacenza' => fake()->numberBetween(0, 500),
             'is_active' => true,
             'enrichment_status' => 'pending',
-            'product_base_id' => ProductBase::factory(),
-            'grouping_key' => Str::slug(Str::words($description, 3, '')).'-'.fake()->unique()->numerify('######'),
         ];
     }
 }

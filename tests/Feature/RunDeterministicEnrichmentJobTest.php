@@ -42,7 +42,6 @@ class RunDeterministicEnrichmentJobTest extends TestCase
             'description_clean' => null,
             'enrichment_status' => 'pending',
             'brand_id' => null,
-            'product_base_id' => null,
         ]);
 
         Bus::dispatchSync(new RunDeterministicEnrichmentJob($product->id));
@@ -50,7 +49,6 @@ class RunDeterministicEnrichmentJobTest extends TestCase
         $product->refresh();
 
         $this->assertNotNull($product->brand_id);
-        $this->assertNotNull($product->product_base_id);
     }
 
     public function test_handle_resets_status_to_pending_and_is_safe_on_an_already_enriched_product(): void

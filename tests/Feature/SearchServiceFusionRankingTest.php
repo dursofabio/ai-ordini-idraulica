@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\ProductBase;
+use App\Models\Product;
 use App\Services\Search\SearchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -16,6 +16,8 @@ use Tests\TestCase;
  * US-019 acceptance criteria — weighted fusion of vector similarity and
  * full-text relevance controls result ordering. Postgres-only (pgvector +
  * tsvector), skips outside Sail like VectorEmbeddingPgvectorTest.
+ *
+ * US-047 flattens search onto a single `Product` row (no more grouping).
  */
 class SearchServiceFusionRankingTest extends TestCase
 {
@@ -63,11 +65,15 @@ class SearchServiceFusionRankingTest extends TestCase
         return array_merge($head, array_fill(0, 1024 - count($head), 0));
     }
 
-    private function insertEmbedding(ProductBase $productBase, array $vector): void
+    /**
+     * @param  array<int, float>  $vector
+     */
+    private function insertEmbedding(Product $product, array $vector): void
     {
         DB::table('product_embeddings')->insert([
-            'product_base_id' => $productBase->id,
+            'product_id' => $product->id,
             'content' => 'seed',
+            'content_hash' => hash('sha256', 'seed'),
             'model' => 'test-model',
             'dimensions' => 1024,
             'embedding' => '['.implode(',', $vector).']',
@@ -78,17 +84,17 @@ class SearchServiceFusionRankingTest extends TestCase
 
     public function test_default_weights_favor_vector_similarity_over_fts(): void
     {
-        // High FTS relevance (title matches the query), but vector far from the query embedding.
-        $ftsFavorite = ProductBase::factory()->create([
-            'title' => 'Scaldabagno a pompa di calore',
-            'description_ai' => 'Scaldabagno a pompa di calore risparmio energetico',
+        // High FTS relevance (product_type matches the query), but vector far from the query embedding.
+        $ftsFavorite = Product::factory()->create([
+            'product_type' => 'Scaldabagno a pompa di calore',
+            'description_clean' => 'Scaldabagno a pompa di calore risparmio energetico',
         ]);
         $this->insertEmbedding($ftsFavorite, $this->pad([-1, 0, 0]));
 
-        // Low FTS relevance (unrelated title), but vector identical to the query embedding.
-        $vectorFavorite = ProductBase::factory()->create([
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+        // Low FTS relevance (unrelated product_type), but vector identical to the query embedding.
+        $vectorFavorite = Product::factory()->create([
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
         ]);
         $this->insertEmbedding($vectorFavorite, $this->pad([1, 0, 0]));
 
@@ -98,7 +104,7 @@ class SearchServiceFusionRankingTest extends TestCase
 
         $results = app(SearchService::class)->search(self::QUERY_TEXT);
 
-        $orderedIds = $results->pluck('productBase.id')->all();
+        $orderedIds = $results->pluck('product.id')->all();
 
         $this->assertSame(
             [$vectorFavorite->id, $ftsFavorite->id],
@@ -108,15 +114,15 @@ class SearchServiceFusionRankingTest extends TestCase
 
     public function test_inverted_weights_favor_fts_over_vector_similarity(): void
     {
-        $ftsFavorite = ProductBase::factory()->create([
-            'title' => 'Scaldabagno a pompa di calore',
-            'description_ai' => 'Scaldabagno a pompa di calore risparmio energetico',
+        $ftsFavorite = Product::factory()->create([
+            'product_type' => 'Scaldabagno a pompa di calore',
+            'description_clean' => 'Scaldabagno a pompa di calore risparmio energetico',
         ]);
         $this->insertEmbedding($ftsFavorite, $this->pad([-1, 0, 0]));
 
-        $vectorFavorite = ProductBase::factory()->create([
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+        $vectorFavorite = Product::factory()->create([
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
         ]);
         $this->insertEmbedding($vectorFavorite, $this->pad([1, 0, 0]));
 
@@ -129,7 +135,7 @@ class SearchServiceFusionRankingTest extends TestCase
 
         $results = app(SearchService::class)->search(self::QUERY_TEXT);
 
-        $orderedIds = $results->pluck('productBase.id')->all();
+        $orderedIds = $results->pluck('product.id')->all();
 
         $this->assertSame(
             [$ftsFavorite->id, $vectorFavorite->id],

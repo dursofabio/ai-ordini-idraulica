@@ -4,8 +4,8 @@ namespace Tests\Feature;
 
 use App\Jobs\ClassifyProductsBatchJob;
 use App\Models\Brand;
+use App\Models\Family;
 use App\Models\Product;
-use App\Models\ProductBase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Concerns\RequiresDatabase;
@@ -35,31 +35,20 @@ class CatalogEnrichCommandTest extends TestCase
 
     public function test_applies_step_a_synchronously_and_queues_step_b_for_residuals(): void
     {
-        $brand = Brand::factory()->create(['name' => 'Vaillant', 'aliases' => ['VAI']]);
+        $brand = Brand::factory()->create(['name' => 'Wavin Italia Spa', 'slug' => 'wavin-italia-spa', 'aliases' => ['01']]);
+        $family = Family::factory()->create(['name' => 'Tubi e Raccordi', 'slug' => 'tubi-e-raccordi', 'aliases' => ['12']]);
 
-        // A sibling already in the target group carries a family, so once
-        // Step A groups the pending product into the same product_base,
-        // FamilyPropagationResolver gives it a family too — leaving it fully
-        // classified (brand + family) and excluded from Step B.
-        $base = ProductBase::factory()->create([
-            'grouping_key' => hash('sha256', $brand->id.'|VAI 8 WNI'),
-            'brand_id' => $brand->id,
-        ]);
-        Product::factory()->create([
-            'description_clean' => 'VAI 8-035 WNI',
-            'brand_id' => $brand->id,
-            'product_base_id' => $base->id,
-            'grouping_key' => $base->grouping_key,
-            'family_id' => $base->family_id,
-            'enrichment_status' => 'enriched',
-        ]);
-
+        // Step A (FileTaxonomyResolver) links both brand and family straight
+        // from the raw file codes synchronously, leaving this product fully
+        // classified and excluded from Step B (only the missing-brand-or-
+        // family products are queued for AI classification).
         $resolvable = Product::factory()->create([
-            'description_raw' => 'VAI 8-025 WNI',
-            'description_clean' => null,
+            'marca_codice' => '01',
+            'descrizione_marca' => null,
+            'fam_codice' => '12',
+            'fam_descrizione' => null,
             'enrichment_status' => 'pending',
-            'brand_id' => $brand->id,
-            'product_base_id' => null,
+            'brand_id' => null,
             'family_id' => null,
         ]);
 
@@ -68,7 +57,6 @@ class CatalogEnrichCommandTest extends TestCase
             'description_clean' => null,
             'enrichment_status' => 'pending',
             'brand_id' => null,
-            'product_base_id' => null,
             'family_id' => null,
         ]);
 
@@ -78,8 +66,8 @@ class CatalogEnrichCommandTest extends TestCase
         $resolvable->refresh();
         $unresolvable->refresh();
 
-        $this->assertNotNull($resolvable->product_base_id, 'Step A should group the product synchronously.');
-        $this->assertNotNull($resolvable->family_id, 'Step A should propagate the family from the sibling variant.');
+        $this->assertSame($brand->id, $resolvable->brand_id, 'Step A should link the brand from file synchronously.');
+        $this->assertSame($family->id, $resolvable->family_id, 'Step A should link the family from file synchronously.');
 
         Queue::assertPushed(
             ClassifyProductsBatchJob::class,

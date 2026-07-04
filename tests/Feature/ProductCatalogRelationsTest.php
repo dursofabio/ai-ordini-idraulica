@@ -6,7 +6,6 @@ use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
-use App\Models\ProductBase;
 use App\Models\Subfamily;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresDatabase;
@@ -14,10 +13,13 @@ use Tests\TestCase;
 
 /**
  * US-004 acceptance criteria — relations, range queries and factories:
- *  - Product belongsTo ProductBase/Brand/Family/Subfamily and hasMany attributes.
- *  - ProductBase hasMany Product; ProductAttribute belongsTo Product.
+ *  - Product belongsTo Brand/Family/Subfamily and hasMany attributes.
+ *  - ProductAttribute belongsTo Product.
  *  - Attributes can be queried by key and numeric value range (the "Demonstrates" flow).
  *  - Factories produce valid, persistable models.
+ *
+ * US-047 drops `ProductBase`/`product_base_id` entirely (search operates
+ * flat on `Product` now).
  *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
@@ -25,23 +27,6 @@ class ProductCatalogRelationsTest extends TestCase
 {
     use RefreshDatabase;
     use RequiresDatabase;
-
-    public function test_product_belongs_to_product_base(): void
-    {
-        $base = ProductBase::factory()->create();
-        $product = Product::factory()->create(['product_base_id' => $base->id]);
-
-        $this->assertInstanceOf(ProductBase::class, $product->productBase);
-        $this->assertSame($base->id, $product->productBase->id);
-    }
-
-    public function test_product_base_has_many_products(): void
-    {
-        $base = ProductBase::factory()->create();
-        Product::factory()->count(3)->create(['product_base_id' => $base->id]);
-
-        $this->assertCount(3, $base->products);
-    }
 
     public function test_product_belongs_to_taxonomy(): void
     {
@@ -63,7 +48,6 @@ class ProductCatalogRelationsTest extends TestCase
     public function test_product_foreign_keys_are_nullable(): void
     {
         $product = Product::factory()->create([
-            'product_base_id' => null,
             'brand_id' => null,
             'family_id' => null,
             'subfamily_id' => null,
@@ -71,8 +55,6 @@ class ProductCatalogRelationsTest extends TestCase
 
         $fresh = $product->fresh();
 
-        $this->assertNull($fresh->product_base_id);
-        $this->assertNull($fresh->productBase);
         $this->assertNull($fresh->brand);
         $this->assertNull($fresh->family);
         $this->assertNull($fresh->subfamily);
@@ -140,16 +122,13 @@ class ProductCatalogRelationsTest extends TestCase
 
     public function test_factories_produce_persistable_models(): void
     {
-        $base = ProductBase::factory()->create();
         $product = Product::factory()->create();
         $attribute = ProductAttribute::factory()->create();
 
-        $this->assertDatabaseHas('product_bases', ['id' => $base->id]);
         $this->assertDatabaseHas('products', ['id' => $product->id]);
         $this->assertDatabaseHas('product_attributes', ['id' => $attribute->id]);
 
         $this->assertNotEmpty($product->codice_articolo);
-        $this->assertNotEmpty($base->grouping_key);
         $this->assertInstanceOf(Product::class, $attribute->product);
     }
 }

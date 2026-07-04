@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\Product;
-use App\Models\ProductBase;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
@@ -12,10 +11,13 @@ use Tests\TestCase;
 
 /**
  * US-004 acceptance criteria — schema, indexes and defaults:
- *  - product_bases, products, product_attributes tables exist with all columns.
+ *  - products, product_attributes tables exist with all columns.
  *  - products.codice_articolo is unique.
  *  - products.enrichment_status defaults to 'pending' and is indexed.
  *  - product_attributes has composite indexes (key, value_num) and (product_id, key).
+ *
+ * US-047 drops `product_bases` and the `product_base_id`/`grouping_key`
+ * columns on `products` entirely (search now operates flat on `products`).
  *
  * Runs against in-memory SQLite via RequiresDatabase, matching US-003 pattern.
  */
@@ -24,13 +26,9 @@ class ProductCatalogSchemaTest extends TestCase
     use RefreshDatabase;
     use RequiresDatabase;
 
-    public function test_product_bases_table_has_expected_columns(): void
+    public function test_product_bases_table_no_longer_exists(): void
     {
-        $this->assertTrue(Schema::hasTable('product_bases'));
-        $this->assertTrue(Schema::hasColumns('product_bases', [
-            'id', 'title', 'grouping_key', 'brand_id', 'family_id', 'subfamily_id',
-            'created_at', 'updated_at',
-        ]));
+        $this->assertFalse(Schema::hasTable('product_bases'));
     }
 
     public function test_products_table_has_expected_columns(): void
@@ -40,10 +38,16 @@ class ProductCatalogSchemaTest extends TestCase
             'id', 'codice_articolo', 'description_raw', 'description_clean', 'descrizione_marca',
             'marca_codice', 'fam_codice', 'fam_descrizione', 'subfam_codice', 'subfam_descrizione',
             'costo', 'giacenza', 'is_active', 'enrichment_status',
-            'product_base_id', 'brand_id', 'family_id', 'subfamily_id',
+            'brand_id', 'family_id', 'subfamily_id',
             'brand_source', 'family_source', 'subfamily_source', 'source',
-            'confidence', 'grouping_key', 'created_at', 'updated_at',
+            'confidence', 'product_type', 'search_vector', 'created_at', 'updated_at',
         ]));
+    }
+
+    public function test_products_table_no_longer_has_grouping_columns(): void
+    {
+        $this->assertFalse(Schema::hasColumn('products', 'product_base_id'));
+        $this->assertFalse(Schema::hasColumn('products', 'grouping_key'));
     }
 
     public function test_product_attributes_table_has_expected_columns(): void
@@ -81,24 +85,6 @@ class ProductCatalogSchemaTest extends TestCase
             ->all();
 
         $this->assertContains('enrichment_status', $indexes);
-    }
-
-    public function test_grouping_key_is_indexed_on_products(): void
-    {
-        $indexes = collect(Schema::getIndexes('products'))
-            ->flatMap(fn (array $index): array => $index['columns'])
-            ->all();
-
-        $this->assertContains('grouping_key', $indexes);
-    }
-
-    public function test_product_bases_grouping_key_is_unique(): void
-    {
-        ProductBase::factory()->create(['grouping_key' => 'grohe-rubinetto-serie-x']);
-
-        $this->expectException(QueryException::class);
-
-        ProductBase::factory()->create(['grouping_key' => 'grohe-rubinetto-serie-x']);
     }
 
     public function test_product_attributes_has_composite_indexes(): void

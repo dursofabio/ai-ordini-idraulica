@@ -41,13 +41,13 @@ class ProductInfolist
                     ->schema([
                         TextEntry::make('embedding_status')
                             ->label('Stato')
-                            ->state(fn (Product $record): string => $record->productBase?->embedding ? 'Generato' : 'Assente')
+                            ->state(fn (Product $record): string => $record->embedding ? 'Generato' : 'Assente')
                             ->badge()
-                            ->color(fn (Product $record): string => $record->productBase?->embedding ? 'success' : 'gray'),
-                        TextEntry::make('productBase.embedding.model')
+                            ->color(fn (Product $record): string => $record->embedding ? 'success' : 'gray'),
+                        TextEntry::make('embedding.model')
                             ->label('Modello')
                             ->placeholder('—'),
-                        TextEntry::make('productBase.embedding.created_at')
+                        TextEntry::make('embedding.created_at')
                             ->label('Generato il')
                             ->dateTime()
                             ->placeholder('—'),

@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Models\ProductBase;
+use App\Models\Product;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -10,7 +10,9 @@ use PDOException;
 use Tests\TestCase;
 
 /**
- * US-019 acceptance criteria — Postgres-specific `search_vector` guarantees.
+ * US-019/US-046/US-047 acceptance criteria — Postgres-specific
+ * `search_vector` guarantees on `products` (flattened onto the single-SKU
+ * level by US-047; the `product_bases` table no longer exists).
  *
  * These assertions only make sense on PostgreSQL (tsvector generated column,
  * GIN index), so the test skips on any other driver and when Postgres is
@@ -42,7 +44,7 @@ class SearchVectorPgvectorTest extends TestCase
         $type = DB::selectOne(
             'SELECT udt_name FROM information_schema.columns '
             .'WHERE table_name = ? AND column_name = ?',
-            ['product_bases', 'search_vector'],
+            ['products', 'search_vector'],
         );
 
         $this->assertNotNull($type);
@@ -54,28 +56,29 @@ class SearchVectorPgvectorTest extends TestCase
         $index = DB::selectOne(
             'SELECT indexdef FROM pg_indexes '
             .'WHERE tablename = ? AND indexname = ?',
-            ['product_bases', 'product_bases_search_vector_gin_idx'],
+            ['products', 'products_search_vector_gin_idx'],
         );
 
-        $this->assertNotNull($index, 'GIN index on product_bases.search_vector is missing.');
+        $this->assertNotNull($index, 'GIN index on products.search_vector is missing.');
         $this->assertStringContainsStringIgnoringCase('gin', $index->indexdef);
     }
 
-    public function test_search_vector_is_populated_from_title_and_description_ai(): void
+    public function test_search_vector_is_populated_from_product_type_brand_and_description(): void
     {
-        $productBase = ProductBase::factory()->create([
-            'title' => 'Scaldabagno a pompa di calore',
-            'description_ai' => 'Scaldabagno a pompa di calore Ariston risparmio energetico',
+        $product = Product::factory()->create([
+            'product_type' => 'Scaldabagno a pompa di calore',
+            'descrizione_marca' => 'Ariston',
+            'description_clean' => 'Scaldabagno a pompa di calore Ariston risparmio energetico',
         ]);
 
         $expected = DB::selectOne(
             "SELECT to_tsvector('italian', ?) AS vector",
-            [$productBase->title.' '.$productBase->description_ai],
+            [$product->product_type.' '.$product->descrizione_marca.' '.$product->description_clean],
         );
 
         $actual = DB::selectOne(
-            'SELECT search_vector FROM product_bases WHERE id = ?',
-            [$productBase->id],
+            'SELECT search_vector FROM products WHERE id = ?',
+            [$product->id],
         );
 
         $this->assertNotNull($actual);
@@ -83,8 +86,8 @@ class SearchVectorPgvectorTest extends TestCase
 
         $match = DB::selectOne(
             "SELECT search_vector @@ plainto_tsquery('italian', 'scaldabagno pompa calore') AS matches "
-            .'FROM product_bases WHERE id = ?',
-            [$productBase->id],
+            .'FROM products WHERE id = ?',
+            [$product->id],
         );
 
         $this->assertTrue((bool) $match->matches);

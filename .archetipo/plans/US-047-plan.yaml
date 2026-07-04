@@ -1,0 +1,147 @@
+schema: archetipo/plan/v2
+spec_code: US-047
+body: |
+  # US-047: Ricerca flat a livello di prodotto e rimozione di ProductBase — Implementation Plan
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-04
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-009 — Normalizzazione AI e Ricerca a Prodotto Singolo
+  **Priorità:** HIGH | **Punti:** 5
+
+  **User Story**
+  Come utente della ricerca, voglio risultati a livello di singolo prodotto ordinati per rilevanza, così da trovare lo SKU esatto invece di un gruppo di varianti.
+
+  **Criteri di Accettazione**
+  - `SearchService` opera su `Product`: filtri attributi diretti sul prodotto, ranking con join su `product_embeddings.product_id`, match esatto su `codice_articolo` sempre in cima
+  - `variants_count` e `power_range` rimossi da risultati, API e pagina Filament; lista piatta senza deduplica (decisione confermata)
+  - `ProductBase` (modello e tabella), `GroupingResolver` e i job/resource collegati rimossi, con migrazioni di dismissione
+  - `GET /api/search` e la pagina di ricerca funzionano invariati nell'interfaccia esterna, con i test aggiornati e verdi
+
+  ---
+
+  ## Technical Solution
+
+  Questa spec completa lo spostamento di ricerca ed embedding a livello di singolo `Product` iniziato in US-046: `ProductBase`/`GroupingResolver` vengono rimossi del tutto, `SearchService` diventa flat (una riga per SKU, nessuna aggregazione per gruppo), e ogni componente ancora agganciato al concetto di "base" viene aggiornato o eliminato di conseguenza.
+
+  - **Nota sull'interfaccia API**: nel codice attuale non esiste alcuna route/controller `GET /api/search` (nessun `routes/api.php`, nessun controller di ricerca) — solo la pagina Filament (`ProductSearch`) consuma `SearchService` oggi. L'AC viene quindi interpretata come: il contratto pubblico di `SearchService` (usato dalla pagina e da qualunque futura API, es. US-048) espone risultati piatti a livello di prodotto; la costruzione dell'endpoint REST resta fuori scope qui e non regredisce nulla perché non esiste ancora.
+  - **`ProductBase` e `GroupingResolver` come dipendenza a cascata**: `FamilyPropagationResolver` propaga `family_id`/`subfamily_id` tra "varianti sorelle" di uno stesso `ProductBase` — un concetto che sparisce insieme al raggruppamento. È quindi trattato come "resource collegato" da rimuovere insieme a `GroupingResolver` (non ha più un gruppo su cui operare), con `DeterministicEnrichmentPipeline` aggiornata per non invocare più né l'uno né l'altro e senza le relative chiavi nel summary (`groups_resolved`, `families_propagated`). Questa perdita di funzionalità (propagazione taxonomy tra varianti) è una conseguenza diretta e assunta della rimozione di `ProductBase` richiesta dalla spec, non una regressione accidentale.
+  - **Migrazioni di dismissione**: una migrazione droppa la FK/colonna `products.product_base_id` e la colonna `products.grouping_key` (entrambe superflue senza raggruppamento), poi droppa la tabella `product_bases`. Segue lo stesso pattern "drop & (best-effort) recreate in down()" già usato in `2026_07_04_100000_refactor_product_embeddings_to_product_id.php`: i dati non sono migrabili in modo significativo (erano solo chiavi di raggruppamento), quindi nessun backfill è necessario.
+  - **Modello e factory**: `ProductBase` (modello + factory) rimossi; `Product::productBase()` e i campi `product_base_id`/`grouping_key` rimossi da fillable/factory.
+  - **`SearchService` flat**: `buildSearchQuery()` opera su `Product::query()` invece di `ProductBase::query()`. `applyFilters()` applica `brand_id`/`family_id`/`subfamily_id` direttamente sulle colonne di `Product` (oggi già presenti sul prodotto) e i filtri attributo restano su `whereHas('attributes', ...)` (già una relazione diretta di `Product`, nessun cambio di semantica). `applyRanking()` sostituisce la subquery correlata introdotta in US-046 (`product_embeddings` → `products` via `product_base_id`) con un join/subquery diretto su `product_embeddings.product_id = products.id` (join naturale, non più correlato a una base) e usa `products.search_vector` invece di `product_bases.search_vector` per il punteggio FTS. Il match esatto su `codice_articolo` risolve direttamente l'id del `Product` (non più il `product_base_id`). `withGroupingMeta()` e la costante `POWER_ATTRIBUTE_KEY` sono rimossi: nessuna aggregazione, una riga per prodotto.
+  - **`SearchResult`**: semplificato a wrapper di `Product` (rimossi `variantsCount`/`powerRangeMin`/`powerRangeMax`), poiché non c'è più nulla da aggregare per gruppo.
+  - **Pagina di ricerca (`ProductSearch`)**: `->model(Product::class)`; le colonne tabella `variants_count`/`power_range` (e `formatPowerRange()`) sono rimosse; la colonna titolo usa `product_type` (fallback `description_clean`) al posto di `ProductBase::title`; marca/famiglia/sottofamiglia restano lette dalle relazioni dirette di `Product`. Nessuna deduplica/collasso in UI (assunzione confermata nella spec): varianti quasi identiche escono adiacenti nel ranking, l'utente le restringe con i filtri.
+  - **`ProductBaseResource`** (intera directory: resource, pages, form, table, relation manager) rimosso — Filament lo scopre per convenzione di directory, nessuna deregistrazione esplicita necessaria.
+  - **`CatalogReindexCommand`**: il ramo di reindex/recompute per `product_bases` viene rimosso, mantenendo solo quello per `products` (già esistente da US-046).
+
+  ---
+
+  ## Test Strategy
+
+  Nessuna nuova interfaccia utente introdotta (solo rimozione/adattamento dell'esistente) — nessuna strategia e2e nuova richiesta; i test browser esistenti sulla pagina di ricerca vengono aggiornati, non creati ex novo.
+
+  - Test di schema/relazioni (`ProductCatalogSchemaTest`, `ProductCatalogRelationsTest`) aggiornati per l'assenza di `product_bases`/`product_base_id`/`grouping_key`.
+  - `DeterministicEnrichmentPipelineTest`, `ClassifyProductsBatchJobTest`, `CatalogEnrichCommandTest` aggiornati al summary senza `groups_resolved`/`families_propagated`; `GroupingResolverTest` e `FamilyPropagationResolverTest` rimossi (classi rimosse).
+  - Suite `SearchService*` (`FusionRanking`, `Filters`, `ExactCodeMatch`, `RelevanceCutoff`, `Performance`, `EmbeddingCache`) e `SearchVectorPgvectorTest`/`VectorEmbeddingPgvectorTest` aggiornate a fixture e asserzioni a livello di singolo `Product` (niente più `ProductBase` di supporto); `SearchServiceGroupingTest` rimosso (il concetto di grouping testato non esiste più).
+  - `ProductBaseResourceTest` rimosso; `ProductResourceViewTest` verificato/aggiornato per eventuali riferimenti residui a `ProductBase`.
+  - `ProductSearchPageTest` e `Browser/ProductSearchTest` aggiornati alle nuove colonne tabella (niente `variants_count`/`power_range`) e ai risultati piatti per prodotto.
+  - `CatalogReindexCommandTest` aggiornato al reindex solo su `products`.
+
+  ---
+
+  _Plan generato via ARchetipo Planning — 2026-07-04_
+tasks:
+  - id: TASK-01
+    title: 'Migrazione di dismissione: rimuovere product_base_id/grouping_key da products e la tabella product_bases'
+    description: Nuova migrazione che droppa la FK/colonna products.product_base_id e la colonna products.grouping_key, poi droppa la tabella product_bases (pattern drop & best-effort recreate in down(), come 2026_07_04_100000_refactor_product_embeddings_to_product_id.php).
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Rimuovere modello/factory ProductBase e ripulire Product/ProductFactory
+    description: Eliminare app/Models/ProductBase.php e database/factories/ProductBaseFactory.php; rimuovere Product::productBase() e i campi product_base_id/grouping_key da fillable Product e da ProductFactory::definition().
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-03
+    title: Rimuovere GroupingResolver e FamilyPropagationResolver, aggiornare DeterministicEnrichmentPipeline
+    description: Eliminare app/Services/Enrichment/GroupingResolver.php e FamilyPropagationResolver.php (dipendono dal concetto di gruppo, che sparisce); rimuovere le rispettive dipendenze/chiamate e le chiavi groups_resolved/families_propagated da DeterministicEnrichmentPipeline::run().
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Aggiornare test della pipeline di arricchimento deterministico
+    description: Aggiornare DeterministicEnrichmentPipelineTest, ClassifyProductsBatchJobTest e CatalogEnrichCommandTest al nuovo summary (senza groups_resolved/families_propagated); rimuovere GroupingResolverTest e FamilyPropagationResolverTest (classi eliminate).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+  - id: TASK-05
+    title: Semplificare SearchResult a wrapper di Product
+    description: Rimuovere variantsCount/powerRangeMin/powerRangeMax da SearchResult; il value object espone solo il Product del risultato.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-06
+    title: Riscrivere SearchService a livello di singolo Product
+    description: 'buildSearchQuery/applyFilters/applyRanking operano su Product::query(): filtri brand/family/subfamily diretti sulle colonne di Product, join diretto product_embeddings.product_id = products.id e products.search_vector per il ranking, match esatto codice_articolo sull''id del Product. Rimuovere withGroupingMeta() e la costante POWER_ATTRIBUTE_KEY.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-05
+  - id: TASK-07
+    title: Aggiornare le suite di test SearchService* e vettoriali
+    description: Aggiornare SearchServiceFusionRankingTest, SearchServiceFiltersTest, SearchServiceExactCodeMatchTest, SearchServiceRelevanceCutoffTest, SearchServicePerformanceTest, SearchServiceEmbeddingCacheTest, SearchVectorPgvectorTest e VectorEmbeddingPgvectorTest a fixture/asserzioni a livello di singolo Product; rimuovere SearchServiceGroupingTest (concetto di grouping non più esistente).
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-08
+    title: Adattare la pagina Filament ProductSearch ai risultati piatti
+    description: ->model(Product::class); rimuovere le colonne variants_count/power_range e formatPowerRange(); colonna titolo basata su product_type (fallback description_clean); marca/famiglia/sottofamiglia lette dalle relazioni dirette di Product. Nessuna deduplica in UI (assunzione confermata).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-09
+    title: Aggiornare i test della pagina di ricerca
+    description: Aggiornare ProductSearchPageTest e tests/Browser/ProductSearchTest alle nuove colonne tabella e ai risultati piatti per prodotto.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-10
+    title: Rimuovere ProductBaseResource e collegati Filament
+    description: Eliminare l'intera directory app/Filament/Resources/ProductBases (resource, pages, form, table, relation manager); verificare che nessun altro punto del pannello lo referenzi (auto-discovery per directory).
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-11
+    title: Rimuovere/aggiornare i test collegati a ProductBaseResource
+    description: Eliminare ProductBaseResourceTest (resource rimossa); verificare e aggiornare ProductResourceViewTest per eventuali riferimenti residui a ProductBase.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-10
+  - id: TASK-12
+    title: Semplificare CatalogReindexCommand al solo livello Product
+    description: Rimuovere il ramo di reindex/recompute per product_bases da CatalogReindexCommand, mantenendo solo la gestione già esistente per products.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-13
+    title: Aggiornare i test collegati a schema, relazioni e reindex
+    description: Aggiornare ProductCatalogSchemaTest e ProductCatalogRelationsTest per l'assenza di product_bases/product_base_id/grouping_key, e CatalogReindexCommandTest per il reindex solo su products.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-12
+      - TASK-02

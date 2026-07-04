@@ -2,17 +2,20 @@
 
 namespace App\Models;
 
+use App\Jobs\GenerateProductEmbeddingJob;
 use Database\Factories\ProductFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable([
     'codice_articolo',
     'description_raw',
     'description_clean',
+    'product_type',
     'descrizione_marca',
     'marca_codice',
     'fam_codice',
@@ -23,7 +26,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'giacenza',
     'is_active',
     'enrichment_status',
-    'product_base_id',
     'brand_id',
     'family_id',
     'subfamily_id',
@@ -32,7 +34,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'subfamily_source',
     'source',
     'confidence',
-    'grouping_key',
 ])]
 class Product extends Model
 {
@@ -52,16 +53,6 @@ class Product extends Model
             'is_active' => 'boolean',
             'confidence' => 'integer',
         ];
-    }
-
-    /**
-     * The base (variant group) this product belongs to (nullable).
-     *
-     * @return BelongsTo<ProductBase, $this>
-     */
-    public function productBase(): BelongsTo
-    {
-        return $this->belongsTo(ProductBase::class);
     }
 
     /**
@@ -122,5 +113,37 @@ class Product extends Model
     public function enrichmentProposals(): HasMany
     {
         return $this->hasMany(EnrichmentProposal::class);
+    }
+
+    /**
+     * The vector embedding generated from this product's own type + brand
+     * (or description_clean, see {@see composeEmbeddingContent()}).
+     *
+     * @return HasOne<ProductEmbedding, $this>
+     */
+    public function embedding(): HasOne
+    {
+        return $this->hasOne(ProductEmbedding::class);
+    }
+
+    /**
+     * Deterministically compose the text fed to the embedding provider for
+     * this single product: `product_type` + brand name when `product_type`
+     * is set, falling back to `description_clean` otherwise (US-046 AC2).
+     * Variants of the same model share an identical `product_type` + brand,
+     * so they naturally compose the same content — deduplicated by content
+     * hash in {@see GenerateProductEmbeddingJob} so they don't pay
+     * for a duplicate embedding call.
+     */
+    public function composeEmbeddingContent(): string
+    {
+        if (trim((string) $this->product_type) !== '') {
+            return trim(implode(' ', array_filter([
+                $this->product_type,
+                $this->brand?->name,
+            ])));
+        }
+
+        return trim((string) $this->description_clean);
     }
 }

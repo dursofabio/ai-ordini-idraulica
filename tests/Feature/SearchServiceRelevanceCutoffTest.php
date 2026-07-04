@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Brand;
-use App\Models\ProductBase;
+use App\Models\Product;
 use App\Services\Search\SearchService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -14,10 +14,12 @@ use PDOException;
 use Tests\TestCase;
 
 /**
- * US-019 acceptance criteria — a free-text search excludes product-bases
- * with no real relevance signal (neither an FTS match nor a meaningful
- * vector match), instead of ranking (and returning) the entire catalog for
- * a query that matches nothing.
+ * US-019 acceptance criteria — a free-text search excludes products with no
+ * real relevance signal (neither an FTS match nor a meaningful vector
+ * match), instead of ranking (and returning) the entire catalog for a query
+ * that matches nothing.
+ *
+ * US-047 flattens search onto a single `Product` row (no more grouping).
  */
 class SearchServiceRelevanceCutoffTest extends TestCase
 {
@@ -57,11 +59,15 @@ class SearchServiceRelevanceCutoffTest extends TestCase
         return array_merge($head, array_fill(0, 1024 - count($head), 0));
     }
 
-    private function insertEmbedding(ProductBase $productBase, array $vector): void
+    /**
+     * @param  array<int, float>  $vector
+     */
+    private function insertEmbedding(Product $product, array $vector): void
     {
         DB::table('product_embeddings')->insert([
-            'product_base_id' => $productBase->id,
+            'product_id' => $product->id,
             'content' => 'seed',
+            'content_hash' => hash('sha256', 'seed'),
             'model' => 'test-model',
             'dimensions' => 1024,
             'embedding' => '['.implode(',', $vector).']',
@@ -72,15 +78,15 @@ class SearchServiceRelevanceCutoffTest extends TestCase
 
     public function test_query_with_no_fts_or_vector_signal_excludes_unrelated_results(): void
     {
-        $matching = ProductBase::factory()->create([
-            'title' => 'Scaldabagno a pompa di calore',
-            'description_ai' => 'Scaldabagno a pompa di calore risparmio energetico',
+        $matching = Product::factory()->create([
+            'product_type' => 'Scaldabagno a pompa di calore',
+            'description_clean' => 'Scaldabagno a pompa di calore risparmio energetico',
         ]);
         $this->insertEmbedding($matching, $this->pad([1, 0, 0]));
 
-        $unrelated = ProductBase::factory()->create([
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+        $unrelated = Product::factory()->create([
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
         ]);
         $this->insertEmbedding($unrelated, $this->pad([-1, 0, 0]));
 
@@ -91,16 +97,16 @@ class SearchServiceRelevanceCutoffTest extends TestCase
         $results = app(SearchService::class)->search('scaldabagno pompa calore');
 
         $this->assertCount(1, $results);
-        $this->assertSame($matching->id, $results->first()->productBase->id);
+        $this->assertSame($matching->id, $results->first()->product->id);
     }
 
     public function test_query_matching_nothing_returns_no_results(): void
     {
-        $productBase = ProductBase::factory()->create([
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+        $product = Product::factory()->create([
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
         ]);
-        $this->insertEmbedding($productBase, $this->pad([-1, 0, 0]));
+        $this->insertEmbedding($product, $this->pad([-1, 0, 0]));
 
         Http::fake([
             '*' => Http::response(['embedding' => $this->pad([1, 0, 0])]),
@@ -115,12 +121,12 @@ class SearchServiceRelevanceCutoffTest extends TestCase
     {
         $brand = Brand::factory()->create();
 
-        $productBase = ProductBase::factory()->create([
+        $product = Product::factory()->create([
             'brand_id' => $brand->id,
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
         ]);
-        $this->insertEmbedding($productBase, $this->pad([-1, 0, 0]));
+        $this->insertEmbedding($product, $this->pad([-1, 0, 0]));
 
         Http::fake([
             '*' => Http::response(['embedding' => $this->pad([1, 0, 0])]),
@@ -131,19 +137,19 @@ class SearchServiceRelevanceCutoffTest extends TestCase
         ]);
 
         $this->assertCount(1, $results);
-        $this->assertSame($productBase->id, $results->first()->productBase->id);
+        $this->assertSame($product->id, $results->first()->product->id);
     }
 
     public function test_cutoff_is_skipped_for_a_blank_query(): void
     {
         $brand = Brand::factory()->create();
 
-        $productBase = ProductBase::factory()->create([
+        $product = Product::factory()->create([
             'brand_id' => $brand->id,
-            'title' => 'Valvola a sfera in ottone',
-            'description_ai' => 'Valvola a sfera in ottone per impianti idraulici',
+            'product_type' => 'Valvola a sfera in ottone',
+            'description_clean' => 'Valvola a sfera in ottone per impianti idraulici',
         ]);
-        $this->insertEmbedding($productBase, $this->pad([-1, 0, 0]));
+        $this->insertEmbedding($product, $this->pad([-1, 0, 0]));
 
         Http::fake([
             '*' => Http::response(['embedding' => $this->pad([1, 0, 0])]),
