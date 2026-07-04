@@ -6,7 +6,7 @@ epic:
   title: Normalizzazione AI e Ricerca a Prodotto Singolo
 priority: MEDIUM
 points: 3
-status: TODO
+status: PLANNED
 blocked_by:
   - US-043
 scope: MVP

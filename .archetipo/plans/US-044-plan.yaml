@@ -1,0 +1,113 @@
+schema: archetipo/plan/v2
+spec_code: US-044
+body: |
+  ## Soluzione Tecnica
+
+  Oggi, quando `EnrichmentApplier::applyAttributes()` (US-043) incontra una chiave attributo che `AttributeVocabulary::definitionFor()` non risolve, la scarta silenziosamente: nessuna riga in `product_attributes`, nessuna proposta in `enrichment_proposals` (comportamento esplicitamente documentato nel docblock della classe). Questo è il punto di innesto di US-044: quella chiave non deve più sparire, ma diventare una proposta di tipo "definizione attributo" in coda di revisione, così la frammentazione delle chiavi — che US-043 ha eliminato lato scrittura — non si ricrei silenziosamente a livello di registro. Si riusa integralmente `enrichment_proposals` (nessuna tabella dedicata, come da assunzione della spec): il discriminatore esistente `field` guadagna un nuovo valore `attribute_definition`, affiancato a `brand`/`family`/`subfamily`/`attribute`/`product_type`. Le colonne generiche già presenti vengono riusate con un significato specifico per questo tipo di proposta — `attribute_key` = chiave proposta, `unit` = unità canonica proposta, `value_text` = descrizione proposta (inizialmente `null`, da completare in revisione) — mentre serve una sola colonna nuova, `data_type`, per portare il tipo proposto (`numeric`/`text`), inferito deterministicamente da quale fra `value_num`/`value_text` l'AI ha valorizzato per quell'attributo (nessuna chiamata AI aggiuntiva, coerente con l'ottica di costo di US-043).
+
+  - **Accorpamento (AC4)** — prima di creare una nuova proposta `attribute_definition`, si verifica se esiste già una proposta con lo stesso `attribute_key` ancora `pending`: se sì, non si crea una seconda riga (la coda non si intasa); se l'unica proposta precedente per quella chiave è stata scartata, una nuova occorrenza della stessa chiave può generare una nuova proposta (lo scarto non "brucia" la chiave per sempre). Questa logica vive in un nuovo metodo dedicato di `EnrichmentProposalRecorder`, non in `EnrichmentApplier`, mantenendo `EnrichmentProposalRecorder` come unico punto di scrittura su `enrichment_proposals` (stesso principio architetturale già in vigore).
+  - **Chiavi simili (AC2)** — il registro `attribute_definitions` conta oggi poche decine di righe al più: una ricerca per similarità semantica via embedding (come già fatto per i prodotti in EP-009) sarebbe sovradimensionata e introdurrebbe un costo/infrastruttura non giustificato per un controllo che la spec dichiara esplicitamente "umano in prima battuta, assistito dal suggerimento". Si introduce quindi `App\Services\Enrichment\SimilarAttributeKeyFinder`, un servizio stateless che confronta la chiave proposta con tutte le `AttributeDefinition` esistenti tramite distanza di Levenshtein normalizzata (calcolo in memoria, nessun indice/query aggiuntiva: stesso spirito lazy/memoizzato di `AttributeVocabulary`/`TaxonomyCatalog`) e restituisce le N più vicine (chiave, tipo, unità canonica, descrizione) per il confronto visivo in coda.
+  - **`EnrichmentApplier`** — nel ramo `$definition === null` di `applyAttributes()`, il `continue` silenzioso viene sostituito dalla chiamata al nuovo metodo del recorder (comunque seguita da `continue`: nessuna scrittura su `product_attributes`, invariato secondo AC1); il docblock di classe (righe 32-39 e 153-156) viene aggiornato per riflettere che una chiave fuori registro ora genera una proposta invece di essere scartata del tutto.
+  - **Coda di revisione (`App\Filament\Pages\ReviewQueue`)** — nuova voce nel filtro `field` ("Nuova chiave attributo"), nuovi case in `fieldLabel()`/`proposedValueLabel()` per il riepilogo di riga (es. "portata_lmin (numeric, l/min)"), e un nuovo ramo in `correctAction()`: schema con chiave/tipo (`Select` numeric/text)/unità canonica/descrizione prevalorizzati dalla proposta, più un blocco di sola lettura che elenca le chiavi esistenti più simili calcolate da `SimilarAttributeKeyFinder` — è qui che il revisore effettua il controllo di equivalenza semantica prima di approvare. `writeProposalValue()` guadagna il ramo `attribute_definition`: invece di scrivere su `product_attributes` o sui campi del prodotto, crea (via `firstOrCreate` sulla chiave, idempotente rispetto a race/doppie approvazioni) la riga in `attribute_definitions` (AC3). "Conferma" applica i valori della proposta così come proposti dall'AI (tipo inferito, unità come letta, descrizione eventualmente vuota); "Correggi" applica i valori rivisti dal revisore — in entrambi i casi lo scarto marca semplicemente la proposta `discarded` senza toccare `attribute_definitions`.
+  - **Nessuna estensione del prompt/della risposta AI** — il meccanismo resta una rete di sicurezza per una chiave che l'AI produce nonostante l'istruzione di usare solo chiavi canoniche (US-043); non si introduce alcun invito attivo a proporre chiavi nuove né si estende lo schema di risposta con una descrizione generata dall'AI, per non vanificare il vincolo di costo/qualità di US-043. La descrizione della proposta nasce quindi vuota e viene completata dal revisore in fase di approvazione.
+
+  ## Strategia di Test
+
+  Spec interamente backend/admin (nessuna nuova pagina, solo nuovi rami su componenti Filament e servizi già esistenti): niente nuovi mockup. La coda di revisione ha però già una copertura e2e Dusk consolidata (`tests/Browser/ReviewQueueTriageTest.php`, esteso in continuità dalle spec US-035/036/037/041 sullo stesso `ARTIFACT_DIR`) che va estesa con il nuovo tipo di proposta, oltre alla copertura Livewire/feature esistente su `ReviewQueue.php`.
+
+  - `tests/Feature/SimilarAttributeKeyFinderTest.php` (nuovo): con registro seedato, una chiave quasi identica a una esistente risulta la più simile; il numero di risultati rispetta il limite N; con registro vuoto ritorna una collezione vuota senza errori.
+  - `tests/Feature/EnrichmentProposalRecorderTest.php` (aggiornato): una prima proposta per una chiave fuori registro crea la riga `attribute_definition` con `data_type` inferito e `unit` come letto; una seconda proposta per la stessa chiave ancora `pending` non crea una seconda riga (accorpamento, AC4); una proposta precedente scartata per la stessa chiave non blocca una nuova proposta.
+  - `tests/Feature/EnrichmentApplierTest.php` (aggiornato): il test esistente sul comportamento "scartato del tutto" per chiave fuori registro viene sostituito da un caso che verifica AC1 — nessuna riga in `product_attributes`, una riga `enrichment_proposals` `field='attribute_definition'`/`status='pending'` con `attribute_key`/`data_type`/`unit` coerenti; due classificazioni consecutive con la stessa chiave sconosciuta producono una sola proposta pending (accorpamento end-to-end attraverso l'applier).
+  - `tests/Feature/ReviewQueueTest.php` (aggiornato, stesso stile dei casi già presenti per `attribute`/`product_type`): il filtro `field` include `attribute_definition`; `fieldLabel()`/`proposedValueLabel()` per questo tipo; lo schema di `correctAction()` è prevalorizzato con chiave/tipo/unità/descrizione della proposta e mostra le chiavi simili; "Conferma" crea la riga in `attribute_definitions` con i valori proposti e marca la proposta `applied`; "Correggi" con valori modificati crea la riga con i valori corretti; "Scarta" marca `discarded` senza creare nulla in `attribute_definitions` (AC3); una chiave già presente in `attribute_definitions` al momento dell'approvazione non genera un duplicato né un errore (idempotenza).
+  - Regressione mirata: `AttributeDefinitionTest`, `AttributeDefinitionSeederTest`, `ReviewQueueDetailTest` per confermare che i tipi di proposta esistenti (brand/family/subfamily/attribute/product_type) restano invariati.
+
+  ### E2E Tests — Simulazione utente
+
+  **Framework:** Laravel Dusk (già in uso nel progetto per la coda di revisione)
+  **Registrazione visiva:** Dusk non supporta la registrazione video nativa in questo progetto (decisione già presa e documentata nel docblock di `ReviewQueueTriageTest`): si mantiene la convenzione screenshot per-step già adottata dalle estensioni precedenti (US-035/036/037/041) dello stesso scenario, salvati nello stesso `docs/test-results/US-041/` — è lo stesso flusso utente di triage arricchito di un nuovo tipo di proposta, non uno scenario indipendente.
+
+  | Scenario | Flusso utente |
+  |---|---|
+  | Approvazione di una nuova definizione attributo | L'amministratore apre la coda "Da revisionare" e vede una proposta "Nuova chiave attributo" affiancata al conteggio; apre "Correggi", vede l'elenco delle chiavi esistenti più simili, verifica che non ne esista già una equivalente, conferma tipo/unità/descrizione e salva: la riga compare in `attribute_definitions` e la proposta sparisce dalla coda. |
+  | Scarto di una proposta di definizione duplicata/errata | L'amministratore apre una seconda proposta "Nuova chiave attributo" simile a una chiave già canonica (mostrata fra i suggerimenti), la scarta invece di approvarla: la proposta sparisce dalla coda e nessuna riga viene creata in `attribute_definitions`. |
+
+  _Le assunzioni sopra (descrizione inizialmente vuota, accorpamento per chiave ancora pending, similarità per distanza testuale anziché embedding) sono decisioni prese in sessione di pianificazione autonoma, senza chiarimenti da parte dell'utente, e sono registrate qui perché motivano scelte architetturali non esplicitate nella spec._
+tasks:
+  - id: TASK-01
+    title: Estendere lo schema di enrichment_proposals
+    description: Nuova migration che aggiunge la colonna nullable data_type (string) a enrichment_proposals per portare il tipo proposto quando field='attribute_definition'; aggiornare il fillable/i cast di EnrichmentProposal e aggiungere uno stato attributeDefinition() alla factory.
+    type: Impl
+    status: TODO
+  - id: TASK-02
+    title: Creare SimilarAttributeKeyFinder
+    description: 'App\Services\Enrichment\SimilarAttributeKeyFinder: servizio stateless che confronta una chiave proposta con tutte le AttributeDefinition esistenti tramite distanza di Levenshtein normalizzata (calcolo in memoria) e restituisce le N piu'' simili (chiave, tipo, unita'' canonica, descrizione) ordinate per vicinanza crescente.'
+    type: Impl
+    status: TODO
+  - id: TASK-03
+    title: Test di SimilarAttributeKeyFinder
+    description: 'tests/Feature/SimilarAttributeKeyFinderTest.php: con registro seedato una chiave quasi identica a una esistente risulta la piu'' simile; il limite N di risultati e'' rispettato; con registro vuoto ritorna una collezione vuota senza errori.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-02
+  - id: TASK-04
+    title: Accorpamento proposte in EnrichmentProposalRecorder
+    description: 'Nuovo metodo recordAttributeDefinitionProposal(Product $product, string $key, array $attribute): se esiste gia'' una proposta pending con field=''attribute_definition'' per la stessa attribute_key non crea una seconda riga (AC4); altrimenti crea la riga con field=''attribute_definition'', attribute_key, data_type inferito (numeric se value_num presente altrimenti text), unit come letto, value_text=null (descrizione da completare in revisione), origin=''ai'', status=''pending'', confidence.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+  - id: TASK-05
+    title: Test dell'accorpamento nel recorder
+    description: 'tests/Feature/EnrichmentProposalRecorderTest.php aggiornato: prima proposta per chiave fuori registro crea la riga attribute_definition; seconda proposta per la stessa chiave ancora pending non crea una seconda riga; una proposta precedente scartata per la stessa chiave non blocca una nuova proposta.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-06
+    title: Collegare EnrichmentApplier alla proposta di definizione
+    description: In applyAttributes(), quando vocabulary->definitionFor($key) e' null, sostituire il continue silenzioso con la chiamata a recorder->recordAttributeDefinitionProposal(...) (nessuna scrittura su product_attributes, invariato per AC1); aggiornare il docblock di classe che oggi documenta lo scarto totale della chiave fuori registro.
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-04
+  - id: TASK-07
+    title: Test end-to-end della proposta di definizione nell'applier
+    description: 'tests/Feature/EnrichmentApplierTest.php aggiornato: sostituire il test sullo scarto totale con un caso che verifica nessuna riga in product_attributes e una riga enrichment_proposals field=''attribute_definition''/status=''pending'' con attribute_key/data_type/unit coerenti; due classificazioni consecutive con la stessa chiave sconosciuta producono una sola proposta pending.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-06
+  - id: TASK-08
+    title: Estendere la coda di revisione per le nuove definizioni attributo
+    description: 'App\Filament\Pages\ReviewQueue: nuova opzione attribute_definition nel SelectFilter field; nuovi case in fieldLabel()/proposedValueLabel(); nuovo ramo di correctAction() con schema chiave/tipo (Select numeric/text)/unita'' canonica/descrizione prevalorizzato dalla proposta piu'' un blocco di sola lettura con le chiavi simili da SimilarAttributeKeyFinder; fillForm() prevalorizzato da attribute_key/data_type/unit/value_text; writeProposalValue() nuovo ramo che crea (firstOrCreate sulla chiave) la riga in attribute_definitions invece di scrivere su product_attributes o sul prodotto; applyConfirm()/applyCorrection() propagano anche attribute_key/data_type ai valori scritti.'
+    type: Impl
+    status: TODO
+    dependencies:
+      - TASK-01
+      - TASK-02
+  - id: TASK-09
+    title: Test Livewire della coda per le nuove definizioni attributo
+    description: 'tests/Feature/ReviewQueueTest.php aggiornato: filtro field include attribute_definition; fieldLabel()/proposedValueLabel() per questo tipo; schema di correctAction() prevalorizzato e chiavi simili mostrate; Conferma crea la riga in attribute_definitions e marca la proposta applied; Correggi con valori modificati crea la riga con i valori corretti; Scarta marca discarded senza creare nulla in attribute_definitions; una chiave gia'' presente in attribute_definitions al momento dell''approvazione non genera duplicato ne'' errore.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-10
+    title: Estendere lo scenario e2e Dusk della coda di revisione
+    description: 'Estendere tests/Browser/ReviewQueueTriageTest.php (stesso ARTIFACT_DIR docs/test-results/US-041/, screenshot per-step, nessuna registrazione video nativa in Dusk) con due nuovi passaggi: approvazione di una proposta ''Nuova chiave attributo'' dopo aver controllato le chiavi simili suggerite, e scarto di una proposta di definizione duplicata/errata; verificare gli effetti su attribute_definitions.'
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-08
+  - id: TASK-11
+    title: Regressione suite correlate e formattazione
+    description: Rieseguire AttributeDefinitionTest, AttributeDefinitionSeederTest e ReviewQueueDetailTest per confermare l'assenza di regressioni sui tipi di proposta esistenti (brand/family/subfamily/attribute/product_type); eseguire vendor/bin/sail bin pint --dirty sui file toccati.
+    type: Test
+    status: TODO
+    dependencies:
+      - TASK-03
+      - TASK-05
+      - TASK-07
+      - TASK-09
+      - TASK-10
