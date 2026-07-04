@@ -1,0 +1,100 @@
+schema: archetipo/plan/v2
+spec_code: US-042
+body: |-
+  ## Soluzione Tecnica
+
+  Si introduce il registro centrale `attribute_definitions` come tabella di vocabolario agganciata a `product_attributes.key` per valore stringa (nessuna FK: lo schema EAV resta invariato, come da assunzione di spec), un servizio applicativo di conversione unità deterministico e una migrazione di backfill che estingue la chiave `potenza_watt` a favore della canonica `potenza_kw`. La conversione è sempre aritmetica lato applicazione guidata dai fattori del registro — mai delegata all'AI — e il servizio è il contratto su cui US-043 aggancerà l'estrazione solo-AI.
+
+  - **Migrazione `create_attribute_definitions_table`**: `id`, `key` string con indice UNIQUE, `data_type` string (valori ammessi `numeric`|`text`, stringa libera senza enum a livello DB, coerente con `source`/`status` già usati nel progetto), `canonical_unit` string nullable (NULL per gli attributi testuali come `materiale`/`colore_ral`), `accepted_units` jsonb nullable, `description` text nullable, `timestamps`. Semantica di `accepted_units`: mappa `unità accettata → fattore moltiplicativo verso l'unità canonica` (es. per `potenza_kw`: `{"kW": 1, "W": 0.001}`). Il matching delle unità è case-insensitive dopo trim; la `canonical_unit` è sempre accettata con fattore 1 anche se omessa dalla mappa. Solo fattori moltiplicativi: nel dominio idraulico/termotecnico del catalogo non esistono unità con offset (niente °C/°F), assunzione registrata.
+  - **Modello `App\Models\AttributeDefinition`** (via `make:model` con factory e seeder): `#[Fillable]` su tutte le colonne come `ProductAttribute`, cast `accepted_units => 'array'`. Nessuna relazione Eloquent verso `ProductAttribute` (aggancio per stringa, non per chiave esterna). Factory con stati `numeric()` e `text()`.
+  - **`AttributeDefinitionSeeder`**: popola il registro con le chiavi canoniche derivate dai 10 estrattori regex di `AttributeResolver` più le chiavi AI ricorrenti. Le 10 chiavi regex collassano in **9 definizioni canoniche**, perché `potenza_watt` è dismessa e coperta da `W` tra le unità accettate di `potenza_kw`: `potenza_kw` (numeric, kW, `{kW:1, W:0.001}`), `capacita_litri` (numeric, L, `{L:1, LT:1, ML:0.001}` — chiude alla radice anche il rischio litri/millilitri segnalato nell'handoff EP-009), `attacco_pollici` (numeric, `"`, `{": 1, POLLICI: 1, IN: 1}`), `diametro_nominale` (numeric, DN, `{DN:1}`), `pressione_nominale` (numeric, PN, `{PN:1}`), `pressione_bar` (numeric, bar, `{bar:1, mbar:0.001, mb:0.001}`), `tensione_volt` (numeric, V, `{V:1, VDC:1, VAC:1}`), `colore_ral` (text, unità NULL), `materiale` (text, unità NULL); più `portata_lmin` (numeric, l/min, `{l/min:1, lt/min:1, lmin:1}`), unica chiave AI ricorrente identificabile staticamente — è l'esempio di chiave libera già suggerito all'AI nel prompt di `ClassificationPromptBuilder`; il DB di sviluppo non contiene righe `product_attributes` da cui ricavarne altre, assunzione registrata. Ogni definizione ha una `description` in italiano pensata per fare da grounding al prompt di US-043. Il seeder usa `updateOrCreate` su `key` (idempotente) e viene agganciato a `DatabaseSeeder`.
+  - **Servizio `App\Services\Enrichment\AttributeUnitConverter`** — API (contratto per US-043): `public function convertToCanonical(AttributeDefinition $definition, float $value, ?string $unit): float`. Comportamento: (1) unità uguale a `canonical_unit` (confronto case-insensitive dopo trim) o presente in `accepted_units` → ritorna `value * fattore`; (2) `unit === null` su definizione numerica → il valore è assunto già in unità canonica e ritorna invariato (fattore 1) — scelta a favore delle righe legacy senza unità, assunzione registrata; (3) unità non riconosciuta → lancia `App\Services\Enrichment\UnknownAttributeUnitException` (estende `RuntimeException`, messaggio con chiave e unità) — mai una scrittura silenziosa, il chiamante decide se instradare in coda di revisione (US-043); (4) chiamata su definizione `data_type = 'text'` → `LogicException` (la conversione non è definita per attributi testuali; per essi l'unica normalizzazione è il pass-through). Il servizio è stateless e senza dipendenze: il lookup della definizione per chiave resta a carico del chiamante (`AttributeDefinition::query()->where('key', ...)`), così US-043 può caricare l'intero registro una sola volta per batch.
+  - **Servizio `App\Services\Enrichment\LegacyAttributeKeyMigrator`** — logica di backfill estratta dalla migrazione per renderla testabile: `public function migrate(string $fromKey, string $toKey, float $factor, string $canonicalUnit): int` (ritorna il numero di righe migrate). Itera con `chunkById` le righe `product_attributes` con `key = $fromKey`; per ciascuna: se il prodotto non ha già una riga `$toKey`, aggiorna la riga in place (`key = $toKey`, `value_num = value_num * $factor`, `unit = $canonicalUnit`) **conservando `source` e `confidence`**; se esiste già una riga `$toKey`, vince quella con confidenza effettiva maggiore, dove la confidenza effettiva è `confidence ?? (source === 'regex' ? 100 : 0)` — le righe regex hanno `confidence = NULL` a DB ma `AttributeResolver` le ha sempre dichiarate a confidenza 100 nel registro proposte, quindi il NULL regex vale 100; a parità vince la riga già in unità canonica (nessuna conversione, meno rischio). La riga perdente viene eliminata; se vince la riga `$fromKey`, viene convertita e sostituisce i valori della riga `$toKey` esistente (source e confidence inclusi). Idempotente: a regime non restano righe `$fromKey` e una seconda esecuzione è un no-op.
+  - **Migrazione di backfill `backfill_potenza_watt_to_potenza_kw`**: invoca `LegacyAttributeKeyMigrator::migrate('potenza_watt', 'potenza_kw', 0.001, 'kW')` con i parametri espliciti nel codice della migrazione (non letti dal registro: le migrazioni girano prima dei seeder, quindi il registro può essere legittimamente vuoto in quel momento — su installazioni fresche il backfill è un no-op). `down()` vuota con commento: la trasformazione dati non è reversibile senza perdita di informazione (l'unità sorgente originale è persa).
+  - **Righe già canoniche invariate / nessun altro impatto**: nessuna modifica a `ProductAttribute`, `AttributeResolver`, `EnrichmentApplier`, `SearchService` (`POWER_ATTRIBUTE_KEY = 'potenza_kw'` beneficia del backfill senza cambi di codice) né alla Review Queue: la dismissione degli estrattori regex e l'ancoraggio del prompt AI al registro sono esplicitamente perimetro di US-043.
+
+  ## Strategia di Test
+
+  Spec interamente backend (nessuna nuova UI): niente mockup e niente scenario e2e; la copertura è feature-test PHPUnit con factory, più regressione mirata sulle suite esistenti che toccano `product_attributes`.
+
+  - `tests/Feature/AttributeDefinitionTest.php`: schema (esistenza tabella e colonne, vincolo UNIQUE su `key` verificato con inserimento duplicato), cast `accepted_units` array, factory e stati `numeric()`/`text()`.
+  - `tests/Feature/AttributeDefinitionSeederTest.php`: il seeder popola le 10 chiavi attese (9 da regex + `portata_lmin`); `potenza_watt` NON esiste come definizione; `potenza_kw` accetta `W` con fattore 0.001; le definizioni testuali hanno `canonical_unit` NULL; il seeder è idempotente (doppia esecuzione, nessun duplicato).
+  - `tests/Feature/AttributeUnitConverterTest.php` — matrice di conversione: identità kW→kW; 3500 W → 3.5 kW (il caso "Dimostra" della spec); case-insensitive (`w`, `Kw`) e trim; `mbar`→bar e `ML`→L; `unit = NULL` su numerica → valore invariato; unità sconosciuta → `UnknownAttributeUnitException` con chiave e unità nel messaggio; definizione testuale → `LogicException`.
+  - `tests/Feature/LegacyAttributeKeyMigratorTest.php`: conversione base (riga `potenza_watt` 3500 W diventa `potenza_kw` 3.5 kW conservando `source` e `confidence`); conflitto con `potenza_kw` esistente in entrambe le direzioni (vince watt con confidenza maggiore → la canonica assume valore convertito e source/confidence del vincitore; vince la canonica → la riga watt sparisce e la canonica resta intatta); regola del NULL (regex NULL vale 100, altri NULL valgono 0); parità → vince la riga canonica; righe già in unità canonica e altre chiavi restano invariate; idempotenza (seconda esecuzione no-op, ritorna 0).
+  - Regressione: rieseguire `SearchServiceFiltersTest`, `EnrichmentApplierTest`, `AttributeResolverTest` e `ProductCatalogSchemaTest` per confermare che registro e backfill non alterino la pipeline esistente; `vendor/bin/sail bin pint --dirty` a chiusura.
+
+  **Assunzioni registrate** (nessun chiarimento richiesto, sessione autonoma): (1) fattori solo moltiplicativi, niente unità con offset nel dominio; (2) `unit = NULL` su attributo numerico trattata come già canonica dal converter; (3) confidenza effettiva nel backfill: `NULL` con `source='regex'` vale 100, altri `NULL` valgono 0, parità → vince la riga già canonica; (4) unica chiave AI ricorrente seedata è `portata_lmin` (DB di sviluppo privo di dati reali da cui estrarne altre; il registro è estendibile via seeder idempotente); (5) `data_type` come stringa libera senza enum PHP né constraint DB, coerente con le convenzioni esistenti (`source`, `status`).
+tasks:
+  - id: TASK-01
+    title: Creare migrazione, modello e factory di attribute_definitions
+    description: 'Via make:model: migrazione create_attribute_definitions_table (key UNIQUE, data_type string, canonical_unit string nullable, accepted_units jsonb nullable, description text nullable, timestamps), modello AttributeDefinition con #[Fillable] e cast accepted_units => array, factory con stati numeric() e text(). Nessuna FK verso product_attributes.'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test di schema, cast e factory del registro
+    description: 'tests/Feature/AttributeDefinitionTest.php: esistenza tabella/colonne, vincolo UNIQUE su key (inserimento duplicato fallisce), cast accepted_units in array, stati numeric()/text() della factory.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Implementare AttributeDefinitionSeeder con le chiavi canoniche
+    description: Seeder idempotente (updateOrCreate su key) con le 9 definizioni canoniche derivate dai 10 estrattori regex (potenza_watt dismessa, coperta da W in potenza_kw; capacita_litri accetta ML) più portata_lmin, con description italiane per il grounding AI di US-043. Aggancio a DatabaseSeeder.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: Test del contenuto e dell'idempotenza del seeder
+    description: 'tests/Feature/AttributeDefinitionSeederTest.php: le 10 chiavi attese presenti, potenza_watt assente, potenza_kw accetta W con fattore 0.001, definizioni testuali con canonical_unit NULL, doppia esecuzione senza duplicati.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Implementare AttributeUnitConverter e UnknownAttributeUnitException
+    description: 'App\Services\Enrichment\AttributeUnitConverter::convertToCanonical(AttributeDefinition $definition, float $value, ?string $unit): float — matching case-insensitive dopo trim, canonical_unit sempre accettata a fattore 1, unit NULL su numerica = già canonica, unità sconosciuta lancia UnknownAttributeUnitException (chiave e unità nel messaggio), data_type text lancia LogicException. Servizio stateless, lookup della definizione a carico del chiamante.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-05
+  - id: TASK-06
+    title: Test della matrice di conversione del converter
+    description: 'tests/Feature/AttributeUnitConverterTest.php: identità, 3500 W → 3.5 kW, case-insensitive e trim, mbar→bar, ML→L, unit NULL invariata, unità sconosciuta → UnknownAttributeUnitException, definizione testuale → LogicException.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: Implementare LegacyAttributeKeyMigrator e migrazione di backfill
+    description: 'App\Services\Enrichment\LegacyAttributeKeyMigrator::migrate(fromKey, toKey, factor, canonicalUnit): int con chunkById, conversione in place conservando source/confidence, risoluzione conflitti per confidenza effettiva (NULL regex = 100, altri NULL = 0, parità vince la riga canonica) ed eliminazione della perdente. Migrazione backfill_potenza_watt_to_potenza_kw che lo invoca con (''potenza_watt'',''potenza_kw'', 0.001, ''kW'') e down() no-op documentato.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-07
+  - id: TASK-08
+    title: 'Test del backfill: conversione, conflitti, idempotenza'
+    description: 'tests/Feature/LegacyAttributeKeyMigratorTest.php: conversione base con preservazione di source/confidence, conflitti in entrambe le direzioni, regola del NULL e della parità, righe già canoniche e altre chiavi invariate, idempotenza (seconda esecuzione ritorna 0).'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-07
+    ref: TASK-08
+  - id: TASK-09
+    title: Regressione suite correlate e formattazione
+    description: Rieseguire SearchServiceFiltersTest, EnrichmentApplierTest, AttributeResolverTest e ProductCatalogSchemaTest per confermare l'assenza di regressioni su product_attributes; eseguire vendor/bin/sail bin pint --dirty sui file toccati.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-02
+      - TASK-04
+      - TASK-06
+      - TASK-08
+    ref: TASK-09
