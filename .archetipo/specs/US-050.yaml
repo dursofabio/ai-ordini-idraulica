@@ -1,0 +1,29 @@
+schema: archetipo/spec/v2
+code: US-050
+title: Campo descrizione estesa in markdown sul prodotto
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 2
+status: PLANNED
+scope: MVP
+body: |-
+  #### US-050: Campo descrizione estesa in markdown sul prodotto
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 2 | **Stato:** TODO
+  **Bloccata da:** -
+
+  **User Story**
+  Come operatore del catalogo,
+  voglio un campo "descrizione estesa" in formato markdown sul prodotto, visibile nella pagina di dettaglio e modificabile manualmente,
+  così da avere una scheda descrittiva ricca accanto alla descrizione sintetica di listino.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'operatore apre la pagina di un prodotto, vede la descrizione estesa renderizzata come markdown in una sezione dedicata e può modificarla dalla pagina di edit.
+
+  **Criteri di Accettazione**
+  - [ ] La tabella `products` ha il campo `descrizione_estesa` (testo, nullable)
+  - [ ] La pagina di dettaglio prodotto mostra la descrizione estesa renderizzata come markdown in una sezione/tab dedicata
+  - [ ] La pagina di modifica prodotto permette di editare il campo con un editor markdown
+  - [ ] Se il campo è vuoto, la sezione non mostra contenuto fittizio né errori
