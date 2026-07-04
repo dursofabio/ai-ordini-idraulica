@@ -4,20 +4,27 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Filament\Resources\Products\Pages\ViewProduct;
+use App\Filament\Resources\Products\ProductResource;
+use App\Filament\Resources\Products\RelationManagers\AttributesRelationManager;
+use App\Filament\Resources\Products\RelationManagers\EnrichmentLogsRelationManager;
+use App\Filament\Resources\Products\RelationManagers\EnrichmentProposalsRelationManager;
 use App\Jobs\ClassifyProductsBatchJob;
 use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
+use App\Models\Brand;
 use App\Models\EnrichmentLog;
+use App\Models\EnrichmentProposal;
 use App\Models\Product;
+use App\Models\ProductAttribute;
 use App\Models\ProductEmbedding;
 use App\Models\User;
+use Filament\Actions\Testing\TestAction;
 use Filament\Actions\ViewAction;
-use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Testing\Assert;
 use Livewire\Livewire;
 use Tests\Concerns\RequiresDatabase;
 use Tests\TestCase;
@@ -25,13 +32,17 @@ use Tests\TestCase;
 /**
  * US-030 acceptance criteria for the product view page:
  *  - AC1: the list exposes a dedicated view action, and the view page loads.
- *  - AC2/AC3: the enrichment history is shown in chronological order with
- *    step/confidence/model/tokens, or an explicit empty state when there is
- *    no enrichment log yet.
+ *  - AC2/AC3: the enrichment history is shown, via the enrichment logs
+ *    relation manager, in chronological order with step/confidence/model/
+ *    tokens.
  *  - AC4: the product's own embedding status (generated/missing, model,
  *    date) is shown (US-046: embedding lives per-product, not per-base).
  *  - AC5: manually-set brand/family stay visually distinct, as in the
  *    existing list/form.
+ *
+ * The technical attributes, enrichment logs, and enrichment proposals lists
+ * are each rendered by a dedicated {@see RelationManager}
+ * underneath the infolist, rather than being embedded in it.
  */
 class ProductResourceViewTest extends TestCase
 {
@@ -124,7 +135,63 @@ class ProductResourceViewTest extends TestCase
             ->assertSchemaStateSet(['embedding_status' => 'Assente']);
     }
 
-    public function test_view_page_shows_enrichment_history_in_chronological_order(): void
+    public function test_view_page_shows_all_product_fields_in_the_infolist(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'product_type' => 'caldaia',
+            'fam_codice' => 'FAM01',
+            'subfam_codice' => 'SUB01',
+            'marca_codice' => 'MRC01',
+            'costo' => 199.90,
+            'giacenza' => 12,
+            'is_active' => true,
+            'enrichment_status' => 'enriched',
+            'source' => 'ai',
+            'confidence' => 92,
+        ]);
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertSchemaStateSet([
+                'product_type' => 'caldaia',
+                'fam_codice' => 'FAM01',
+                'subfam_codice' => 'SUB01',
+                'marca_codice' => 'MRC01',
+                'giacenza' => '12.00',
+                'enrichment_status' => 'enriched',
+                'source' => 'ai',
+                'confidence' => 92,
+                'is_active' => true,
+            ]);
+    }
+
+    public function test_view_page_registers_all_relation_managers(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+
+        // Only the first relation manager tab renders eagerly on the initial
+        // page load; the others are lazy-loaded once their tab is selected.
+        // Each tab's actual content is covered directly by the relation
+        // manager component tests below.
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertSeeLivewire(AttributesRelationManager::class);
+
+        $this->assertSame(
+            [
+                AttributesRelationManager::class,
+                EnrichmentLogsRelationManager::class,
+                EnrichmentProposalsRelationManager::class,
+            ],
+            ProductResource::getRelations(),
+        );
+    }
+
+    public function test_enrichment_logs_relation_manager_lists_logs_in_chronological_order(): void
     {
         $admin = User::factory()->create();
         $this->actingAs($admin);
@@ -135,71 +202,211 @@ class ProductResourceViewTest extends TestCase
             'product_id' => $product->id,
             'step' => 'deterministic',
             'confidence' => 60,
-            'model' => null,
-            'tokens_in' => null,
-            'tokens_out' => null,
             'created_at' => now()->subMinutes(10),
         ]);
         $second = EnrichmentLog::factory()->create([
             'product_id' => $product->id,
             'step' => 'ai',
             'confidence' => 92,
-            'model' => 'gpt-4o-mini',
-            'tokens_in' => 350,
-            'tokens_out' => 120,
             'created_at' => now(),
         ]);
 
-        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
-            ->assertSchemaComponentExists(
-                'enrichmentLogs',
-                checkComponentUsing: function (RepeatableEntry $component) use ($first, $second): bool {
-                    $state = $component->getState();
-
-                    Assert::assertSame([$first->id, $second->id], $state->pluck('id')->all());
-                    Assert::assertSame(['deterministic', 'ai'], $state->pluck('step')->all());
-                    Assert::assertSame([60, 92], $state->pluck('confidence')->all());
-                    Assert::assertSame([null, 'gpt-4o-mini'], $state->pluck('model')->all());
-                    Assert::assertSame([null, 350], $state->pluck('tokens_in')->all());
-                    Assert::assertSame([null, 120], $state->pluck('tokens_out')->all());
-
-                    return true;
-                },
-            );
+        Livewire::test(EnrichmentLogsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->assertCanSeeTableRecords([$first, $second], inOrder: true);
     }
 
-    public function test_view_page_shows_empty_state_when_no_enrichment_logs(): void
+    public function test_attributes_relation_manager_lists_technical_attributes(): void
     {
         $admin = User::factory()->create();
         $this->actingAs($admin);
 
         $product = Product::factory()->create();
+        $attribute = ProductAttribute::factory()->create([
+            'product_id' => $product->id,
+            'key' => 'potenza_kw',
+            'value_num' => 25,
+            'unit' => 'kW',
+        ]);
 
-        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
-            ->assertSee('Nessun arricchimento eseguito')
-            ->assertSchemaComponentExists(
-                'enrichmentLogs',
-                checkComponentUsing: fn (RepeatableEntry $component): bool => ! $component->isVisible(),
-            );
+        Livewire::test(AttributesRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->assertCanSeeTableRecords([$attribute]);
     }
 
-    public function test_view_page_hides_empty_state_when_enrichment_logs_exist(): void
+    public function test_enrichment_proposals_relation_manager_lists_proposals(): void
     {
         $admin = User::factory()->create();
         $this->actingAs($admin);
 
         $product = Product::factory()->create();
-        EnrichmentLog::factory()->create(['product_id' => $product->id]);
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'status' => 'pending',
+        ]);
 
-        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
-            ->assertSchemaComponentExists(
-                'enrichmentLogs',
-                checkComponentUsing: fn (RepeatableEntry $component): bool => $component->isVisible(),
-            )
-            ->assertSchemaComponentExists(
-                'enrichment_empty_state',
-                checkComponentUsing: fn (TextEntry $component): bool => ! $component->isVisible(),
-            );
+        Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->assertCanSeeTableRecords([$proposal]);
+    }
+
+    /**
+     * The proposals list exposes the same triage actions as the review queue
+     * (shared via EnrichmentProposalTriageActions), but only on rows still
+     * `pending`: applied/discarded proposals are a closed audit trail.
+     */
+    public function test_enrichment_proposals_relation_manager_shows_triage_actions_only_for_pending_proposals(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+        $pending = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'status' => 'pending',
+        ]);
+        $applied = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'status' => 'applied',
+        ]);
+        $discarded = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'status' => 'discarded',
+        ]);
+
+        $component = Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ]);
+
+        foreach (['confirm', 'correct', 'discard'] as $action) {
+            $component
+                ->assertActionVisible(TestAction::make($action)->table($pending))
+                ->assertActionHidden(TestAction::make($action)->table($applied))
+                ->assertActionHidden(TestAction::make($action)->table($discarded));
+        }
+    }
+
+    /**
+     * Confirming from the product page writes the proposed value to the
+     * product with the proposal's own `origin` as the field's source and
+     * marks the proposal `applied` — the exact same semantics as the review
+     * queue's confirm action.
+     */
+    public function test_enrichment_proposals_relation_manager_confirm_action_applies_the_proposal(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $brand = Brand::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'brand',
+            'value_id' => $brand->id,
+            'origin' => 'ai',
+            'status' => 'pending',
+        ]);
+
+        Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->callTableAction('confirm', $proposal)
+            ->assertNotified('Proposta confermata');
+
+        $product->refresh();
+        $proposal->refresh();
+
+        $this->assertSame($brand->id, $product->brand_id);
+        $this->assertSame('ai', $product->brand_source);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * Correcting from the product page prevalorizes the form with the
+     * proposal's current value and saves the submitted value with
+     * `source = 'manual'`, marking the proposal `applied`.
+     */
+    public function test_enrichment_proposals_relation_manager_correct_action_saves_submitted_value_as_manual(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'value_text' => null,
+            'value_num' => 1.5,
+            'unit' => 'kW',
+            'origin' => 'ai',
+            'status' => 'pending',
+        ]);
+
+        Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet([
+                'value_text' => null,
+                'value_num' => 1.5,
+                'unit' => 'kW',
+            ])
+            ->setTableActionData(['value_num' => 3.2])
+            ->callMountedTableAction()
+            ->assertNotified('Correzione salvata');
+
+        $proposal->refresh();
+        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
+
+        $this->assertNotNull($attribute);
+        $this->assertSame('3.200', $attribute->value_num);
+        $this->assertSame('manual', $attribute->source);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * Discarding from the product page only marks the proposal `discarded`;
+     * the product is never touched, since the pending value was never
+     * applied in the first place.
+     */
+    public function test_enrichment_proposals_relation_manager_discard_action_marks_the_proposal_discarded(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'value_num' => 1.5,
+            'unit' => 'kW',
+            'status' => 'pending',
+        ]);
+
+        Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->callTableAction('discard', $proposal)
+            ->assertNotified('Proposta scartata');
+
+        $proposal->refresh();
+
+        $this->assertSame('discarded', $proposal->status);
+        $this->assertSame(0, $product->attributes()->count());
     }
 
     /**

@@ -3,8 +3,7 @@
 namespace App\Filament\Resources\Products\Schemas;
 
 use App\Models\Product;
-use Filament\Infolists\Components\RepeatableEntry;
-use Filament\Infolists\Components\RepeatableEntry\TableColumn;
+use Filament\Infolists\Components\IconEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -21,6 +20,12 @@ class ProductInfolist
                         TextEntry::make('codice_articolo'),
                         TextEntry::make('description_raw')
                             ->label('Descrizione'),
+                        TextEntry::make('description_clean')
+                            ->label('Descrizione normalizzata')
+                            ->placeholder('—'),
+                        TextEntry::make('product_type')
+                            ->label('Tipo prodotto')
+                            ->placeholder('—'),
                         TextEntry::make('brand.name')
                             ->label('Marca')
                             ->badge()
@@ -36,7 +41,64 @@ class ProductInfolist
                             ->badge()
                             ->color(fn (Product $record): string => $record->subfamily_source === 'manual' ? 'info' : 'gray')
                             ->icon(fn (Product $record): ?Heroicon => $record->subfamily_source === 'manual' ? Heroicon::OutlinedLockClosed : null),
-                    ]),
+                    ])
+                    ->columns(2),
+                Section::make('Dati da file')
+                    ->schema([
+                        TextEntry::make('descrizione_marca')
+                            ->label('Marca da file')
+                            ->placeholder('—'),
+                        TextEntry::make('marca_codice')
+                            ->label('Codice marca')
+                            ->placeholder('—'),
+                        TextEntry::make('fam_descrizione')
+                            ->label('Famiglia da file')
+                            ->placeholder('—'),
+                        TextEntry::make('fam_codice')
+                            ->label('Codice famiglia')
+                            ->placeholder('—'),
+                        TextEntry::make('subfam_descrizione')
+                            ->label('Sottofamiglia da file')
+                            ->placeholder('—'),
+                        TextEntry::make('subfam_codice')
+                            ->label('Codice sottofamiglia')
+                            ->placeholder('—'),
+                        TextEntry::make('costo')
+                            ->label('Costo')
+                            ->money('EUR'),
+                        TextEntry::make('giacenza')
+                            ->label('Giacenza')
+                            ->numeric(),
+                    ])
+                    ->columns(2),
+                Section::make('Stato arricchimento')
+                    ->schema([
+                        TextEntry::make('enrichment_status')
+                            ->label('Stato')
+                            ->badge()
+                            ->color(fn (string $state): string => match ($state) {
+                                'enriched' => 'success',
+                                'needs_review' => 'warning',
+                                default => 'gray',
+                            }),
+                        TextEntry::make('source')
+                            ->label('Origine')
+                            ->placeholder('—'),
+                        TextEntry::make('confidence')
+                            ->label('Confidenza')
+                            ->badge()
+                            ->formatStateUsing(fn (?int $state): string => $state === null ? 'N/D' : "{$state}%")
+                            ->color(fn (?int $state): string => match (true) {
+                                $state === null => 'gray',
+                                $state < 60 => 'danger',
+                                $state < 85 => 'warning',
+                                default => 'success',
+                            }),
+                        IconEntry::make('is_active')
+                            ->label('Attivo')
+                            ->boolean(),
+                    ])
+                    ->columns(4),
                 Section::make('Stato Embedding')
                     ->schema([
                         TextEntry::make('embedding_status')
@@ -51,42 +113,6 @@ class ProductInfolist
                             ->label('Generato il')
                             ->dateTime()
                             ->placeholder('—'),
-                    ]),
-                Section::make('Storico Arricchimento')
-                    ->schema([
-                        RepeatableEntry::make('enrichmentLogs')
-                            ->hiddenLabel()
-                            // Order by created_at explicitly instead of adding a
-                            // default ordering to Product::enrichmentLogs(), which
-                            // other callers (e.g. the enrichment pipeline) rely on
-                            // returning entries in natural insertion order.
-                            ->state(fn (Product $record) => $record->enrichmentLogs()->orderBy('created_at')->get())
-                            ->table([
-                                TableColumn::make('Step'),
-                                TableColumn::make('Confidenza'),
-                                TableColumn::make('Modello'),
-                                TableColumn::make('Token Input'),
-                                TableColumn::make('Token Output'),
-                            ])
-                            ->schema([
-                                TextEntry::make('step'),
-                                TextEntry::make('confidence')
-                                    ->suffix('%')
-                                    ->placeholder('—'),
-                                TextEntry::make('model')
-                                    ->placeholder('—'),
-                                TextEntry::make('tokens_in')
-                                    ->numeric()
-                                    ->placeholder('—'),
-                                TextEntry::make('tokens_out')
-                                    ->numeric()
-                                    ->placeholder('—'),
-                            ])
-                            ->visible(fn (Product $record): bool => $record->enrichmentLogs()->exists()),
-                        TextEntry::make('enrichment_empty_state')
-                            ->hiddenLabel()
-                            ->state('Nessun arricchimento eseguito')
-                            ->visible(fn (Product $record): bool => $record->enrichmentLogs()->doesntExist()),
                     ]),
             ]);
     }
