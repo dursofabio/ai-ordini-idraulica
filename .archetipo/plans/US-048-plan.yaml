@@ -1,0 +1,144 @@
+schema: archetipo/plan/v2
+spec_code: US-048
+body: |
+  ## Soluzione Tecnica
+
+  Questa spec dipende (`Bloccata da`) da US-042 (registro `attribute_definitions` + `AttributeUnitConverter`/`UnknownAttributeUnitException`), oggi in stato PLANNED ma non ancora implementata nel codice — non esiste nessuna tabella `attribute_definitions` né un `AttributeUnitConverter` in `app/Services/Enrichment/`. Questo piano è quindi scritto assumendo che, all'atto dell'implementazione, US-042 sia già stata eseguita (come impone `blocked_by`): tutte le classi di US-042 citate sotto sono trattate come dipendenze esterne già disponibili, non da ricreare qui. US-047 (ricerca flat a livello di `Product`, `SearchService`/`SearchResult` riscritti) è già implementata ed è la base su cui si innesta il filtro rigido.
+
+  Il funnel deciso nell'handoff (`docs/handoff-normalizzazione-ricerca-ai.md`, punto 6) è: parser AI → filtro rigido sugli attributi estratti → ranking semantico solo sul testo residuo. Per rispettare il principio “minimo disturbo” sui componenti condivisi, `SearchService` (già coperto da 5 file di test in `tests/Feature/SearchService*Test.php`, tutti scritti assumendo che una ricerca testuale non generi mai una chiamata AI) **non viene modificato**: resta il motore di ranking/filtro puro esistente. Il parsing NL vive in un nuovo strato di orchestrazione sopra `SearchService`, così i test esistenti restano validi senza dover fakeare un client AI ovunque.
+
+  - **Registro come vocabolario chiuso — `App\Services\Ai\AttributeDefinitionCatalog`**: nuova classe gemella di `TaxonomyCatalog` (stesso pattern: collection memoizzata, niente ri-query). Espone `toPromptText(): string` (rende `key`, `data_type`, `canonical_unit`, `accepted_units`, `description` per ogni riga di `attribute_definitions`, in un formato leggibile dal modello) e `find(string $key): ?AttributeDefinition` (case-insensitive, trim, usato dal validator per il controllo “chiave a registro sì/no”).
+  - **Parsing della query — `App\Services\Ai\QueryParsePromptBuilder`**: costruisce il payload Messages-API (stesso schema di `ClassificationPromptBuilder::build()`: `model`/`max_tokens`/`messages`), incorporando `AttributeDefinitionCatalog::toPromptText()` e il testo della query. Il prompt istruisce il modello a restituire ESCLUSIVAMENTE JSON `{"recognized_text": string, "attributes": [{"key": string, "value_num"?: number, "value_text"?: string, "unit"?: string, "min"?: number, "max"?: number}]}`, con l'istruzione esplicita di usare solo chiavi del registro e di lasciare nel testo (`recognized_text`) qualunque menzione tecnica non riconducibile con certezza a una chiave nota (AC3: “nessun filtro inventato”). Il modello riporta valore+unità così come letti nel testo, mai già convertiti — la conversione resta un passo deterministico lato applicazione, stesso principio di US-043.
+  - **Validazione e conversione — `App\Services\Ai\QueryParseResponseValidator`** (+ nuova `App\Exceptions\InvalidQueryParseResponseException`): decodifica il JSON (stesso `stripMarkdownFences` di `ClassificationResponseValidator`), poi per ogni attributo proposto: se la chiave non è nel registro (`AttributeDefinitionCatalog::find()` restituisce null) lo scarta silenziosamente (nessun errore, nessun filtro: resta implicitamente parte del testo semantico); se la chiave è nota e numerica, converte value/min/max in unità canonica via `AttributeUnitConverter::convertToCanonical()` (US-042), scartando solo quel singolo attributo (con log di warning) se l'unità non è convertibile (`UnknownAttributeUnitException`) invece di far fallire l'intero parsing; se la chiave è testuale, mantiene il valore come match esatto case-insensitive (stesso contratto di `SearchService::applyAttributeConstraint()`). Un JSON sintatticamente non valido o privo di `recognized_text` lancia `InvalidQueryParseResponseException` (il chiamante decide il fallback). L'esito valido è un `App\Services\Search\ParsedSearchQuery` (readonly: `recognizedText`, `array<AppliedAttributeFilter> $appliedFilters`), con un costruttore statico `wholeTextFallback(string $query)` (nessun filtro, `recognizedText = $query`) riusato sia per gli errori di parsing sia per il parsing disattivato. `App\Services\Search\AppliedAttributeFilter` (readonly: `key`, `label` — dalla `description` del registro —, `unit`, `value?`, `min?`, `max?`) espone `toSearchFilterArray(): array` (stessa forma già accettata da `SearchService`'s `filters['attributes']`) e `toDisplayLabel(): string` per l'interpretazione mostrata in pagina.
+  - **Orchestrazione e cache — `App\Services\Search\QueryParser`**: `parse(string $query): ParsedSearchQuery` è il solo punto che chiama l'AI. Ordine dei controlli: (1) query vuota → `wholeTextFallback('')` senza alcuna chiamata; (2) `config('search.natural_language.enabled') === false` → `wholeTextFallback($query)` senza alcuna chiamata (interruttore per ambienti senza credenziali AI, vedi sotto); (3) cache hit (`Cache::remember('search:query-parse:'.md5($query), config('search.natural_language.cache_ttl'), ...)`, stesso pattern di `SearchService::embedQuery()`); (4) altrimenti costruisce il prompt, chiama `AiClient::messages()` con `AiClient::modelFast()` (stesso modello economico usato per la classificazione bulk), valida la risposta. Qualunque eccezione (HTTP, `InvalidQueryParseResponseException`, `UnknownAttributeUnitException` non catturata a valle) viene loggata come warning e fa cadere sul fallback a tutto-testo: un guasto del parser non deve mai rompere la ricerca, coerente con AC3.
+  - **Composizione con `SearchService` — `App\Services\Search\NaturalLanguageSearchResult` + `App\Services\Search\NaturalLanguageSearchService`**: nuovo livello sottile, iniettato con `QueryParser` e `SearchService`. `search()`/`paginate()` chiamano `QueryParser::parse($query)`, fondono `appliedFilters` (mappati con `toSearchFilterArray()`) dentro `filters['attributes']` accanto agli eventuali filtri già espliciti della pagina (marca/famiglia/sottofamiglia/i tre filtri numerici fissi già esistenti: nessun conflitto, `SearchService::applyFilters()` applica già più vincoli attributo in AND), poi delega a `SearchService::search()`/`paginate()` passando `parsed->recognizedText` (non la query grezza) come testo per il ranking — la query grezza resta quella vista da `SearchService::findExactCodeMatchProductId()`, che opera internamente sul parametro `$query` invariato. Il risultato è avvolto in `NaturalLanguageSearchResult` (readonly: `ParsedSearchQuery $interpretation`, `Collection|LengthAwarePaginator $results`), che è il contratto esposto sia alla pagina Filament sia a un'eventuale consumazione futura (non esiste un'API HTTP in questo progetto: “API” nell'AC corrisponde a questo DTO di servizio, stesso significato già usato nell'handoff di US-047).
+  - **Pagina `App\Filament\Pages\ProductSearch`**: `searchResults()` passa da `SearchService::paginate()` a `NaturalLanguageSearchService::paginate()`; `search()` valorizza una nuova proprietà pubblica `?ParsedSearchQuery $interpretation`. La vista `resources/views/filament/pages/product-search.blade.php` aggiunge un banner (visibile solo quando `hasSearched` e la query non è vuota) con “Tipo riconosciuto: {recognizedText}” e una chip per ciascun `AppliedAttributeFilter::toDisplayLabel()` — nessun filtro noto → il banner mostra solo il testo riconosciuto, senza chip, senza inventare nulla.
+  - **Interruttore di ambiente**: `config/search.php` guadagna una sezione `'natural_language' => ['enabled' => env('SEARCH_NL_PARSING_ENABLED', true), 'cache_ttl' => env('SEARCH_QUERY_PARSE_CACHE_TTL', 3600)]` (+ voci gemelle in `.env.example`). `.env.dusk.local` imposta `SEARCH_NL_PARSING_ENABLED=false`: esattamente come `DB_CONNECTION=sqlite` fa già prendere a `SearchService` il ramo senza embedding provider in Dusk (vedi docblock di `tests/Browser/ProductSearchTest.php`), questo evita che i test browser scatenino una vera chiamata AI in un ambiente privo di API key.
+  - **Fuori scope esplicito**: nessun margine di confidenza top1/top2 né disambiguazione automatica (US-049, bloccata da questa spec); nessuna modifica a `SearchService`/`SearchResult`; nessuna nuova estrazione regex; nessuna modifica alla pipeline di classificazione batch (US-043) — questa spec legge il registro, non lo alimenta.
+
+  ## Strategia di Test
+
+  La suite esistente di `SearchService` (5 file in `tests/Feature/SearchService*Test.php`) non viene toccata: è la prova di non-regressione che il motore di ranking/filtro puro resta invariato. Tutti i nuovi componenti sono coperti a livello `Feature` con `Http::fake()` per isolare sia il client AI sia il provider di embedding, seguendo lo stesso pattern di `SearchServiceEmbeddingCacheTest`/`ClassificationResponseValidatorTest`.
+
+  - `tests/Feature/AttributeDefinitionCatalogTest.php`: `toPromptText()` include chiave/tipo/unità/descrizione attese; `find()` case-insensitive e con trim; registro vuoto produce un testo comunque valido (non un errore).
+  - `tests/Feature/QueryParsePromptBuilderTest.php`: il prompt costruito contiene il vocabolario del registro, il testo della query e le istruzioni di schema JSON/di non-invenzione.
+  - `tests/Feature/QueryParseResponseValidatorTest.php`: attributo numerico noto con unità non canonica → filtro con valore convertito; attributo testuale noto → filtro a match esatto; chiave fuori registro → scartata senza eccezione; unità non convertibile → solo quell'attributo scartato (log di warning), parsing altrimenti valido; JSON malformato o senza `recognized_text` → `InvalidQueryParseResponseException`.
+  - `tests/Feature/QueryParserTest.php`: query ripetuta riusa la cache (una sola chiamata HTTP fake, stesso schema di asserzione di `SearchServiceEmbeddingCacheTest`); `search.natural_language.enabled = false` → zero chiamate HTTP e fallback a tutto-testo; eccezione lato AI → fallback a tutto-testo senza propagare l'errore; una risposta AI realistica (“tubo inox 1 pollice”) produce `ParsedSearchQuery` con `attacco_pollici` convertito in unità canonica.
+  - `tests/Feature/NaturalLanguageSearchServiceTest.php`: scenario cardine della demo — un prodotto con l'attributo estratto (es. `attacco_pollici = 1`) e uno con valore diverso ma testo simile: solo il primo sopravvive al filtro rigido, il ranking testuale opera sul solo `recognized_text`; `interpretation` esposta con testo riconosciuto e filtri applicati con etichetta; i filtri già espliciti della pagina (marca/famiglia/range numerici fissi) si combinano in AND con quelli estratti dalla query senza conflitti; con parser disattivato o AI fallita il comportamento degrada a ricerca full-text pura (nessuna regressione rispetto a US-047).
+  - `tests/Feature/ProductSearchPageTest.php` (esteso): fake della risposta AI per una query con attributo esplicito, verifica che il banner di interpretazione compaia con il testo riconosciuto e i filtri applicati e che la tabella risultati sia ristretta di conseguenza; verifica il degrado a ricerca full-text con AI fakeata a fallire.
+  - `tests/Browser/ProductSearchTest.php` (esteso, Dusk — unico framework e2e presente nel progetto, già usato in US-033/041 con screenshot per-step in `docs/test-results/`, Dusk non registra video in questo progetto): nuovo scenario che apre “Ricerca prodotti” con `SEARCH_NL_PARSING_ENABLED=false` (coerente con `.env.dusk.local`) e verifica che la pagina continui a funzionare end-to-end (banner assente/testo semplice, tabella risultati invariata) — il percorso con parsing AI realmente attivo non viene esercitato nel browser (nessuna chiamata di rete reale in e2e, stessa ragione per cui Dusk gira già su SQLite per evitare il provider di embedding): la copertura funzionale del parsing AI e del banner resta a carico di `ProductSearchPageTest`, che può fakeare l'HTTP in-process. Screenshot per-step salvati in `docs/test-results/US-048/`.
+  - Regressione finale: rieseguire l'intera suite `SearchService*Test.php`, `ProductSearchPageTest`, `ProductSearchTest` (Dusk) e `vendor/bin/sail bin pint --dirty` sui file toccati.
+tasks:
+  - id: TASK-01
+    title: Registro come vocabolario chiuso e configurazione dell'interruttore NL
+    description: Creare App\Services\Ai\AttributeDefinitionCatalog (memoizzato, pattern di TaxonomyCatalog) con toPromptText() e find(string $key) case-insensitive su AttributeDefinition (US-042). Aggiungere a config/search.php la sezione 'natural_language' => ['enabled' => env('SEARCH_NL_PARSING_ENABLED', true), 'cache_ttl' => env('SEARCH_QUERY_PARSE_CACHE_TTL', 3600)] con le rispettive voci in .env.example.
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test del catalogo registro
+    description: 'tests/Feature/AttributeDefinitionCatalogTest.php: toPromptText() include chiave/tipo/unità/descrizione attese; find() case-insensitive con trim e chiave inesistente; registro vuoto produce testo valido senza errori.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: DTO ParsedSearchQuery e AppliedAttributeFilter
+    description: Creare in App\Services\Search i value object readonly ParsedSearchQuery (recognizedText, array<AppliedAttributeFilter> appliedFilters, costruttore statico wholeTextFallback(string $query)) e AppliedAttributeFilter (key, label, unit, value?, min?, max?) con toSearchFilterArray() (forma compatibile con SearchService filters['attributes']) e toDisplayLabel().
+    type: Impl
+    status: DONE
+    ref: TASK-03
+  - id: TASK-04
+    title: Prompt builder del parsing query
+    description: 'Creare App\Services\Ai\QueryParsePromptBuilder::build(string $query, AttributeDefinitionCatalog $catalog, string $model): array, stesso schema payload di ClassificationPromptBuilder (model/max_tokens/messages), che incorpora il vocabolario del registro e istruisce il modello a restituire JSON {recognized_text, attributes:[{key, value_num?, value_text?, unit?, min?, max?}]} usando solo chiavi di registro e senza inventare filtri per menzioni incerte.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-04
+  - id: TASK-05
+    title: Test del prompt builder
+    description: 'tests/Feature/QueryParsePromptBuilderTest.php: il prompt generato contiene il testo del vocabolario del registro, la query originale e le istruzioni sullo schema JSON/non-invenzione.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-04
+    ref: TASK-05
+  - id: TASK-06
+    title: Validator della risposta di parsing e conversione alle unità canoniche
+    description: 'Creare App\Exceptions\InvalidQueryParseResponseException e App\Services\Ai\QueryParseResponseValidator::validate(ClaudeResponse, AttributeDefinitionCatalog): ParsedSearchQuery. Decodifica il JSON (riuso di stripMarkdownFences), scarta silenziosamente attributi con chiave fuori registro, converte i numerici in unità canonica via AttributeUnitConverter::convertToCanonical() (US-042) scartando solo l''attributo non convertibile (log warning) su UnknownAttributeUnitException, mantiene i testuali come match esatto. JSON non valido o privo di recognized_text lancia l''eccezione.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-03
+    ref: TASK-06
+  - id: TASK-07
+    title: 'Test del validator: matrice chiave nota/ignota, unità convertibile/non convertibile, JSON malformato'
+    description: 'tests/Feature/QueryParseResponseValidatorTest.php: attributo numerico noto con unità non canonica converte correttamente; attributo testuale noto produce filtro a match esatto; chiave fuori registro scartata senza eccezione; unità non convertibile scarta solo quell''attributo con warning e non fa fallire il parsing; JSON malformato o senza recognized_text lancia InvalidQueryParseResponseException.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-06
+    ref: TASK-07
+  - id: TASK-08
+    title: 'Servizio QueryParser: orchestrazione, cache e interruttore'
+    description: 'Creare App\Services\Search\QueryParser::parse(string $query): ParsedSearchQuery. Ordine: query vuota o config(''search.natural_language.enabled'') false → wholeTextFallback senza chiamate; cache hit (Cache::remember con chiave ''search:query-parse:''.md5($query) e TTL da config) prima di chiamare AI; altrimenti costruisce il prompt (TASK-04), chiama AiClient::messages() con AiClient::modelFast(), valida (TASK-06); qualunque eccezione viene loggata come warning e produce wholeTextFallback.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-04
+      - TASK-06
+    ref: TASK-08
+  - id: TASK-09
+    title: 'Test di QueryParser: cache, interruttore, fallback su errore'
+    description: 'tests/Feature/QueryParserTest.php: query ripetuta riusa la cache (una sola chiamata HTTP fake); enabled=false produce zero chiamate HTTP e fallback a tutto-testo; eccezione AI produce fallback senza propagare l''errore; una risposta AI realistica per ''tubo inox 1 pollice'' produce ParsedSearchQuery con attacco_pollici convertito.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-08
+    ref: TASK-09
+  - id: TASK-10
+    title: 'NaturalLanguageSearchService: filtro rigido + ranking sul testo residuo'
+    description: 'Creare App\Services\Search\NaturalLanguageSearchResult (readonly: ParsedSearchQuery $interpretation, Collection|LengthAwarePaginator $results) e App\Services\Search\NaturalLanguageSearchService con search()/paginate(): chiama QueryParser::parse($query), fonde gli appliedFilters (via toSearchFilterArray()) dentro filters[''attributes''] accanto ai filtri già espliciti, delega a SearchService::search()/paginate() passando recognizedText come testo di ranking (la query grezza resta quella vista da findExactCodeMatchProductId dentro SearchService, invariato).'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-03
+      - TASK-08
+    ref: TASK-10
+  - id: TASK-11
+    title: 'Test di NaturalLanguageSearchService: filtro rigido, ranking, fusione filtri, degrado'
+    description: 'tests/Feature/NaturalLanguageSearchServiceTest.php: un attributo estratto dalla query esclude prodotti con valore diverso pur con testo simile; il ranking usa solo il testo residuo; interpretation espone testo riconosciuto e filtri applicati con etichetta; filtri espliciti di pagina e filtri estratti dalla query si combinano in AND; con parser disattivato o AI fallita il comportamento degrada a ricerca full-text pura senza regressioni rispetto a SearchService/US-047.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-10
+    ref: TASK-11
+  - id: TASK-12
+    title: 'Pagina Ricerca prodotti: banner di interpretazione'
+    description: App\Filament\Pages\ProductSearch::searchResults() passa a NaturalLanguageSearchService::paginate(); search() valorizza una nuova proprietà pubblica ?ParsedSearchQuery $interpretation. resources/views/filament/pages/product-search.blade.php aggiunge un banner (visibile solo con hasSearched e query non vuota) con testo riconosciuto e una chip per ciascun filtro applicato (toDisplayLabel()). Aggiungere SEARCH_NL_PARSING_ENABLED=false a .env.dusk.local, mirror del già esistente DB_CONNECTION=sqlite che fa evitare a SearchService il provider di embedding in Dusk.
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-10
+    ref: TASK-12
+  - id: TASK-13
+    title: 'Test pagina: banner di interpretazione (Feature/Livewire) e regressione browser (Dusk)'
+    description: 'Estendere tests/Feature/ProductSearchPageTest.php: fake della risposta AI per una query con attributo esplicito verifica banner (testo riconosciuto + filtri applicati) e tabella ristretta di conseguenza, più il degrado a full-text con AI fakeata a fallire. Estendere tests/Browser/ProductSearchTest.php con uno scenario con SEARCH_NL_PARSING_ENABLED=false che verifica che la pagina funzioni end-to-end senza chiamate di rete reali (documentando nel docblock che il percorso con AI realmente attiva è coperto da ProductSearchPageTest); screenshot per-step in docs/test-results/US-048/.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-12
+    ref: TASK-13
+  - id: TASK-14
+    title: Regressione finale e formattazione
+    description: Rieseguire l'intera suite SearchService*Test.php (invariata), ProductSearchPageTest e ProductSearchTest (Dusk) per confermare l'assenza di regressioni; eseguire vendor/bin/sail bin pint --dirty --format agent sui file toccati.
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-09
+      - TASK-11
+      - TASK-13
+    ref: TASK-14
