@@ -23,10 +23,13 @@ class EnrichmentLogFactory extends Factory
             'step' => fake()->randomElement(['deterministic', 'ai', 'embedding']),
             'input' => ['description' => fake()->sentence(6)],
             'output' => ['brand' => fake()->company(), 'family' => fake()->word()],
+            'request_payload' => ['model' => fake()->word(), 'messages' => [['role' => 'user', 'content' => fake()->sentence(6)]]],
+            'response_payload' => ['content' => [['type' => 'text', 'text' => fake()->sentence(6)]]],
             'confidence' => fake()->numberBetween(0, 100),
             'model' => fake()->randomElement(['gpt-4o-mini', 'claude-3-5-sonnet', null]),
             'tokens_in' => fake()->numberBetween(0, 4000),
             'tokens_out' => fake()->numberBetween(0, 2000),
+            'cost' => fake()->randomFloat(6, 0, 0.05),
         ];
     }
 }

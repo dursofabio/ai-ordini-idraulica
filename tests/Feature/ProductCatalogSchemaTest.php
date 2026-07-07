@@ -14,7 +14,7 @@ use Tests\TestCase;
  *  - products, product_attributes tables exist with all columns.
  *  - products.codice_articolo is unique.
  *  - products.enrichment_status defaults to 'pending' and is indexed.
- *  - product_attributes has composite indexes (key, value_num) and (product_id, key).
+ *  - product_attributes has composite indexes (key, value) and (product_id, key).
  *
  * US-047 drops `product_bases` and the `product_base_id`/`grouping_key`
  * columns on `products` entirely (search now operates flat on `products`).
@@ -76,7 +76,7 @@ class ProductCatalogSchemaTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('product_attributes'));
         $this->assertTrue(Schema::hasColumns('product_attributes', [
-            'id', 'product_id', 'key', 'value_num', 'value_text', 'unit',
+            'id', 'product_id', 'key', 'value', 'unit',
             'source', 'created_at', 'updated_at',
         ]));
     }
@@ -115,7 +115,7 @@ class ProductCatalogSchemaTest extends TestCase
             ->map(fn (array $index): array => $index['columns'])
             ->all();
 
-        $this->assertContains(['key', 'value_num'], $indexes);
+        $this->assertContains(['key', 'value'], $indexes);
         $this->assertContains(['product_id', 'key'], $indexes);
     }
 }

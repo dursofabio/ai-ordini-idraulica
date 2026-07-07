@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Jobs\ClassifyProductsBatchJob;
+use App\Jobs\DeepEnrichProductJob;
 use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\Product;
@@ -28,6 +29,10 @@ use Tests\TestCase;
  *    longer depends on a linked product-base).
  *  - AC5: the classification action is disabled (and defensively guarded)
  *    when the product has no description.
+ *
+ * US-051 AC1: "deepEnrichWithAi" queues DeepEnrichProductJob for that product
+ * only and shows a confirmation notification; disabled when the product has
+ * no description, mirroring "relaunchAiClassification".
  */
 class ProductManualActionsTest extends TestCase
 {
@@ -98,6 +103,50 @@ class ProductManualActionsTest extends TestCase
             ->assertTableActionDisabled('relaunchAiClassification', $product);
 
         Queue::assertNotPushed(ClassifyProductsBatchJob::class);
+    }
+
+    public function test_deep_enrich_with_ai_dispatches_job_for_that_product_only(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'description_raw' => 'CALDAIA A CONDENSAZIONE 25KW',
+        ]);
+        $other = Product::factory()->create();
+
+        Queue::fake();
+
+        Livewire::test(ListProducts::class)
+            ->callTableAction('deepEnrichWithAi', $product)
+            ->assertNotified();
+
+        Queue::assertPushed(
+            DeepEnrichProductJob::class,
+            static fn (DeepEnrichProductJob $job): bool => $job->productId === $product->id,
+        );
+        Queue::assertNotPushed(
+            DeepEnrichProductJob::class,
+            static fn (DeepEnrichProductJob $job): bool => $job->productId === $other->id,
+        );
+    }
+
+    public function test_deep_enrich_with_ai_is_disabled_when_description_is_empty(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'description_raw' => '',
+            'description_clean' => null,
+        ]);
+
+        Queue::fake();
+
+        Livewire::test(ListProducts::class)
+            ->assertTableActionDisabled('deepEnrichWithAi', $product);
+
+        Queue::assertNotPushed(DeepEnrichProductJob::class);
     }
 
     public function test_regenerate_embedding_dispatches_job_for_that_product_only(): void

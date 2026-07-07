@@ -63,6 +63,11 @@ abstract class DuskTestCase extends BaseTestCase
             $this->shouldStartMaximized() ? '--start-maximized' : '--window-size=1280,720',
             '--disable-search-engine-choice-screen',
             '--disable-smooth-scrolling',
+            // Chrome refuses to start its sandbox when the launching process
+            // is root (the default user in the app container), which is a
+            // standard, harmless requirement for running Chrome in Docker.
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
         ])->unless($this->hasHeadlessDisabled(), function (Collection $items) {
             return $items->merge([
                 '--disable-gpu',

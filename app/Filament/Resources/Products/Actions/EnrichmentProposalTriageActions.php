@@ -12,6 +12,7 @@ use App\Services\Enrichment\EnrichmentProposalTriage;
 use App\Services\Enrichment\SimilarAttributeKeyFinder;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Text;
@@ -54,9 +55,9 @@ class EnrichmentProposalTriageActions
      * US-041 AC3: inline correction form, whose schema depends on the
      * proposal's `field` — a taxonomy `Select` prevalorized with the
      * proposal's `value_id` for brand/family/subfamily, or the raw value
-     * inputs prevalorized with `value_text`/`value_num`/`unit` for a
-     * technical attribute. The submitted value is always treated as a manual
-     * override, since the admin explicitly reviewed and submitted it.
+     * inputs prevalorized with `value`/`unit` for a technical attribute. The
+     * submitted value is always treated as a manual override, since the
+     * admin explicitly reviewed and submitted it.
      */
     public static function correct(): Action
     {
@@ -84,6 +85,12 @@ class EnrichmentProposalTriageActions
                         ->options(fn (): array => Subfamily::query()->orderBy('name')->pluck('name', 'id')->all())
                         ->searchable(),
                 ],
+                'descrizione_estesa' => [
+                    Textarea::make('value')
+                        ->label('Descrizione estesa')
+                        ->rows(6)
+                        ->required(),
+                ],
                 'attribute_definition' => [
                     TextInput::make('attribute_key')
                         ->label('Chiave')
@@ -97,32 +104,28 @@ class EnrichmentProposalTriageActions
                         ->required(),
                     TextInput::make('unit')
                         ->label('Unità canonica'),
-                    TextInput::make('value_text')
+                    TextInput::make('value')
                         ->label('Descrizione'),
                     Text::make('Chiavi esistenti più simili: '.self::similarKeysSummary($record))
                         ->color('gray'),
                 ],
                 default => [
-                    TextInput::make('value_text')
-                        ->label('Valore testuale'),
-                    TextInput::make('value_num')
-                        ->label('Valore numerico')
-                        ->numeric(),
+                    TextInput::make('value')
+                        ->label('Valore'),
                     TextInput::make('unit')
                         ->label('Unità'),
                 ],
             })
             ->fillForm(fn (EnrichmentProposal $record): array => match ($record->field) {
-                'attribute', 'product_type' => [
-                    'value_text' => $record->value_text,
-                    'value_num' => $record->value_num,
+                'attribute', 'product_type', 'descrizione_estesa' => [
+                    'value' => $record->value,
                     'unit' => $record->unit,
                 ],
                 'attribute_definition' => [
                     'attribute_key' => $record->attribute_key,
                     'data_type' => $record->data_type,
                     'unit' => $record->unit,
-                    'value_text' => $record->value_text,
+                    'value' => $record->value,
                 ],
                 default => ['value_id' => $record->value_id],
             })

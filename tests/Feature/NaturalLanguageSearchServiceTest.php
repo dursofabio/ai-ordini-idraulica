@@ -60,11 +60,11 @@ class NaturalLanguageSearchServiceTest extends TestCase
             'cache_ttl' => 3600,
         ]);
 
-        AttributeDefinition::query()->updateOrCreate(['key' => 'attacco_pollici'], [
-            'data_type' => 'numeric',
-            'canonical_unit' => '"',
-            'accepted_units' => ['"' => 1, 'POLLICI' => 1, 'IN' => 1],
-            'description' => 'Dimensione dell\'attacco filettato, espressa in pollici (").',
+        AttributeDefinition::query()->updateOrCreate(['key' => 'materiale'], [
+            'data_type' => 'text',
+            'canonical_unit' => null,
+            'accepted_units' => null,
+            'description' => 'Materiale del prodotto.',
         ]);
     }
 
@@ -76,8 +76,8 @@ class NaturalLanguageSearchServiceTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $matching->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 1,
+            'key' => 'materiale',
+            'value' => 'inox',
         ]);
 
         $differentValue = Product::factory()->create([
@@ -86,15 +86,15 @@ class NaturalLanguageSearchServiceTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $differentValue->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 2,
+            'key' => 'materiale',
+            'value' => 'plastica',
         ]);
 
         $this->fakeAiParse('tubo inox', [
-            ['key' => 'attacco_pollici', 'value_num' => 1, 'unit' => 'pollici'],
+            ['key' => 'materiale', 'value' => 'inox'],
         ]);
 
-        $result = app(NaturalLanguageSearchService::class)->search('tubo inox 1 pollice');
+        $result = app(NaturalLanguageSearchService::class)->search('tubo inox');
 
         $productIds = $result->results->map(fn ($r) => $r->product->id);
 
@@ -110,19 +110,19 @@ class NaturalLanguageSearchServiceTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 1,
+            'key' => 'materiale',
+            'value' => 'inox',
         ]);
 
         $this->fakeAiParse('tubo inox', [
-            ['key' => 'attacco_pollici', 'value_num' => 1, 'unit' => 'pollici'],
+            ['key' => 'materiale', 'value' => 'inox'],
         ]);
 
-        $result = app(NaturalLanguageSearchService::class)->search('tubo inox 1 pollice');
+        $result = app(NaturalLanguageSearchService::class)->search('tubo inox');
 
         $this->assertSame('tubo inox', $result->interpretation->recognizedText);
         $this->assertCount(1, $result->interpretation->appliedFilters);
-        $this->assertStringContainsString('attacco filettato', $result->interpretation->appliedFilters[0]->toDisplayLabel());
+        $this->assertStringContainsStringIgnoringCase('materiale', $result->interpretation->appliedFilters[0]->toDisplayLabel());
     }
 
     public function test_explicit_page_filters_and_query_extracted_filters_combine_in_and(): void
@@ -137,8 +137,8 @@ class NaturalLanguageSearchServiceTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $matching->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 1,
+            'key' => 'materiale',
+            'value' => 'inox',
         ]);
 
         // Same attribute value, but wrong brand: excluded by the explicit
@@ -150,15 +150,15 @@ class NaturalLanguageSearchServiceTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $wrongBrand->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 1,
+            'key' => 'materiale',
+            'value' => 'inox',
         ]);
 
         $this->fakeAiParse('tubo inox', [
-            ['key' => 'attacco_pollici', 'value_num' => 1, 'unit' => 'pollici'],
+            ['key' => 'materiale', 'value' => 'inox'],
         ]);
 
-        $result = app(NaturalLanguageSearchService::class)->search('tubo inox 1 pollice', ['brand_id' => $brandA->id]);
+        $result = app(NaturalLanguageSearchService::class)->search('tubo inox', ['brand_id' => $brandA->id]);
 
         $productIds = $result->results->map(fn ($r) => $r->product->id);
 

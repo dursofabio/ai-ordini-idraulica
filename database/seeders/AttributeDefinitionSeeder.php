@@ -10,9 +10,17 @@ use Illuminate\Database\Seeder;
  * the canonical keys currently in use across the catalog (US-042): 9
  * canonical definitions derived from the regex extraction pass that used to
  * populate `product_attributes` before it was retired in favor of AI-only
- * extraction (US-043) — `potenza_watt` is retired, folded into `potenza_kw`
- * via its accepted `W` unit — plus `portata_lmin`, the one AI-recurring key
+ * extraction (US-043) — `potenza_watt` is retired, folded into `potenza`
+ * via its accepted `W` unit — plus `portata`, the one AI-recurring key
  * identifiable statically at the time this registry was introduced.
+ *
+ * Keys are generic type names without the unit embedded in them (`potenza`,
+ * not `potenza_kw`): the unit is already carried by `canonical_unit`, and the
+ * AI is no longer shown this registry as a closed vocabulary to copy from —
+ * embedding the unit in the key would just duplicate it. `pressione_nominale`
+ * is the one exception: it names a distinct physical quantity (PN rating)
+ * from `pressione` (an actual bar reading), not a unit suffix on the same
+ * concept, so it keeps its qualifier to avoid colliding with `pressione`.
  *
  * Each definition carries an Italian `description` meant to ground the
  * AI-only extraction prompt introduced in US-043.
@@ -38,28 +46,28 @@ class AttributeDefinitionSeeder extends Seeder
     {
         return [
             [
-                'key' => 'potenza_kw',
+                'key' => 'potenza',
                 'data_type' => 'numeric',
                 'canonical_unit' => 'kW',
                 'accepted_units' => ['kW' => 1, 'W' => 0.001],
                 'description' => 'Potenza nominale dell\'apparecchio, espressa in kilowatt (kW).',
             ],
             [
-                'key' => 'capacita_litri',
+                'key' => 'capacita',
                 'data_type' => 'numeric',
                 'canonical_unit' => 'L',
                 'accepted_units' => ['L' => 1, 'LT' => 1, 'ML' => 0.001],
                 'description' => 'Capacità del serbatoio o bollitore, espressa in litri (L).',
             ],
             [
-                'key' => 'attacco_pollici',
+                'key' => 'attacco',
                 'data_type' => 'numeric',
                 'canonical_unit' => '"',
                 'accepted_units' => ['"' => 1, 'POLLICI' => 1, 'IN' => 1],
                 'description' => 'Dimensione dell\'attacco filettato, espressa in pollici (").',
             ],
             [
-                'key' => 'diametro_nominale',
+                'key' => 'diametro',
                 'data_type' => 'numeric',
                 'canonical_unit' => 'DN',
                 'accepted_units' => ['DN' => 1],
@@ -73,21 +81,21 @@ class AttributeDefinitionSeeder extends Seeder
                 'description' => 'Pressione nominale (PN) di esercizio di raccordi e giunzioni flangiate.',
             ],
             [
-                'key' => 'pressione_bar',
+                'key' => 'pressione',
                 'data_type' => 'numeric',
                 'canonical_unit' => 'bar',
                 'accepted_units' => ['bar' => 1, 'mbar' => 0.001, 'mb' => 0.001],
                 'description' => 'Pressione di esercizio dell\'apparecchio, espressa in bar.',
             ],
             [
-                'key' => 'tensione_volt',
+                'key' => 'tensione',
                 'data_type' => 'numeric',
                 'canonical_unit' => 'V',
                 'accepted_units' => ['V' => 1, 'VDC' => 1, 'VAC' => 1],
                 'description' => 'Tensione elettrica di alimentazione dell\'apparecchio, espressa in volt (V).',
             ],
             [
-                'key' => 'colore_ral',
+                'key' => 'colore',
                 'data_type' => 'text',
                 'canonical_unit' => null,
                 'accepted_units' => null,
@@ -101,7 +109,7 @@ class AttributeDefinitionSeeder extends Seeder
                 'description' => 'Materiale di costruzione del componente (es. ottone, inox, PVC).',
             ],
             [
-                'key' => 'portata_lmin',
+                'key' => 'portata',
                 'data_type' => 'numeric',
                 'canonical_unit' => 'l/min',
                 'accepted_units' => ['l/min' => 1, 'lt/min' => 1, 'lmin' => 1],

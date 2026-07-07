@@ -2,20 +2,18 @@
 
 namespace App\Services\Ai;
 
-use App\Services\Enrichment\AttributeUnitConverter;
-
 /**
  * Builds the Anthropic Messages API payload used to parse a free-text search
  * query into a residual descriptive text plus explicit technical attributes
  * (US-048), anchored to the closed attribute registry
  * ({@see AttributeDefinitionCatalog}) the same way {@see ClassificationPromptBuilder}
  * anchors bulk classification to it (US-043): the model must use ONLY
- * registry keys and report the value/unit exactly as read in the query,
- * never pre-converted — conversion to the canonical unit is done
- * deterministically by {@see QueryParseResponseValidator} via
- * {@see AttributeUnitConverter}. Any technical
- * mention the model cannot confidently map to a registry key must stay in
- * the residual text instead of becoming an invented filter (AC3).
+ * registry keys and report the value exactly as read in the query, never
+ * pre-converted. Any technical mention the model cannot confidently map to
+ * a registry key must stay in the residual text instead of becoming an
+ * invented filter (AC3). Numeric attribute filtering isn't supported for
+ * now (search is being redesigned): the model is instructed to only report
+ * textual attributes and leave numeric mentions in the residual text.
  */
 class QueryParsePromptBuilder
 {
@@ -62,12 +60,10 @@ class QueryParsePromptBuilder
         menzione: lasciala semplicemente nel testo riconosciuto ("recognized_text"). Nel dubbio, non
         includere l'attributo.
 
-        Per ogni attributo riconosciuto riporta il valore e l'unità di misura ESATTAMENTE come letti
-        nella query (mai già convertiti nell'unità canonica del registro): usa "value_num" e "unit"
-        per un attributo numerico (es. per "1 pollice" riporta value_num: 1, unit: "pollici"), oppure
-        "value_text" per un attributo testuale (es. "inox"). Puoi anche riportare "min"/"max" al posto
-        di "value_num" quando la query esprime esplicitamente un intervallo. La conversione all'unità
-        canonica è responsabilità dell'applicazione, non tua.
+        Per ogni attributo riconosciuto riporta il valore ESATTAMENTE come letto nella query. Riporta
+        SOLO attributi testuali (es. "materiale": "inox"): se la menzione tecnica riguarda un attributo
+        numerico del registro (es. una dimensione o un'unità di misura), NON creare un filtro per
+        quell'attributo — lasciala nel testo riconosciuto ("recognized_text").
 
         "recognized_text" deve contenere il testo descrittivo residuo della query, cioè la query
         originale privata delle sole menzioni diventate un attributo esplicito riconosciuto — non
@@ -85,11 +81,7 @@ class QueryParsePromptBuilder
           "attributes": [
             {
               "key": "string",
-              "value_num": 0,
-              "value_text": "string|null",
-              "unit": "string|null",
-              "min": 0,
-              "max": 0
+              "value": "string"
             }
           ]
         }

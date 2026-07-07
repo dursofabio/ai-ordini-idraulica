@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Products\RelationManagers;
 
 use App\Models\EnrichmentLog;
 use Filament\Actions\ViewAction;
+use Filament\Infolists\Components\CodeEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
@@ -38,15 +39,29 @@ class EnrichmentLogsRelationManager extends RelationManager
                     ->label('Token output')
                     ->numeric()
                     ->placeholder('—'),
-                TextEntry::make('input')
-                    ->state(fn (EnrichmentLog $record): string => json_encode($record->input, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) ?: '—')
-                    ->extraAttributes(['class' => 'whitespace-pre-wrap font-mono text-xs'])
-                    ->columnSpanFull(),
-                TextEntry::make('output')
-                    ->state(fn (EnrichmentLog $record): string => json_encode($record->output, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) ?: '—')
-                    ->extraAttributes(['class' => 'whitespace-pre-wrap font-mono text-xs'])
-                    ->columnSpanFull(),
+                self::jsonEntry('input', 'Input'),
+                self::jsonEntry('output', 'Output'),
+                self::jsonEntry('request_payload', 'Richiesta completa inviata all\'AI'),
+                self::jsonEntry('response_payload', 'Risposta completa dell\'AI'),
             ]);
+    }
+
+    /**
+     * A JSON column rendered with syntax highlighting (Phiki auto-detects
+     * `Grammar::Json` for array state, which is how `input`/`output`/
+     * `request_payload`/`response_payload` are cast on {@see EnrichmentLog}).
+     * Phiki's `<pre>` has no `white-space` override, so the browser default
+     * (`pre`) would force a horizontal scrollbar on long lines; wrap it
+     * instead since prompts routinely exceed the available width.
+     */
+    private static function jsonEntry(string $name, string $label): CodeEntry
+    {
+        return CodeEntry::make($name)
+            ->label($label)
+            ->copyable()
+            ->placeholder('—')
+            ->extraAttributes(['class' => '[&_pre]:whitespace-pre-wrap [&_pre]:break-words'])
+            ->columnSpanFull();
     }
 
     public function table(Table $table): Table

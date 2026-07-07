@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AttributeDefinition;
 use App\Models\Brand;
+use App\Models\EnrichmentProposal;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
@@ -30,7 +31,7 @@ use Tests\TestCase;
  *
  * US-043 acceptance criteria — attribute extraction anchored to the
  * `AttributeDefinition` registry:
- *  - The spec's "Dimostra" case: value_num 3500 / unit W on `potenza_kw` is
+ *  - The spec's "Dimostra" case: value 3500 / unit W on `potenza` is
  *    converted and written as 3.5 kW, source 'ai'.
  *  - A non-convertible unit is not written; a pending proposal keeps the
  *    original value/unit.
@@ -317,15 +318,15 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'potenza_kw' => ['value_num' => 3500, 'unit' => 'W', 'confidence' => 90],
+                'potenza' => ['value' => '3500', 'unit' => 'W', 'confidence' => 90],
             ],
         );
 
         $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
-        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
+        $attribute = $product->attributes()->where('key', 'potenza')->first();
         $this->assertNotNull($attribute);
-        $this->assertEquals(3.5, $attribute->value_num);
+        $this->assertEquals(3.5, $attribute->value);
         $this->assertSame('kW', $attribute->unit);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(90, $attribute->confidence);
@@ -333,11 +334,11 @@ class EnrichmentApplierTest extends TestCase
         $this->assertDatabaseHas('enrichment_proposals', [
             'product_id' => $product->id,
             'field' => 'attribute',
-            'attribute_key' => 'potenza_kw',
+            'attribute_key' => 'potenza',
             'origin' => 'ai',
             'status' => 'applied',
             'confidence' => 90,
-            'value_num' => 3500,
+            'value' => '3500',
             'unit' => 'W',
         ]);
     }
@@ -355,22 +356,22 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'potenza_kw' => ['value_num' => 5, 'unit' => 'CV', 'confidence' => 90],
+                'potenza' => ['value' => '5', 'unit' => 'CV', 'confidence' => 90],
             ],
         );
 
         $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
-        $this->assertNull($product->attributes()->where('key', 'potenza_kw')->first());
+        $this->assertNull($product->attributes()->where('key', 'potenza')->first());
 
         $this->assertDatabaseHas('enrichment_proposals', [
             'product_id' => $product->id,
             'field' => 'attribute',
-            'attribute_key' => 'potenza_kw',
+            'attribute_key' => 'potenza',
             'origin' => 'ai',
             'status' => 'pending',
             'confidence' => 90,
-            'value_num' => 5,
+            'value' => '5',
             'unit' => 'CV',
         ]);
     }
@@ -380,7 +381,7 @@ class EnrichmentApplierTest extends TestCase
      * `product_attributes`, but generates a `pending` `attribute_definition`
      * proposal instead of disappearing entirely.
      */
-    public function test_key_outside_registry_is_not_written_but_generates_a_definition_proposal(): void
+    public function test_key_outside_registry_is_not_written_but_generates_an_attribute_proposal_and_a_definition_proposal(): void
     {
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
 
@@ -393,13 +394,24 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'chiave_libera_inventata' => ['value_num' => 42, 'unit' => 'x', 'confidence' => 95],
+                'chiave_libera_inventata' => ['value' => '42', 'unit' => 'x', 'confidence' => 95],
             ],
         );
 
         $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
         $this->assertNull($product->attributes()->where('key', 'chiave_libera_inventata')->first());
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'chiave_libera_inventata',
+            'value' => '42',
+            'unit' => 'x',
+            'origin' => 'ai',
+            'status' => 'pending',
+            'confidence' => 95,
+        ]);
 
         $this->assertDatabaseHas('enrichment_proposals', [
             'product_id' => $product->id,
@@ -416,9 +428,10 @@ class EnrichmentApplierTest extends TestCase
     /**
      * US-044 AC4: two consecutive classifications reporting the same
      * out-of-registry key must not flood the queue with duplicate
-     * `attribute_definition` proposals.
+     * `attribute_definition` proposals — but each still gets its own
+     * `attribute` proposal, so neither product's value is lost.
      */
-    public function test_repeated_unknown_key_across_classifications_produces_a_single_pending_proposal(): void
+    public function test_repeated_unknown_key_across_classifications_produces_a_single_pending_definition_proposal(): void
     {
         $firstProduct = Product::factory()->create(['enrichment_status' => 'pending']);
         $secondProduct = Product::factory()->create(['enrichment_status' => 'pending']);
@@ -435,19 +448,21 @@ class EnrichmentApplierTest extends TestCase
                 enrichedDescription: null,
                 confidence: null,
                 attributes: [
-                    'chiave_libera_inventata' => ['value_num' => 42, 'unit' => 'x', 'confidence' => 95],
+                    'chiave_libera_inventata' => ['value' => '42', 'unit' => 'x', 'confidence' => 95],
                 ],
             );
 
             $applier->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
         }
 
-        $this->assertDatabaseCount('enrichment_proposals', 1);
+        $this->assertEquals(1, EnrichmentProposal::query()->where('field', 'attribute_definition')->count());
         $this->assertDatabaseHas('enrichment_proposals', [
             'field' => 'attribute_definition',
             'attribute_key' => 'chiave_libera_inventata',
             'status' => 'pending',
         ]);
+
+        $this->assertEquals(2, EnrichmentProposal::query()->where('field', 'attribute')->count());
     }
 
     public function test_textual_attribute_is_written_pass_through_with_null_unit(): void
@@ -463,7 +478,7 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'materiale' => ['value_text' => 'ottone', 'confidence' => 90],
+                'materiale' => ['value' => 'ottone', 'confidence' => 90],
             ],
         );
 
@@ -471,7 +486,7 @@ class EnrichmentApplierTest extends TestCase
 
         $attribute = $product->attributes()->where('key', 'materiale')->first();
         $this->assertNotNull($attribute);
-        $this->assertSame('ottone', $attribute->value_text);
+        $this->assertSame('ottone', $attribute->value);
         $this->assertNull($attribute->unit);
         $this->assertSame('ai', $attribute->source);
     }
@@ -489,23 +504,23 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                // 'potenza_kw' is a numeric definition; only value_text supplied.
-                'potenza_kw' => ['value_text' => 'forte', 'confidence' => 90],
+                // 'potenza' is a numeric definition; a non-numeric value is supplied.
+                'potenza' => ['value' => 'forte', 'confidence' => 90],
             ],
         );
 
         $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
-        $this->assertNull($product->attributes()->where('key', 'potenza_kw')->first());
+        $this->assertNull($product->attributes()->where('key', 'potenza')->first());
 
         $this->assertDatabaseHas('enrichment_proposals', [
             'product_id' => $product->id,
             'field' => 'attribute',
-            'attribute_key' => 'potenza_kw',
+            'attribute_key' => 'potenza',
             'origin' => 'ai',
             'status' => 'pending',
             'confidence' => 90,
-            'value_text' => 'forte',
+            'value' => 'forte',
         ]);
     }
 
@@ -522,15 +537,15 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'potenza_kw' => ['value_num' => 2.5, 'confidence' => 90],
+                'potenza' => ['value' => '2.5', 'confidence' => 90],
             ],
         );
 
         $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
-        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
+        $attribute = $product->attributes()->where('key', 'potenza')->first();
         $this->assertNotNull($attribute);
-        $this->assertEquals(2.5, $attribute->value_num);
+        $this->assertEquals(2.5, $attribute->value);
         $this->assertSame('kW', $attribute->unit);
     }
 
@@ -538,8 +553,8 @@ class EnrichmentApplierTest extends TestCase
     {
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
         ProductAttribute::factory()->for($product)->create([
-            'key' => 'potenza_kw',
-            'value_num' => 1.0,
+            'key' => 'potenza',
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'regex',
             'confidence' => null,
@@ -554,15 +569,15 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'potenza_kw' => ['value_num' => 1.5, 'unit' => 'kW', 'confidence' => 95],
+                'potenza' => ['value' => '1.5', 'unit' => 'kW', 'confidence' => 95],
             ],
         );
 
         $this->makeApplier()->apply($product, $result, new TaxonomyCatalog, new AttributeVocabulary);
 
-        $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
+        $attribute = $product->attributes()->where('key', 'potenza')->first();
         $this->assertNotNull($attribute);
-        $this->assertEquals(1.5, $attribute->value_num);
+        $this->assertEquals(1.5, $attribute->value);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(95, $attribute->confidence);
     }
@@ -580,7 +595,7 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'materiale' => ['value_text' => 'ottone', 'confidence' => 50],
+                'materiale' => ['value' => 'ottone', 'confidence' => 50],
             ],
         );
 
@@ -595,7 +610,7 @@ class EnrichmentApplierTest extends TestCase
             'origin' => 'ai',
             'status' => 'pending',
             'confidence' => 50,
-            'value_text' => 'ottone',
+            'value' => 'ottone',
         ]);
     }
 
@@ -614,7 +629,7 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: 95,
             attributes: [
-                'colore_ral' => ['value_text' => 'RAL 9010', 'confidence' => 70],
+                'colore' => ['value' => 'RAL 9010', 'confidence' => 70],
             ],
         );
 
@@ -625,9 +640,9 @@ class EnrichmentApplierTest extends TestCase
         $this->assertSame($family->id, $fresh->family_id);
         $this->assertSame('needs_review', $fresh->enrichment_status);
 
-        $attribute = $product->attributes()->where('key', 'colore_ral')->first();
+        $attribute = $product->attributes()->where('key', 'colore')->first();
         $this->assertNotNull($attribute);
-        $this->assertSame('RAL 9010', $attribute->value_text);
+        $this->assertSame('RAL 9010', $attribute->value);
         $this->assertSame(70, $attribute->confidence);
     }
 
@@ -662,7 +677,7 @@ class EnrichmentApplierTest extends TestCase
             'origin' => 'ai',
             'status' => 'applied',
             'confidence' => 90,
-            'value_text' => 'Caldaia a condensazione',
+            'value' => 'Caldaia a condensazione',
         ]);
     }
 
@@ -691,7 +706,7 @@ class EnrichmentApplierTest extends TestCase
             'origin' => 'ai',
             'status' => 'pending',
             'confidence' => 40,
-            'value_text' => 'Caldaia a condensazione',
+            'value' => 'Caldaia a condensazione',
         ]);
     }
 
@@ -726,8 +741,7 @@ class EnrichmentApplierTest extends TestCase
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
         ProductAttribute::factory()->for($product)->create([
             'key' => 'materiale',
-            'value_num' => null,
-            'value_text' => 'ottone',
+            'value' => 'ottone',
             'source' => 'manual',
             'confidence' => null,
         ]);
@@ -741,7 +755,7 @@ class EnrichmentApplierTest extends TestCase
             enrichedDescription: null,
             confidence: null,
             attributes: [
-                'materiale' => ['value_text' => 'plastica', 'confidence' => 95],
+                'materiale' => ['value' => 'plastica', 'confidence' => 95],
             ],
         );
 
@@ -749,7 +763,7 @@ class EnrichmentApplierTest extends TestCase
 
         $attribute = $product->attributes()->where('key', 'materiale')->first();
         $this->assertNotNull($attribute);
-        $this->assertSame('ottone', $attribute->value_text);
+        $this->assertSame('ottone', $attribute->value);
         $this->assertSame('manual', $attribute->source);
         $this->assertNull($attribute->confidence);
 

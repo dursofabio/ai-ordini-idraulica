@@ -1,0 +1,153 @@
+schema: archetipo/plan/v2
+spec_code: US-051
+body: |
+  # US-051: Azione AI di arricchimento approfondito con descrizione estesa e scheda tecnica — Piano di Implementazione
+
+  **Generato da:** ARchetipo Planning Team
+  **Data:** 2026-07-04
+
+  ---
+
+  ## Spec
+
+  **Epica:** EP-004 — Arricchimento AI
+  **Priorità:** HIGH | **Punti:** 5
+
+  **User Story**
+  Come operatore del catalogo, voglio un tasto azione sulla pagina del singolo prodotto che chiede all'AI di generare la descrizione estesa e l'elenco completo delle caratteristiche tecniche, così da ottenere una scheda tecnica dettagliata senza inserimento manuale.
+
+  **Criteri di Accettazione**
+  - La pagina prodotto espone un'azione che accoda un job di arricchimento approfondito per quel singolo prodotto, con notifica di avvenuto accodamento
+  - Il job usa il client AI configurato e produce output strutturato: descrizione estesa in markdown e lista di caratteristiche tecniche ancorate al registro attributi (chiavi esistenti, o proposta di nuove chiavi secondo il flusso già previsto)
+  - I risultati sono registrati come proposte di arricchimento con confidenza e passano dalla coda di revisione esistente; la conferma applica descrizione estesa e attributi al prodotto
+  - Ogni esecuzione è tracciata negli enrichment log (token, costo) e rispetta il tetto di spesa AI
+  - Se il job fallisce, lo stato è segnalato sul prodotto e i dati esistenti restano intatti
+  - Con dati di partenza minimi (solo codice e descrizione di listino) l'AI dichiara bassa confidenza invece di inventare caratteristiche
+
+  ---
+
+  ## Soluzione Tecnica
+
+  Nuovo job dedicato `DeepEnrichProductJob` (singolo prodotto, coda `enrich`) che riusa l'infrastruttura AI esistente — `AiClient`, `AiSpendGuard`, `EnrichmentLog`, `EnrichmentProposalRecorder` — e convoglia tutti i risultati nella coda di revisione come proposte `pending`: a differenza della classificazione batch, nessuna applicazione automatica; è la conferma del revisore ad applicare descrizione estesa e attributi (AC3).
+
+  - **Prompt e validazione dedicati**: `app/Services/Ai/DeepEnrichmentPromptBuilder` costruisce il prompt per il modello smart con i dati del prodotto (codice, descrizioni, brand/famiglia/sottofamiglia/product_type, attributi già presenti) e il registro attributi (`AttributeVocabulary`), richiedendo output JSON strutturato: `descrizione_estesa` (markdown), lista `attributes` (key, value_num|value_text, unit, confidence 0-100) e confidence complessiva. Il prompt istruisce esplicitamente a dichiarare bassa confidenza e a NON inventare caratteristiche quando i dati di partenza sono minimi (AC6). `DeepEnrichmentResponseValidator` + DTO `DeepEnrichedProduct` seguono il pattern di `ClassificationResponseValidator`/`ClassifiedProduct`.
+  - **Job**: pre-check `AiSpendGuard::capExceeded()` prima della chiamata e `spend()` dopo, con `runId` UUID generato per esecuzione (stesso pattern del dispatch standalone di `ClassifyProductsBatchJob`); un retry sulla stessa chiamata in caso di risposta non valida; una riga `enrichment_logs` con step `ai_deep_enrichment` (model, tokens_in/out, confidence) per ogni esecuzione (AC4). Risultati registrati sempre come proposte `pending` via `EnrichmentProposalRecorder`: nuovo campo `descrizione_estesa` (value_text = markdown), campo `attribute` per chiavi presenti nel registro (valore/unit come letti dall'AI, non convertiti — coerente con US-043), `attribute_definition` per chiavi fuori registro tramite `recordAttributeDefinitionProposal()` (flusso US-044 esistente, AC2). Le proposte a bassa confidenza restano visibili in coda con la loro confidenza: è il revisore a decidere.
+  - **Fallimento sicuro (AC5)**: doppia validazione fallita, tetto di spesa superato o eccezione → `enrichment_status = 'needs_review'` + riga `enrichment_logs` con l'errore; il job non scrive mai direttamente descrizione estesa o attributi, quindi i dati esistenti restano intatti per costruzione.
+  - **Triage esteso**: nuovo branch `descrizione_estesa` in `EnrichmentProposalTriage::writeProposalValue()` che aggiorna la colonna sul prodotto (come il branch `product_type`; senza questo branch il fallback tenterebbe un inesistente `descrizione_estesa_id`). Aggiornare label/filtri in `ReviewQueue::fieldLabel()` e il form di correzione (Textarea markdown prevalorizzata) in `EnrichmentProposalTriageActions`.
+  - **Azione UI**: `ProductEnrichmentActions::deepEnrichWithAi()` con label "Arricchisci con AI", registrata sulle stesse superfici delle azioni esistenti (header di ViewProduct e riga di ProductsTable, pattern US-031), notifica di avvenuto accodamento (AC1) e disabilitata quando il prodotto non ha descrizione.
+
+  Nessun mockup necessario: la spec riusa superfici esistenti (bottone su pagina prodotto esistente, coda di revisione esistente).
+
+  ---
+
+  ## Strategia di Test
+
+  Feature test con `AiClient` mockato (nessuna chiamata reale), sul pattern di `ClassifyProductsBatchJobTest`, coprendo happy path, rami di errore e edge case; test Dusk end-to-end per i flussi utente.
+
+  - Prompt builder: presenza dei dati prodotto e del registro attributi nel prompt, uso di model_smart, istruzione anti-invenzione, max_tokens.
+  - Validator: risposta valida, JSON malformato, confidence fuori range, attributo senza valore, markdown vuoto.
+  - Job: happy path (proposte pending corrette + log con token/model), tetto di spesa (nessuna chiamata AI, needs_review, log dell'evento), doppia risposta invalida (needs_review, dati prodotto intatti), bassa confidenza propagata alle proposte, chiave fuori registro → proposta `attribute_definition` (con accorpamento dei pending duplicati), eccezione HTTP → dati intatti.
+  - Triage: `confirm` applica la descrizione estesa al prodotto e marca la proposta `applied`; `correct` scrive il testo corretto con source manual; `discard` non tocca il prodotto.
+  - Azione UI: dispatch del job con `Queue::fake`, notifica di accodamento, azione disabilitata senza descrizione.
+
+  ### Test E2E — Simulazione Utente
+
+  **Framework:** Laravel Dusk (già configurato nel progetto)
+  **Artefatti visivi:** screenshot per step salvati in `docs/test-results/US-051/` (convenzione consolidata del progetto; Dusk non offre registrazione video nativa, gli screenshot per step ne fanno le veci come artefatto visivo di ogni scenario)
+
+  | Scenario | Flusso utente |
+  |---|---|
+  | Accodamento arricchimento | L'operatore fa login, apre la pagina di dettaglio di un prodotto, preme "Arricchisci con AI" e vede la notifica di avvenuto accodamento |
+  | Revisione e conferma | Con proposte di descrizione estesa e attributi presenti (seminate via factory), l'operatore apre la coda di revisione, conferma la proposta di descrizione estesa e verifica che la pagina prodotto mostri la descrizione applicata nella sezione dedicata |
+
+  ---
+
+  _Piano generato via ARchetipo Planning — 2026-07-04_
+tasks:
+  - id: TASK-01
+    title: Prompt builder e DTO per arricchimento approfondito
+    description: 'Creare app/Services/Ai/DeepEnrichmentPromptBuilder (prompt per model_smart con dati prodotto, attributi esistenti e registro AttributeVocabulary; output JSON richiesto: descrizione_estesa markdown, attributes con key/valore/unit/confidence, confidence complessiva; istruzione esplicita a dichiarare bassa confidenza con dati minimi invece di inventare) e il DTO DeepEnrichedProduct sul pattern di ClassifiedProduct.'
+    type: Impl
+    status: DONE
+    ref: TASK-01
+  - id: TASK-02
+    title: Test del prompt builder
+    description: 'Nuovo tests/Feature/DeepEnrichmentPromptBuilderTest: il prompt include codice/descrizioni/tassonomia/attributi esistenti e le chiavi del registro, usa il modello passato, contiene l''istruzione anti-invenzione e un max_tokens adeguato alla descrizione estesa.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-02
+  - id: TASK-03
+    title: Validator della risposta di arricchimento approfondito
+    description: 'Creare app/Services/Ai/DeepEnrichmentResponseValidator + eccezione InvalidDeepEnrichmentResponseException sul pattern di ClassificationResponseValidator: parsing del JSON, descrizione_estesa stringa non vuota o null, attributi con chiave e almeno un valore, confidence 0-100 (complessiva e per attributo).'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+    ref: TASK-03
+  - id: TASK-04
+    title: Test del validator
+    description: 'Nuovo tests/Feature/DeepEnrichmentResponseValidatorTest: risposta valida, JSON malformato, confidence fuori range, attributo senza valore, campi mancanti.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-03
+    ref: TASK-04
+  - id: TASK-05
+    title: Job DeepEnrichProductJob
+    description: 'Creare app/Jobs/DeepEnrichProductJob (singolo prodotto, coda enrich, timeout adeguato): pre-check AiSpendGuard e spend() dopo la chiamata con runId UUID per esecuzione, un retry su risposta invalida, riga enrichment_logs step ai_deep_enrichment con model/token/confidence, registrazione dei risultati come proposte pending via EnrichmentProposalRecorder (campo descrizione_estesa con value_text, attribute per chiavi a registro, recordAttributeDefinitionProposal per chiavi fuori registro). Su fallimento (validazione doppia, cap, eccezione anche via failed()): enrichment_status needs_review + log errore, nessuna scrittura sui dati prodotto.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-01
+      - TASK-03
+    ref: TASK-05
+  - id: TASK-06
+    title: Test feature del job
+    description: 'Nuovo tests/Feature/DeepEnrichProductJobTest con AiClient mockato: happy path (proposte pending + log token), tetto di spesa superato (nessuna chiamata, needs_review), doppia risposta invalida (needs_review, descrizione estesa e attributi esistenti intatti), bassa confidenza propagata, chiave fuori registro → proposta attribute_definition, eccezione del client → dati intatti.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-06
+  - id: TASK-07
+    title: Supporto campo descrizione_estesa nel triage e nella coda di revisione
+    description: Aggiungere il branch descrizione_estesa in EnrichmentProposalTriage::writeProposalValue (update della colonna sul prodotto, come product_type), la label in ReviewQueue::fieldLabel e nel filtro campo, e il form di correzione con Textarea prevalorizzata in EnrichmentProposalTriageActions.
+    type: Impl
+    status: DONE
+    ref: TASK-07
+  - id: TASK-08
+    title: Test del triage per il nuovo campo
+    description: 'Estendere i test del triage (EnrichmentProposalTriage / ReviewQueueTriageTest): confirm applica descrizione_estesa al prodotto e marca la proposta applied; correct scrive il testo corretto; discard non tocca il prodotto; la proposta compare in coda di revisione con label leggibile.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-07
+    ref: TASK-08
+  - id: TASK-09
+    title: Azione UI "Arricchisci con AI"
+    description: 'Aggiungere ProductEnrichmentActions::deepEnrichWithAi() (icona Sparkles, notifica di avvenuto accodamento, disabilitata senza descrizione, dispatch di DeepEnrichProductJob) e registrarla sulle superfici esistenti: header actions di ViewProduct e row actions di ProductsTable.'
+    type: Impl
+    status: DONE
+    dependencies:
+      - TASK-05
+    ref: TASK-09
+  - id: TASK-10
+    title: Test dell'azione UI
+    description: 'Estendere ProductResourceViewTest (o test dedicato) con Queue::fake: l''azione accoda DeepEnrichProductJob con l''id del prodotto, mostra la notifica di accodamento ed è disabilitata per prodotti senza descrizione.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-09
+    ref: TASK-10
+  - id: TASK-11
+    title: Scenari Dusk end-to-end con screenshot
+    description: 'Nuovo tests/Browser/ProductDeepEnrichmentTest: scenario 1 login → pagina prodotto → click "Arricchisci con AI" → notifica di accodamento; scenario 2 con proposte seminate → coda di revisione → conferma della descrizione estesa → verifica del rendering sulla pagina prodotto. Screenshot per step in docs/test-results/US-051/.'
+    type: Test
+    status: DONE
+    dependencies:
+      - TASK-08
+      - TASK-09
+      - TASK-10
+    ref: TASK-11

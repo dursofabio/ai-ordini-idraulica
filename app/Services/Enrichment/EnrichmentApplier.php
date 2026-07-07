@@ -37,9 +37,11 @@ use App\Services\Ai\TaxonomyCatalog;
  * A field that doesn't resolve against the taxonomy, or is guarded by a
  * manual/file/other authoritative source, never generates a proposal. An
  * attribute key absent from the registry is never written to
- * `product_attributes`, but — since US-044 — generates its own
- * `attribute_definition` proposal instead of disappearing silently, so a
- * reviewer can add it to the registry (or reject it) from the review queue.
+ * `product_attributes` directly (there is no canonical unit to trust for an
+ * automatic write), but its value is never discarded either: it is recorded
+ * as a `pending` `attribute` proposal with the raw value/unit exactly as
+ * read, alongside its own `attribute_definition` proposal (US-044) so a
+ * reviewer can also promote the key into the registry from the review queue.
  */
 class EnrichmentApplier
 {
@@ -105,7 +107,7 @@ class EnrichmentApplier
      * `source`, `confidence`) are simply ignored.
      *
      * `product_type` (US-045) has no taxonomy row to reference — it is
-     * logged in a dedicated branch using `value_text` instead of `value_id`.
+     * logged in a dedicated branch using `value` instead of `value_id`.
      *
      * @param  array<string, mixed>  $attributes
      */
@@ -133,7 +135,7 @@ class EnrichmentApplier
                 origin: 'ai',
                 status: $status,
                 confidence: $confidence,
-                valueText: $attributes['product_type'],
+                value: $attributes['product_type'],
             );
         }
     }
@@ -154,26 +156,27 @@ class EnrichmentApplier
      * else: if it blocks the write, no proposal is recorded either.
      *
      * A key absent from {@see AttributeVocabulary} is never written to
-     * `product_attributes` — the AI is instructed to only ever use canonical
-     * keys, so a stray free key is not trusted for a direct write — but,
-     * since US-044, it is no longer discarded outright either: it generates
-     * an `attribute_definition` proposal via
+     * `product_attributes` directly — with no registered canonical unit,
+     * there is nothing to trust for an automatic write — but its value is
+     * never discarded: it is recorded as a `pending` `attribute` proposal
+     * (raw value/unit, same as {@see recordAttributeProposal()}'s other
+     * callers) so a reviewer can confirm it, alongside an `attribute_definition`
+     * proposal via
      * {@see EnrichmentProposalRecorder::recordAttributeDefinitionProposal()}
-     * so a reviewer can register it (or reject it) instead of the
-     * fragmentation silently reappearing at the registry level.
+     * so the key can also be promoted into the registry instead of the
+     * fragmentation silently reappearing there.
      *
      * For a key present in the registry: below the low-confidence threshold,
      * a `pending` proposal is recorded with the value/unit exactly as read
      * from the AI (unconverted), same as before. At or above the threshold,
-     * a `numeric` definition's `value_num` is converted to the canonical
-     * unit via {@see AttributeUnitConverter}; a `text` definition's
-     * `value_text` is written as-is (`unit` always `null`). Whenever the
-     * value can't be converted ({@see UnknownAttributeUnitException}) or
-     * doesn't match the definition's declared type (a `numeric` definition
-     * with no `value_num`, or a `text` definition with no `value_text`), the
-     * attribute is left unwritten and a `pending` proposal is recorded with
-     * the original value/unit instead — mirroring the low-confidence branch,
-     * without forcing the product into `needs_review`.
+     * a `numeric` definition's value is converted to the canonical unit via
+     * {@see AttributeUnitConverter}; a `text` definition's value is written
+     * as-is (`unit` always `null`). Whenever the value can't be converted
+     * ({@see UnknownAttributeUnitException}) or doesn't match the
+     * definition's declared type (a `numeric` definition whose value isn't
+     * numeric), the attribute is left unwritten and a `pending` proposal is
+     * recorded with the original value/unit instead — mirroring the
+     * low-confidence branch, without forcing the product into `needs_review`.
      *
      * @return bool whether at least one written attribute forces `needs_review`
      */
@@ -189,6 +192,9 @@ class EnrichmentApplier
             $definition = $vocabulary->definitionFor($key);
 
             if ($definition === null) {
+                $confidence = $attribute['confidence'] ?? 0;
+
+                $this->recordAttributeProposal($product, $key, $attribute, 'pending', $confidence);
                 $this->recorder->recordAttributeDefinitionProposal($product, $key, $attribute);
 
                 continue;
@@ -224,38 +230,47 @@ class EnrichmentApplier
 
     /**
      * Normalizes a proposed attribute against its registry definition ahead
-     * of the write: a `numeric` definition converts `value_num`/`unit` to the
-     * canonical unit, a `text` definition passes `value_text` through
-     * unchanged with `unit` forced to `null` (never handed to the converter,
-     * which would raise on a textual definition). Returns `null` when the
-     * value doesn't match the definition's type (missing `value_num`/
-     * `value_text`) or when the unit can't be converted, signaling the caller
-     * to fall back to a `pending` proposal instead of writing.
+     * of the write: a `numeric` definition converts the value/unit to the
+     * canonical unit, a `text` definition passes the value through unchanged
+     * with `unit` forced to `null` (never handed to the converter, which
+     * would raise on a textual definition). Returns `null` when the value
+     * doesn't match the definition's type (a `numeric` definition whose
+     * value isn't numeric) or when the unit can't be converted, signaling
+     * the caller to fall back to a `pending` proposal instead of writing.
      *
-     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
-     * @return array{value_num?: float, value_text?: string, unit?: string}|null
+     * @param  array{value?: string, unit?: string, confidence: int}  $attribute
+     * @return array{value: string, unit?: string}|null
      */
     private function convertedAttribute(AttributeDefinition $definition, array $attribute): ?array
     {
         if ($definition->data_type === 'numeric') {
-            if (! array_key_exists('value_num', $attribute) || $attribute['value_num'] === null) {
+            if (! is_numeric($attribute['value'] ?? null)) {
                 return null;
             }
 
             try {
-                $canonicalValue = $this->converter->convertToCanonical($definition, (float) $attribute['value_num'], $attribute['unit'] ?? null);
+                $canonicalValue = $this->converter->convertToCanonical($definition, (float) $attribute['value'], $attribute['unit'] ?? null);
             } catch (UnknownAttributeUnitException) {
                 return null;
             }
 
-            return ['value_num' => $canonicalValue, 'unit' => $definition->canonical_unit];
+            return ['value' => self::formatNumericValue($canonicalValue), 'unit' => $definition->canonical_unit];
         }
 
-        if (! array_key_exists('value_text', $attribute) || $attribute['value_text'] === null) {
+        if (! array_key_exists('value', $attribute) || $attribute['value'] === null) {
             return null;
         }
 
-        return ['value_text' => $attribute['value_text'], 'unit' => null];
+        return ['value' => $attribute['value'], 'unit' => null];
+    }
+
+    /**
+     * Formats a converted canonical value back into the trimmed decimal
+     * string `product_attributes.value` stores (e.g. `12.500` → `12.5`).
+     */
+    private static function formatNumericValue(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 3, '.', ''), '0'), '.');
     }
 
     /**
@@ -264,7 +279,7 @@ class EnrichmentApplier
      * canonical value — so the proposal audit trail reflects what the AI
      * actually reported (US-043).
      *
-     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     * @param  array{value?: string, unit?: string, confidence: int}  $attribute
      */
     private function recordAttributeProposal(Product $product, string $key, array $attribute, string $status, int $confidence): void
     {
@@ -275,8 +290,7 @@ class EnrichmentApplier
             status: $status,
             confidence: $confidence,
             attributeKey: $key,
-            valueNum: $attribute['value_num'] ?? null,
-            valueText: $attribute['value_text'] ?? null,
+            value: $attribute['value'] ?? null,
             unit: $attribute['unit'] ?? null,
         );
     }
@@ -294,15 +308,14 @@ class EnrichmentApplier
     }
 
     /**
-     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     * @param  array{value?: string, unit?: string, confidence: int}  $attribute
      */
     private function writeAttribute(Product $product, string $key, array $attribute, int $confidence): void
     {
         $product->attributes()->updateOrCreate(
             ['key' => $key],
             [
-                'value_num' => $attribute['value_num'] ?? null,
-                'value_text' => $attribute['value_text'] ?? null,
+                'value' => $attribute['value'] ?? null,
                 'unit' => $attribute['unit'] ?? null,
                 'source' => 'ai',
                 'confidence' => $confidence,

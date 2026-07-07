@@ -79,8 +79,8 @@ class ProductSearchTest extends DuskTestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $matching->id,
-            'key' => 'potenza_kw',
-            'value_num' => 2.5,
+            'key' => 'potenza',
+            'value' => '2.5',
         ]);
 
         $nonMatching = Product::factory()->create([
@@ -149,7 +149,7 @@ class ProductSearchTest extends DuskTestCase
         });
     }
 
-    public function test_operator_searches_with_out_of_range_filter_and_sees_distinct_no_results_state(): void
+    public function test_operator_searches_with_non_matching_family_filter_and_sees_distinct_no_results_state(): void
     {
         $admin = User::factory()->create([
             'name' => 'Admin',
@@ -162,13 +162,9 @@ class ProductSearchTest extends DuskTestCase
             'description_clean' => 'Pompa sommersa per pozzi',
             'subfamily_id' => null,
         ]);
-        ProductAttribute::factory()->create([
-            'product_id' => $product->id,
-            'key' => 'potenza_kw',
-            'value_num' => 5,
-        ]);
+        $unrelatedFamily = Family::factory()->create(['name' => 'Valvole']);
 
-        $this->browse(function (Browser $browser) use ($admin, $product) {
+        $this->browse(function (Browser $browser) use ($admin, $product, $unrelatedFamily) {
             // 1. The operator logs in to the Filament backoffice.
             $browser->visit('/admin/login')
                 ->waitFor('#form\\.email')
@@ -188,13 +184,16 @@ class ProductSearchTest extends DuskTestCase
                 ->pause(400)
                 ->screenshot('09-guided-empty-state');
 
-            // 3. The operator sets a "Potenza (kW)" range that no seeded
-            // product falls into (the only product has potenza_kw = 5).
-            $browser->type('#form\\.potenza_kw_min', '500')
-                ->pause(300)
-                ->type('#form\\.potenza_kw_max', '600')
+            // 3. The operator picks a "Famiglia" filter that the only seeded
+            // product doesn't belong to.
+            $browser->click('.fi-fo-select-wrp:has(label[for="form.family_id"]) .fi-select-input-btn')
                 ->pause(400)
+                ->type('.fi-fo-select-wrp:has(label[for="form.family_id"]) .fi-select-input-search-ctn input', $unrelatedFamily->name)
+                ->pause(800)
                 ->screenshot('10-out-of-range-filter');
+
+            $browser->click('.fi-fo-select-wrp:has(label[for="form.family_id"]) li.fi-select-input-option')
+                ->pause(400);
 
             // 4. The operator clicks "Cerca" and sees the distinct
             // "no results" message, not the initial guided state, and not

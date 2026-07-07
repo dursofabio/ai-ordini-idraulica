@@ -56,6 +56,7 @@ class ProductsTable
                 EditAction::make(),
                 ProductEnrichmentActions::relaunchDeterministicEnrichment(),
                 ProductEnrichmentActions::relaunchAiClassification(),
+                ProductEnrichmentActions::deepEnrichWithAi(),
                 ProductEnrichmentActions::regenerateEmbedding(),
             ]);
     }

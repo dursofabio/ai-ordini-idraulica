@@ -91,13 +91,34 @@ class ClassifyProductsBatchJob implements ShouldQueue
     public int $timeout = 600;
 
     /**
-     * codice_articolo => [model, tokensIn, tokensOut] for products that were
-     * escalated to the smart model, so logResults() can attribute the
-     * correct model/tokens instead of the batch's fast-model figures.
+     * codice_articolo => [model, tokensIn, tokensOut, requestPayload,
+     * responsePayload, cost] for products that were escalated to the smart
+     * model, so logResults() can attribute the correct
+     * model/tokens/request/response/cost instead of the batch's fast-model
+     * figures.
      *
-     * @var array<string, array{0: string, 1: int, 2: int}>
+     * @var array<string, array{0: string, 1: int, 2: int, 3: array<string, mixed>, 4: array<string, mixed>|null, 5: float|null}>
      */
     private array $escalatedModels = [];
+
+    /**
+     * The full request payload sent for the batch (fast-model) classification
+     * call, so {@see self::logResults()} and {@see self::markNeedsReview()}
+     * can log the exact prompt that produced (or failed to produce) each
+     * product's result. Set once per job run by {@see self::classifyWithRetry()}.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $batchRequestPayload = null;
+
+    /**
+     * The raw response body of the last batch classification attempt (even
+     * when validation ultimately failed), for the same audit purpose as
+     * {@see self::$batchRequestPayload}.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $batchResponsePayload = null;
 
     /**
      * codice_articolo (of a duplicate, non-representative product) =>
@@ -240,13 +261,13 @@ class ClassifyProductsBatchJob implements ShouldQueue
             return;
         }
 
-        [$classification, $tokensIn, $tokensOut] = $validated;
+        [$classification, $tokensIn, $tokensOut, $cost] = $validated;
 
         $spendGuard->spend($this->runId, $spendGuard->estimateCost($modelFast, $tokensIn, $tokensOut));
 
         $this->escalateLowConfidenceResults($client, $promptBuilder, $validator, $toClassify, $taxonomy, $vocabulary, $classification, $spendGuard);
 
-        $this->logResults($notCached, $toClassify->count(), $classification, $taxonomy, $vocabulary, $modelFast, $tokensIn, $tokensOut, $cache);
+        $this->logResults($notCached, $toClassify->count(), $classification, $taxonomy, $vocabulary, $modelFast, $tokensIn, $tokensOut, $cache, $cost);
     }
 
     /**
@@ -388,7 +409,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
      *
      * @param  EloquentCollection<int, Product>  $products
      * @param  SupportCollection<int, string>  $expectedCodici
-     * @return array{0: ValidatedClassification, 1: int, 2: int}|null
+     * @return array{0: ValidatedClassification, 1: int, 2: int, 3: float|null}|null
      */
     private function classifyWithRetry(
         AiClient $client,
@@ -400,15 +421,17 @@ class ClassifyProductsBatchJob implements ShouldQueue
         string $model,
         SupportCollection $expectedCodici,
     ): ?array {
-        $payload = $promptBuilder->build($products, $taxonomy, $vocabulary, $model);
+        $payload = $promptBuilder->build($products, $taxonomy, $model);
+        $this->batchRequestPayload = $payload;
 
         for ($attempt = 1; $attempt <= 2; $attempt++) {
             $response = $client->messages($payload);
+            $this->batchResponsePayload = $response->raw;
 
             try {
                 $classification = $validator->validate($response, $expectedCodici, $taxonomy);
 
-                return [$classification, $response->tokensIn, $response->tokensOut];
+                return [$classification, $response->tokensIn, $response->tokensOut, $response->cost];
             } catch (InvalidClassificationResponseException $exception) {
                 $this->lastValidationError = $exception->getMessage();
 
@@ -464,7 +487,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
             }
 
             $singleBatch = collect([$product]);
-            $payload = $promptBuilder->build($singleBatch, $taxonomy, $vocabulary, $modelSmart);
+            $payload = $promptBuilder->build($singleBatch, $taxonomy, $modelSmart);
             $response = $client->messages($payload);
 
             $spendGuard->spend($this->runId, $spendGuard->estimateCost($modelSmart, $response->tokensIn, $response->tokensOut));
@@ -479,7 +502,7 @@ class ClassifyProductsBatchJob implements ShouldQueue
 
             if ($escalatedResult !== null) {
                 $classification->results->put($product->codice_articolo, $escalatedResult);
-                $this->escalatedModels[$product->codice_articolo] = [$modelSmart, $response->tokensIn, $response->tokensOut];
+                $this->escalatedModels[$product->codice_articolo] = [$modelSmart, $response->tokensIn, $response->tokensOut, $payload, $response->raw, $response->cost];
             }
         }
     }
@@ -517,10 +540,12 @@ class ClassifyProductsBatchJob implements ShouldQueue
         int $batchTokensIn,
         int $batchTokensOut,
         EnrichmentCache $cache,
+        ?float $batchCost = null,
     ): void {
         $count = max($representativeCount, 1);
         $shareIn = intdiv($batchTokensIn, $count);
         $shareOut = intdiv($batchTokensOut, $count);
+        $shareCost = $batchCost !== null ? $batchCost / $count : null;
         $now = Carbon::now();
         $applier = app(EnrichmentApplier::class);
 
@@ -549,10 +574,13 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 'step' => 'ai_classification',
                 'input' => json_encode(['codice_articolo' => $product->codice_articolo], JSON_UNESCAPED_UNICODE),
                 'output' => json_encode($this->resultToArray($result), JSON_UNESCAPED_UNICODE),
+                'request_payload' => json_encode($escalation[3] ?? $this->batchRequestPayload, JSON_UNESCAPED_UNICODE),
+                'response_payload' => json_encode($escalation[4] ?? $this->batchResponsePayload, JSON_UNESCAPED_UNICODE),
                 'confidence' => $result->confidence,
                 'model' => $escalation[0] ?? $modelFast,
                 'tokens_in' => $isDuplicate ? 0 : ($escalation[1] ?? $shareIn),
                 'tokens_out' => $isDuplicate ? 0 : ($escalation[2] ?? $shareOut),
+                'cost' => $isDuplicate ? null : ($escalation[5] ?? $shareCost),
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
@@ -628,10 +656,13 @@ class ClassifyProductsBatchJob implements ShouldQueue
                 'step' => 'ai_classification',
                 'input' => json_encode(['codice_articolo' => $product->codice_articolo], JSON_UNESCAPED_UNICODE),
                 'output' => json_encode(['error' => $reason], JSON_UNESCAPED_UNICODE),
+                'request_payload' => json_encode($this->batchRequestPayload, JSON_UNESCAPED_UNICODE),
+                'response_payload' => json_encode($this->batchResponsePayload, JSON_UNESCAPED_UNICODE),
                 'confidence' => null,
                 'model' => $modelFast,
                 'tokens_in' => null,
                 'tokens_out' => null,
+                'cost' => null,
                 'created_at' => $now,
                 'updated_at' => $now,
             ];

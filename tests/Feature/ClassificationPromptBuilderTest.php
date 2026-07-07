@@ -2,12 +2,10 @@
 
 namespace Tests\Feature;
 
-use App\Models\AttributeDefinition;
 use App\Models\Brand;
 use App\Models\Family;
 use App\Models\Product;
 use App\Models\ProductAttribute;
-use App\Services\Ai\AttributeVocabulary;
 use App\Services\Ai\ClassificationPromptBuilder;
 use App\Services\Ai\TaxonomyCatalog;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -21,14 +19,10 @@ use Tests\TestCase;
  *  - The closed taxonomy (existing brands/families) is embedded in the
  *    prompt text.
  *
- * US-043 acceptance criteria — attribute extraction anchored to the
- * attribute registry:
- *  - The registry vocabulary (key, type, canonical unit, description) is
- *    embedded in the prompt.
- *  - The prompt imposes the exclusive use of canonical keys and no longer
- *    contains the free-key instruction.
+ * US-043 acceptance criteria — technical attribute extraction:
+ *  - The prompt instructs a unit-free attribute key naming convention.
  *  - The prompt requires value/unit exactly as read from the text and
- *    forbids unit conversion.
+ *    forbids unit conversion, in a strict decimal format.
  *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
@@ -41,7 +35,7 @@ class ClassificationPromptBuilderTest extends TestCase
     {
         $products = Product::factory()->count(3)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
@@ -54,15 +48,14 @@ class ClassificationPromptBuilderTest extends TestCase
     {
         $builder = new ClassificationPromptBuilder;
         $taxonomy = new TaxonomyCatalog;
-        $vocabulary = new AttributeVocabulary;
 
         // A verbose real-world result costs ~210 output tokens per product:
         // a 40-product batch must get well more than 40 x 210 = 8400.
-        $fullBatch = $builder->build(Product::factory()->count(40)->create(), $taxonomy, $vocabulary, 'm');
+        $fullBatch = $builder->build(Product::factory()->count(40)->create(), $taxonomy, 'm');
         $this->assertGreaterThanOrEqual(40 * 300, $fullBatch['max_tokens']);
 
         // A single-product escalation call still gets a workable floor.
-        $single = $builder->build(Product::factory()->count(1)->create(), $taxonomy, $vocabulary, 'm');
+        $single = $builder->build(Product::factory()->count(1)->create(), $taxonomy, 'm');
         $this->assertGreaterThanOrEqual(1024, $single['max_tokens']);
     }
 
@@ -73,7 +66,7 @@ class ClassificationPromptBuilderTest extends TestCase
 
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
@@ -85,7 +78,7 @@ class ClassificationPromptBuilderTest extends TestCase
     {
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-fast-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-fast-model');
 
         $this->assertSame('claude-fast-model', $payload['model']);
         $this->assertSame('user', $payload['messages'][0]['role']);
@@ -96,21 +89,20 @@ class ClassificationPromptBuilderTest extends TestCase
         $product = Product::factory()->create();
 
         ProductAttribute::factory()->for($product)->create([
-            'key' => 'potenza_kw',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'key' => 'potenza',
+            'value' => '1.5',
             'unit' => 'kW',
             'source' => 'regex',
         ]);
 
         $products = Product::query()->with('attributes')->whereKey($product->id)->get();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
-        $this->assertStringContainsString('potenza_kw', $prompt);
-        $this->assertStringContainsString('1.500', $prompt);
+        $this->assertStringContainsString('potenza', $prompt);
+        $this->assertStringContainsString('1.5', $prompt);
         $this->assertStringContainsString('kW', $prompt);
         $this->assertStringContainsString('regex', $prompt);
     }
@@ -119,14 +111,13 @@ class ClassificationPromptBuilderTest extends TestCase
     {
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
         $this->assertStringContainsString('"attributes"', $prompt);
         $this->assertStringContainsString('"key"', $prompt);
-        $this->assertStringContainsString('"value_num"', $prompt);
-        $this->assertStringContainsString('"value_text"', $prompt);
+        $this->assertStringContainsString('"value"', $prompt);
         $this->assertStringContainsString('"confidence"', $prompt);
     }
 
@@ -139,7 +130,7 @@ class ClassificationPromptBuilderTest extends TestCase
     {
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
@@ -148,58 +139,57 @@ class ClassificationPromptBuilderTest extends TestCase
     }
 
     /**
-     * US-043 AC1: the prompt embeds the registry vocabulary — key, type,
-     * canonical unit, and description — for every seeded definition.
+     * Attribute keys must name the type of characteristic without the unit
+     * embedded in it (e.g. "potenza", not "potenza_kw"), since the unit is
+     * already its own "unit" field.
      */
-    public function test_payload_includes_the_attribute_registry_vocabulary(): void
+    public function test_payload_instructs_a_unit_free_key_naming_convention(): void
     {
-        AttributeDefinition::factory()->numeric()->create([
-            'key' => 'potenza_kw',
-            'canonical_unit' => 'kW',
-            'description' => 'Potenza nominale dell\'apparecchio, espressa in kilowatt (kW).',
-        ]);
-
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
-        $this->assertStringContainsString('potenza_kw', $prompt);
-        $this->assertStringContainsString('kW', $prompt);
-        $this->assertStringContainsString("Potenza nominale dell'apparecchio, espressa in kilowatt (kW).", $prompt);
+        $this->assertStringContainsString('SENZA includere l\'unità di misura nel nome', $prompt);
+        $this->assertStringContainsString('MAI "potenza_kw"', $prompt);
     }
 
     /**
-     * US-043 AC1: the free-key instruction is gone — the prompt requires
-     * exclusive use of canonical registry keys.
+     * The AI must never propose the product's own article code or
+     * description as a technical attribute — {@see ClassificationResponseValidator}
+     * also enforces this as a hard filter, this only checks the prompt's own
+     * instruction.
      */
-    public function test_payload_requires_canonical_keys_and_drops_the_free_key_instruction(): void
+    public function test_payload_forbids_proposing_the_products_own_identity_fields_as_attributes(): void
     {
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
-        $this->assertStringContainsString('ESCLUSIVAMENTE le chiavi del registro attributi', $prompt);
-        $this->assertStringNotContainsString('chiave libera, in snake_case', $prompt);
+        $this->assertStringContainsString('NON includere MAI', $prompt);
+        $this->assertStringContainsString('tra gli attributi il codice articolo o la descrizione', $prompt);
     }
 
     /**
-     * US-043 AC2: the AI must report value/unit exactly as read from the
-     * text; unit conversion is explicitly forbidden and left to the
-     * application (AttributeUnitConverter).
+     * The AI must report value/unit exactly as read from the text; unit
+     * conversion is explicitly forbidden and left to the application
+     * (AttributeUnitConverter), and a numeric value must use a strict
+     * decimal format (dot separator, no thousands grouping).
      */
-    public function test_payload_forbids_unit_conversion_and_requires_values_as_read(): void
+    public function test_payload_forbids_unit_conversion_and_requires_a_strict_decimal_format(): void
     {
         $products = Product::factory()->count(1)->create();
 
-        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, new AttributeVocabulary, 'claude-test-model');
+        $payload = (new ClassificationPromptBuilder)->build($products, new TaxonomyCatalog, 'claude-test-model');
 
         $prompt = $payload['messages'][0]['content'];
 
-        $this->assertStringContainsString('ESATTAMENTE come letti nel testo del prodotto', $prompt);
+        $this->assertStringContainsString('ESATTAMENTE come letta nel testo del prodotto', $prompt);
         $this->assertStringContainsString('NON convertire mai il valore', $prompt);
+        $this->assertStringContainsString('come separatore decimale', $prompt);
+        $this->assertStringContainsString('MAI un separatore delle migliaia', $prompt);
     }
 }

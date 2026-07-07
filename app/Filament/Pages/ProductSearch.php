@@ -33,8 +33,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 /**
  * US-033: read-only search page over the hybrid search engine
  * ({@see SearchService}, US-019). Hosts the search form (free text +
- * brand/family/subfamily + a fixed set of numeric technical attribute
- * filters) and a results table backed by `NaturalLanguageSearchService::paginate()`
+ * brand/family/subfamily) and a results table backed by `NaturalLanguageSearchService::paginate()`
  * (US-048) via Filament's custom-data `->records()` (results aren't an
  * Eloquent query, they're a paginated `Collection<SearchResult>`).
  *
@@ -108,15 +107,6 @@ class ProductSearch extends Page implements HasSchemas, HasTable
      */
     public ?float $matchMargin = null;
 
-    /**
-     * The three fixed technical attribute keys exposed as min/max filter
-     * pairs on the form (US-028); populated exclusively via AI classification
-     * anchored to the attribute registry since US-043.
-     *
-     * @var array<int, string>
-     */
-    private const ATTRIBUTE_KEYS = ['potenza_kw', 'diametro_nominale', 'pressione_nominale'];
-
     public function mount(): void
     {
         $this->form->fill();
@@ -153,27 +143,6 @@ class ProductSearch extends Page implements HasSchemas, HasTable
                                     ->where('family_id', $get('family_id'))
                                     ->pluck('name', 'id'))
                                 ->searchable(),
-                        ]),
-                    Grid::make(6)
-                        ->schema([
-                            TextInput::make('potenza_kw_min')
-                                ->label('Potenza (kW) min')
-                                ->numeric(),
-                            TextInput::make('potenza_kw_max')
-                                ->label('Potenza (kW) max')
-                                ->numeric(),
-                            TextInput::make('diametro_nominale_min')
-                                ->label('DN min')
-                                ->numeric(),
-                            TextInput::make('diametro_nominale_max')
-                                ->label('DN max')
-                                ->numeric(),
-                            TextInput::make('pressione_nominale_min')
-                                ->label('PN min')
-                                ->numeric(),
-                            TextInput::make('pressione_nominale_max')
-                                ->label('PN max')
-                                ->numeric(),
                         ]),
                 ])
                     ->livewireSubmitHandler('search')
@@ -314,8 +283,7 @@ class ProductSearch extends Page implements HasSchemas, HasTable
 
     /**
      * True when the submitted state has a non-blank query or at least one
-     * non-blank filter field (brand/family/subfamily or an attribute
-     * min/max).
+     * non-blank filter field (brand/family/subfamily).
      */
     private function hasSearchCriteria(): bool
     {
@@ -327,14 +295,7 @@ class ProductSearch extends Page implements HasSchemas, HasTable
             return true;
         }
 
-        $fields = ['brand_id', 'family_id', 'subfamily_id'];
-
-        foreach (self::ATTRIBUTE_KEYS as $key) {
-            $fields[] = "{$key}_min";
-            $fields[] = "{$key}_max";
-        }
-
-        foreach ($fields as $field) {
+        foreach (['brand_id', 'family_id', 'subfamily_id'] as $field) {
             if (filled($this->data[$field] ?? null)) {
                 return true;
             }
@@ -348,7 +309,7 @@ class ProductSearch extends Page implements HasSchemas, HasTable
      * {@see SearchService::search()}, omitting any key whose value wasn't
      * provided rather than sending it as `null`.
      *
-     * @return array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float}>}
+     * @return array{brand_id?: int, family_id?: int, subfamily_id?: int}
      */
     private function buildSearchFilters(): array
     {
@@ -358,33 +319,6 @@ class ProductSearch extends Page implements HasSchemas, HasTable
             if (filled($this->data[$field] ?? null)) {
                 $filters[$field] = (int) $this->data[$field];
             }
-        }
-
-        $attributes = [];
-
-        foreach (self::ATTRIBUTE_KEYS as $key) {
-            $min = $this->data["{$key}_min"] ?? null;
-            $max = $this->data["{$key}_max"] ?? null;
-
-            if (blank($min) && blank($max)) {
-                continue;
-            }
-
-            $attribute = ['key' => $key];
-
-            if (filled($min)) {
-                $attribute['min'] = (float) $min;
-            }
-
-            if (filled($max)) {
-                $attribute['max'] = (float) $max;
-            }
-
-            $attributes[] = $attribute;
-        }
-
-        if ($attributes !== []) {
-            $filters['attributes'] = $attributes;
         }
 
         return $filters;

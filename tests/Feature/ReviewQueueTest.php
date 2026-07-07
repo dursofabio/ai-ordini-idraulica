@@ -121,8 +121,7 @@ class ReviewQueueTest extends TestCase
             'product_id' => $product->id,
             'field' => 'attribute',
             'attribute_key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'origin' => 'regex',
             'confidence' => 40,
@@ -211,35 +210,27 @@ class ReviewQueueTest extends TestCase
             ->assertTableColumnStateSet('proposed_value', '—', $proposal);
     }
 
-    /**
-     * Mirrors the trailing-zero trimming convention used elsewhere for
-     * technical attributes: `value_num` is cast `decimal:3`, so a whole
-     * number like 100 must not be corrupted into "1" by naive trimming.
-     */
     public function test_proposed_value_column_formats_attribute_values_with_text_numeric_and_unit(): void
     {
         $admin = User::factory()->create();
         $textProposal = EnrichmentProposal::factory()->create([
             'field' => 'attribute',
             'attribute_key' => 'Materiale',
-            'value_text' => 'Ottone',
-            'value_num' => null,
+            'value' => 'Ottone',
             'unit' => null,
             'status' => 'pending',
         ]);
         $numericProposal = EnrichmentProposal::factory()->create([
             'field' => 'attribute',
             'attribute_key' => 'kW',
-            'value_text' => null,
-            'value_num' => 1.5,
+            'value' => '1.5',
             'unit' => 'kW',
             'status' => 'pending',
         ]);
         $wholeNumberProposal = EnrichmentProposal::factory()->create([
             'field' => 'attribute',
             'attribute_key' => 'DN',
-            'value_text' => null,
-            'value_num' => 100,
+            'value' => '100',
             'unit' => null,
             'status' => 'pending',
         ]);
@@ -481,7 +472,7 @@ class ReviewQueueTest extends TestCase
         $proposal = EnrichmentProposal::factory()->create([
             'product_id' => $product->id,
             'field' => 'product_type',
-            'value_text' => 'Caldaia a condensazione',
+            'value' => 'Caldaia a condensazione',
             'origin' => 'ai',
             'status' => 'pending',
         ]);
@@ -499,14 +490,14 @@ class ReviewQueueTest extends TestCase
 
     /**
      * US-045 AC1: the correction form for a `product_type` proposal is
-     * prevalorized from `value_text` (like an attribute), not `value_id`.
+     * prevalorized from `value` (like an attribute), not `value_id`.
      */
     public function test_correct_action_product_type_form_is_prefilled_with_current_text_value(): void
     {
         $admin = User::factory()->create();
         $proposal = EnrichmentProposal::factory()->create([
             'field' => 'product_type',
-            'value_text' => 'Miscelatore',
+            'value' => 'Miscelatore',
             'status' => 'pending',
         ]);
 
@@ -514,7 +505,7 @@ class ReviewQueueTest extends TestCase
 
         Livewire::test(ReviewQueue::class)
             ->mountTableAction('correct', $proposal)
-            ->assertTableActionDataSet(['value_text' => 'Miscelatore']);
+            ->assertTableActionDataSet(['value' => 'Miscelatore']);
     }
 
     /**
@@ -529,14 +520,14 @@ class ReviewQueueTest extends TestCase
         $proposal = EnrichmentProposal::factory()->create([
             'product_id' => $product->id,
             'field' => 'product_type',
-            'value_text' => 'Miscelatore',
+            'value' => 'Miscelatore',
             'status' => 'pending',
         ]);
 
         $this->actingAs($admin);
 
         Livewire::test(ReviewQueue::class)
-            ->callTableAction('correct', $proposal, ['value_text' => 'Caldaia a condensazione']);
+            ->callTableAction('correct', $proposal, ['value' => 'Caldaia a condensazione']);
 
         $proposal->refresh();
 
@@ -560,6 +551,142 @@ class ReviewQueueTest extends TestCase
             ->filterTable('field', 'product_type')
             ->assertCanSeeTableRecords([$productTypeProposal])
             ->assertCanNotSeeTableRecords([$brandProposal]);
+    }
+
+    /**
+     * US-051 AC3: confirming a `descrizione_estesa` proposal writes the
+     * proposed markdown text directly to `products.descrizione_estesa` (like
+     * `product_type`) and marks the proposal `applied`.
+     */
+    public function test_confirm_action_writes_descrizione_estesa_value_and_marks_proposal_applied(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'descrizione_estesa',
+            'value' => "# Scheda tecnica\n\nDescrizione proposta dall'AI.",
+            'origin' => 'ai',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('confirm', $proposal);
+
+        $proposal->refresh();
+
+        $this->assertSame("# Scheda tecnica\n\nDescrizione proposta dall'AI.", $product->fresh()->descrizione_estesa);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * US-051 AC3: the correction form for a `descrizione_estesa` proposal is
+     * prevalorized from `value`, using a Textarea for the markdown body.
+     */
+    public function test_correct_action_descrizione_estesa_form_is_prefilled_with_current_text_value(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'field' => 'descrizione_estesa',
+            'value' => 'Testo proposto',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->mountTableAction('correct', $proposal)
+            ->assertTableActionDataSet(['value' => 'Testo proposto']);
+    }
+
+    /**
+     * US-051 AC3: correcting a `descrizione_estesa` proposal writes the
+     * submitted text directly to `products.descrizione_estesa` and marks the
+     * proposal `applied`.
+     */
+    public function test_correct_action_saves_submitted_descrizione_estesa_value(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'descrizione_estesa',
+            'value' => 'Testo proposto',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('correct', $proposal, ['value' => 'Testo corretto dal revisore']);
+
+        $proposal->refresh();
+
+        $this->assertSame('Testo corretto dal revisore', $product->fresh()->descrizione_estesa);
+        $this->assertSame('applied', $proposal->status);
+    }
+
+    /**
+     * US-051: discarding a `descrizione_estesa` proposal leaves the
+     * product's existing extended description untouched.
+     */
+    public function test_discard_action_on_descrizione_estesa_leaves_the_product_untouched(): void
+    {
+        $admin = User::factory()->create();
+        $product = Product::factory()->create(['descrizione_estesa' => 'Testo originale']);
+        $proposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'descrizione_estesa',
+            'value' => 'Testo proposto',
+            'status' => 'pending',
+        ]);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->callTableAction('discard', $proposal);
+
+        $proposal->refresh();
+
+        $this->assertSame('discarded', $proposal->status);
+        $this->assertSame('Testo originale', $product->fresh()->descrizione_estesa);
+    }
+
+    /**
+     * US-051: the `field` filter must include `descrizione_estesa` so an
+     * admin can isolate pending extended-description proposals, and the
+     * field column must show a readable label for them.
+     */
+    public function test_field_filter_narrows_the_queue_to_descrizione_estesa_proposals(): void
+    {
+        $admin = User::factory()->create();
+        $descriptionProposal = EnrichmentProposal::factory()->create(['field' => 'descrizione_estesa', 'status' => 'pending']);
+        $brandProposal = EnrichmentProposal::factory()->create(['field' => 'brand', 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        Livewire::test(ReviewQueue::class)
+            ->filterTable('field', 'descrizione_estesa')
+            ->assertCanSeeTableRecords([$descriptionProposal])
+            ->assertCanNotSeeTableRecords([$brandProposal]);
+    }
+
+    /**
+     * US-051: the field column reads "Descrizione estesa" for a
+     * `descrizione_estesa` proposal, matching the label used by the filter.
+     */
+    public function test_field_column_shows_descrizione_estesa_label(): void
+    {
+        $admin = User::factory()->create();
+        $proposal = EnrichmentProposal::factory()->create(['field' => 'descrizione_estesa', 'status' => 'pending']);
+
+        $this->actingAs($admin);
+
+        $component = Livewire::test(ReviewQueue::class);
+
+        $this->assertSame('Descrizione estesa', $this->formattedColumnState($component, 'field', $proposal));
     }
 
     /**
@@ -622,7 +749,7 @@ class ReviewQueueTest extends TestCase
             'attribute_key' => 'portata_lmin',
             'data_type' => 'numeric',
             'unit' => 'l/min',
-            'value_text' => null,
+            'value' => null,
         ]);
 
         $this->actingAs($admin);
@@ -633,7 +760,7 @@ class ReviewQueueTest extends TestCase
                 'attribute_key' => 'portata_lmin',
                 'data_type' => 'numeric',
                 'unit' => 'l/min',
-                'value_text' => null,
+                'value' => null,
             ])
             ->assertMountedActionModalSee('portata_l_min');
     }
@@ -688,7 +815,7 @@ class ReviewQueueTest extends TestCase
                 'attribute_key' => 'portata_l_min',
                 'data_type' => 'numeric',
                 'unit' => 'l/min',
-                'value_text' => 'Portata nominale in litri al minuto',
+                'value' => 'Portata nominale in litri al minuto',
             ]);
 
         $proposal->refresh();
@@ -774,8 +901,7 @@ class ReviewQueueTest extends TestCase
             'product_id' => $product->id,
             'field' => 'attribute',
             'attribute_key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'origin' => 'regex',
             'status' => 'pending',
@@ -790,7 +916,7 @@ class ReviewQueueTest extends TestCase
         $attribute = $product->attributes()->where('key', 'kW')->first();
 
         $this->assertNotNull($attribute);
-        $this->assertSame('1.500', $attribute->value_num);
+        $this->assertSame('1.5', $attribute->value);
         $this->assertSame('kW', $attribute->unit);
         $this->assertSame('regex', $attribute->source);
         $this->assertSame('applied', $proposal->status);
@@ -944,8 +1070,7 @@ class ReviewQueueTest extends TestCase
         $proposal = EnrichmentProposal::factory()->create([
             'field' => 'attribute',
             'attribute_key' => 'kW',
-            'value_text' => null,
-            'value_num' => 1.5,
+            'value' => '1.5',
             'unit' => 'kW',
             'status' => 'pending',
         ]);
@@ -955,8 +1080,7 @@ class ReviewQueueTest extends TestCase
         Livewire::test(ReviewQueue::class)
             ->mountTableAction('correct', $proposal)
             ->assertTableActionDataSet([
-                'value_text' => null,
-                'value_num' => 1.5,
+                'value' => '1.5',
                 'unit' => 'kW',
             ]);
     }
@@ -973,8 +1097,7 @@ class ReviewQueueTest extends TestCase
             'product_id' => $product->id,
             'field' => 'attribute',
             'attribute_key' => 'kW',
-            'value_text' => null,
-            'value_num' => 1.5,
+            'value' => '1.5',
             'unit' => 'kW',
             'origin' => 'regex',
             'status' => 'pending',
@@ -984,8 +1107,7 @@ class ReviewQueueTest extends TestCase
 
         Livewire::test(ReviewQueue::class)
             ->callTableAction('correct', $proposal, [
-                'value_text' => null,
-                'value_num' => 3.2,
+                'value' => '3.2',
                 'unit' => 'kW',
             ]);
 
@@ -993,7 +1115,7 @@ class ReviewQueueTest extends TestCase
         $attribute = $product->attributes()->where('key', 'kW')->first();
 
         $this->assertNotNull($attribute);
-        $this->assertSame('3.200', $attribute->value_num);
+        $this->assertSame('3.2', $attribute->value);
         $this->assertSame('manual', $attribute->source);
         $this->assertSame('applied', $proposal->status);
     }
@@ -1019,7 +1141,7 @@ class ReviewQueueTest extends TestCase
             'product_id' => $product->id,
             'field' => 'attribute',
             'attribute_key' => 'kW',
-            'value_num' => 1.5,
+            'value' => '1.5',
             'unit' => 'kW',
             'status' => 'pending',
         ]);

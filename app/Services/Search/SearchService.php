@@ -31,7 +31,7 @@ class SearchService
      * filters. Results are ranked by the weighted fusion of vector and
      * full-text scores, one row per product.
      *
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, value: string}>}  $filters
      * @return Collection<int, SearchResult>
      */
     public function search(string $query, array $filters = []): Collection
@@ -49,7 +49,7 @@ class SearchService
      * results table (US-033) to keep page loads fast regardless of how many
      * products a broad query matches.
      *
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, value: string}>}  $filters
      * @return LengthAwarePaginator<int, SearchResult>
      */
     public function paginate(string $query, array $filters, int $perPage, int $page): LengthAwarePaginator
@@ -72,7 +72,7 @@ class SearchService
      * whether the top-ranked candidate is a confident automatic match or the
      * pool needs guided disambiguation, without loading every matching row.
      *
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, value: string}>}  $filters
      * @return Collection<int, SearchResult>
      */
     public function topCandidates(string $query, array $filters, int $limit): Collection
@@ -89,7 +89,7 @@ class SearchService
      * Builds the filtered, ranked product query shared by {@see search()},
      * {@see paginate()} and {@see topCandidates()}.
      *
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, value: string}>}  $filters
      * @return Builder<Product>
      */
     private function buildSearchQuery(string $query, array $filters, ?int $exactMatchProductId): Builder
@@ -205,7 +205,7 @@ class SearchService
      * constraints) to the base product query, before ranking.
      *
      * @param  Builder<Product>  $builder
-     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, min?: float, max?: float, value?: string}>}  $filters
+     * @param  array{brand_id?: int, family_id?: int, subfamily_id?: int, attributes?: array<int, array{key: string, value: string}>}  $filters
      * @return Builder<Product>
      */
     private function applyFilters(Builder $builder, array $filters): Builder
@@ -233,32 +233,18 @@ class SearchService
     }
 
     /**
-     * Constrain a product-attribute subquery to a single attribute filter,
-     * on any attribute key: a numeric range on `value_num` (`min`/`max`,
-     * either side may be omitted for an open-ended range) or an exact
-     * case-insensitive match on `value_text` (`value`).
+     * Constrain a product-attribute subquery to a single attribute filter:
+     * an exact case-insensitive match on `value`, on any attribute key.
      *
      * @param  Builder<ProductAttribute>  $query
-     * @param  array{key: string, min?: float, max?: float, value?: string}  $attributeFilter
+     * @param  array{key: string, value: string}  $attributeFilter
      * @return Builder<ProductAttribute>
      */
     private function applyAttributeConstraint(Builder $query, array $attributeFilter): Builder
     {
-        $query->where('key', $attributeFilter['key']);
-
-        if (isset($attributeFilter['value'])) {
-            return $query->whereRaw('LOWER(value_text) = ?', [mb_strtolower($attributeFilter['value'])]);
-        }
-
-        if (isset($attributeFilter['min'])) {
-            $query->where('value_num', '>=', $attributeFilter['min']);
-        }
-
-        if (isset($attributeFilter['max'])) {
-            $query->where('value_num', '<=', $attributeFilter['max']);
-        }
-
-        return $query;
+        return $query
+            ->where('key', $attributeFilter['key'])
+            ->whereRaw('LOWER(value) = ?', [mb_strtolower($attributeFilter['value'])]);
     }
 
     /**

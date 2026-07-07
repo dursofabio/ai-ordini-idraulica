@@ -70,8 +70,7 @@ class ReviewQueueDetailPageTest extends DuskTestCase
         $attribute = ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'source' => 'regex',
         ]);
@@ -206,7 +205,7 @@ class ReviewQueueDetailPageTest extends DuskTestCase
                 ->screenshot('07-subfamily-corrected');
 
             // 8. The admin corrects the value of the technical attribute.
-            $valueFieldId = 'form.attributes.record-'.$attribute->id.'.value_num';
+            $valueFieldId = 'form.attributes.record-'.$attribute->id.'.value';
             $browser->clear('input[id="'.$valueFieldId.'"]')
                 ->type('input[id="'.$valueFieldId.'"]', '3.2')
                 ->pause(400)
@@ -239,7 +238,7 @@ class ReviewQueueDetailPageTest extends DuskTestCase
         $this->assertSame(100, $product->confidence);
         $this->assertSame('enriched', $product->enrichment_status);
 
-        $this->assertSame('3.200', $attribute->value_num);
+        $this->assertSame('3.2', $attribute->value);
         $this->assertSame('manual', $attribute->source);
     }
 

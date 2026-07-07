@@ -8,14 +8,15 @@ use Illuminate\Support\Collection;
 
 /**
  * Builds the Anthropic Messages API payload used to classify a batch of
- * products against the closed catalog taxonomy and the closed attribute
- * registry. The prompt instructs the model to return strict JSON matching
- * the `{results: [...]}` schema expected by {@see ClassificationResponseValidator},
- * and embeds the full list of assignable brands/families/subfamilies (so the
- * model cannot invent values outside the existing taxonomy) plus the full
- * attribute registry (US-043: only canonical keys from
- * {@see AttributeVocabulary} may be used — the AI never invents a free-form
- * key, and never converts a value's unit itself).
+ * products against the closed catalog taxonomy. The prompt instructs the
+ * model to return strict JSON matching the `{results: [...]}` schema
+ * expected by {@see ClassificationResponseValidator}, and embeds the full
+ * list of assignable brands/families/subfamilies (so the model cannot invent
+ * values outside the existing taxonomy). Technical attributes are free-form:
+ * the AI is not shown the {@see AttributeVocabulary} registry and is not
+ * constrained to it — a key simply names the type of characteristic (e.g.
+ * `potenza`) without the unit embedded in it, since the unit is already its
+ * own `unit` field.
  *
  * Product descriptions are internal catalog data (not third-party user
  * input) and are embedded verbatim without sanitization. A description
@@ -50,7 +51,7 @@ class ClassificationPromptBuilder
      * @param  Collection<int, Product>  $products
      * @return array<string, mixed>
      */
-    public function build(Collection $products, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary, string $model): array
+    public function build(Collection $products, TaxonomyCatalog $taxonomy, string $model): array
     {
         return [
             'model' => $model,
@@ -58,7 +59,7 @@ class ClassificationPromptBuilder
             'messages' => [
                 [
                     'role' => 'user',
-                    'content' => $this->prompt($products, $taxonomy, $vocabulary),
+                    'content' => $this->prompt($products, $taxonomy),
                 ],
             ],
         ];
@@ -67,7 +68,7 @@ class ClassificationPromptBuilder
     /**
      * @param  Collection<int, Product>  $products
      */
-    private function prompt(Collection $products, TaxonomyCatalog $taxonomy, AttributeVocabulary $vocabulary): string
+    private function prompt(Collection $products, TaxonomyCatalog $taxonomy): string
     {
         $items = $products
             ->map(fn (Product $product): string => sprintf(
@@ -79,7 +80,6 @@ class ClassificationPromptBuilder
             ->implode("\n");
 
         $taxonomyText = $taxonomy->toPromptText();
-        $vocabularyText = $vocabulary->toPromptText();
 
         return <<<PROMPT
         Sei un classificatore di catalogo per una ditta di forniture idrauliche e termoidrauliche.
@@ -93,22 +93,26 @@ class ClassificationPromptBuilder
 
         Per ciascun prodotto sono elencati anche gli attributi tecnici già noti (chiave, valore,
         unità di misura e origine). Valida quegli attributi correggendoli se il valore non è
-        coerente con la descrizione, e proponi eventuali altri attributi tecnici rilevanti. Usa
-        ESCLUSIVAMENTE le chiavi del registro attributi riportato più sotto (chiave, tipo, unità
-        canonica, descrizione): NON inventare chiavi libere. Se nessuna chiave del registro è
-        pertinente per un dato attributo, ometti semplicemente quell'attributo. Per ciascun
-        attributo proposto riporta il valore ("value_num" o "value_text") e l'unità di misura
-        ("unit") ESATTAMENTE come letti nel testo del prodotto: NON convertire mai il valore
-        nell'unità canonica del registro (es. per "3500 W" riporta value_num: 3500, unit: "W", MAI
-        3.5 e "kW" — la conversione all'unità canonica è responsabilità dell'applicazione, non tua).
-        Includi anche un livello di confidenza (intero 0-100) specifico per quell'attributo. Se non
-        sei sicuro di un attributo, non includerlo.
+        coerente con la descrizione, e proponi eventuali altri attributi tecnici rilevanti. La
+        chiave ("key") di ogni attributo deve indicare SOLO il tipo di caratteristica, in italiano
+        e in snake_case, SENZA includere l'unità di misura nel nome (es. "potenza", MAI "potenza_kw"
+        o "potenza_watt": l'unità va sempre e solo nel campo "unit" a parte). NON includere MAI
+        tra gli attributi il codice articolo o la descrizione del prodotto: sono già gestiti come
+        campi propri del prodotto, non sono caratteristiche tecniche (il tipo di prodotto va invece
+        nel campo dedicato "product_type", mai tra gli attributi).
+
+        Il valore ("value") è sempre una stringa, riportata ESATTAMENTE come letta nel testo del prodotto:
+        NON convertire mai il valore in un'altra unità di misura (es. per "3500 W"
+        riporta value: "3500", unit: "W", MAI "3.5" e "kW" — la conversione è responsabilità
+        dell'applicazione, non tua). Se il valore è un numero, scrivilo SEMPRE con il punto (.)
+        come separatore decimale e MAI un separatore delle migliaia (es. "1200.5", MAI "1.200,5"
+        né "1,200.5"). Se il valore non è un numero semplice (una frazione come "1/2", una sigla,
+        un intervallo), scrivilo così come appare nel testo. Includi anche un livello di
+        confidenza (intero 0-100) specifico per quell'attributo. Se non sei sicuro di un
+        attributo, non includerlo.
 
         Tassonomia chiusa:
         {$taxonomyText}
-
-        Registro attributi (chiave | tipo | unità canonica | descrizione):
-        {$vocabularyText}
 
         Prodotti da classificare:
         {$items}
@@ -127,8 +131,7 @@ class ClassificationPromptBuilder
               "attributes": [
                 {
                   "key": "string",
-                  "value_num": 0,
-                  "value_text": "string|null",
+                  "value": "string",
                   "unit": "string|null",
                   "confidence": 0
                 }
@@ -159,9 +162,7 @@ class ClassificationPromptBuilder
 
         $parts = $attributes
             ->map(function (ProductAttribute $attribute): string {
-                $value = $attribute->value_num !== null
-                    ? (string) $attribute->value_num
-                    : (string) $attribute->value_text;
+                $value = (string) $attribute->value;
 
                 $unit = $attribute->unit !== null ? " {$attribute->unit}" : '';
                 $source = $attribute->source ?? 'sconosciuta';

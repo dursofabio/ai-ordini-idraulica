@@ -13,8 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'field',
     'attribute_key',
     'value_id',
-    'value_num',
-    'value_text',
+    'value',
     'unit',
     'data_type',
     'origin',
@@ -34,7 +33,6 @@ class EnrichmentProposal extends Model
     protected function casts(): array
     {
         return [
-            'value_num' => 'decimal:3',
             'confidence' => 'integer',
         ];
     }

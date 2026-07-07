@@ -249,8 +249,8 @@ class ClassificationResponseValidatorTest extends TestCase
                     'confidence' => 90,
                     'attributes' => [
                         [
-                            'key' => 'portata_lmin',
-                            'value_num' => 12.5,
+                            'key' => 'portata',
+                            'value' => '12.5',
                             'unit' => 'L/min',
                             'confidence' => 88,
                         ],
@@ -264,12 +264,99 @@ class ClassificationResponseValidatorTest extends TestCase
         $attributes = $validated->for('ABC-001')?->attributes;
 
         $this->assertSame([
-            'portata_lmin' => [
+            'portata' => [
                 'confidence' => 88,
-                'value_num' => 12.5,
+                'value' => '12.5',
                 'unit' => 'L/min',
             ],
         ], $attributes);
+    }
+
+    public function test_accepts_a_bare_json_number_as_the_attribute_value(): void
+    {
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => null,
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                    'attributes' => [
+                        ['key' => 'portata', 'value' => 12.5, 'unit' => 'L/min', 'confidence' => 88],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
+
+        $this->assertSame('12.5', $result->attributes['portata']['value']);
+    }
+
+    public function test_preserves_a_non_numeric_value_as_plain_text(): void
+    {
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => null,
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                    'attributes' => [
+                        ['key' => 'attacco', 'value' => '1/2', 'unit' => '"', 'confidence' => 80],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
+
+        $this->assertSame('1/2', $result->attributes['attacco']['value']);
+    }
+
+    /**
+     * A reserved key duplicating a field the product already carries outside
+     * `product_attributes` (its article code, description, or taxonomy) must
+     * be dropped on its own rather than rejecting the whole result, and
+     * matched case-insensitively since the AI is free-form on key naming.
+     */
+    public function test_drops_reserved_attribute_keys_without_rejecting_the_rest(): void
+    {
+        $response = $this->claudeResponse([
+            'results' => [
+                [
+                    'codice_articolo' => 'ABC-001',
+                    'brand' => null,
+                    'family' => null,
+                    'subfamily' => null,
+                    'product_type' => null,
+                    'enriched_description' => 'x',
+                    'confidence' => 90,
+                    'attributes' => [
+                        ['key' => 'codice_articolo', 'value' => '0.737.203', 'confidence' => 100],
+                        ['key' => 'Descrizione', 'value' => 'EWE0200 IN RG PROD.ACS', 'confidence' => 100],
+                        ['key' => 'tipo_prodotto', 'value' => 'Scambiatore estraibile', 'confidence' => 100],
+                        ['key' => 'potenza', 'value' => '5', 'unit' => 'kW', 'confidence' => 90],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = (new ClassificationResponseValidator)
+            ->validate($response, collect(['ABC-001']), new TaxonomyCatalog)
+            ->for('ABC-001');
+
+        $this->assertSame(['potenza'], array_keys($result->attributes));
     }
 
     public function test_discards_a_malformed_attribute_entry_without_rejecting_the_whole_result(): void
@@ -286,17 +373,17 @@ class ClassificationResponseValidatorTest extends TestCase
                     'confidence' => 90,
                     'attributes' => [
                         // missing key
-                        ['value_num' => 1, 'confidence' => 90],
+                        ['value' => '1', 'confidence' => 90],
                         // confidence out of range
-                        ['key' => 'materiale', 'value_text' => 'ottone', 'confidence' => 150],
+                        ['key' => 'materiale', 'value' => 'ottone', 'confidence' => 150],
                         // confidence missing
-                        ['key' => 'colore', 'value_text' => 'bianco'],
+                        ['key' => 'colore', 'value' => 'bianco'],
                         // empty key
-                        ['key' => '', 'value_num' => 1, 'confidence' => 90],
+                        ['key' => '', 'value' => '1', 'confidence' => 90],
                         // no value at all
                         ['key' => 'senza_valore', 'confidence' => 90],
                         // the only valid entry
-                        ['key' => 'potenza_kw', 'value_num' => 1.5, 'unit' => 'kW', 'confidence' => 70],
+                        ['key' => 'potenza', 'value' => '1.5', 'unit' => 'kW', 'confidence' => 70],
                     ],
                 ],
             ],
@@ -307,8 +394,8 @@ class ClassificationResponseValidatorTest extends TestCase
             ->for('ABC-001');
 
         $this->assertNotNull($result);
-        $this->assertSame(['potenza_kw'], array_keys($result->attributes));
-        $this->assertSame(70, $result->attributes['potenza_kw']['confidence']);
+        $this->assertSame(['potenza'], array_keys($result->attributes));
+        $this->assertSame(70, $result->attributes['potenza']['confidence']);
     }
 
     public function test_missing_attributes_array_results_in_no_attributes(): void

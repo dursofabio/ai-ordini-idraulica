@@ -88,34 +88,34 @@ class ProductCatalogRelationsTest extends TestCase
         $this->assertDatabaseCount('product_attributes', 0);
     }
 
-    public function test_attributes_can_be_queried_by_key_and_numeric_range(): void
+    public function test_attributes_can_be_queried_by_key_and_value(): void
     {
-        $inRangeA = Product::factory()->create();
-        $inRangeB = Product::factory()->create();
-        $outOfRange = Product::factory()->create();
+        $matchingA = Product::factory()->create();
+        $matchingB = Product::factory()->create();
+        $differentValue = Product::factory()->create();
 
         ProductAttribute::factory()->create([
-            'product_id' => $inRangeA->id, 'key' => 'potenza_kw', 'value_num' => 3.5,
+            'product_id' => $matchingA->id, 'key' => 'potenza_kw', 'value' => '3.5',
         ]);
         ProductAttribute::factory()->create([
-            'product_id' => $inRangeB->id, 'key' => 'potenza_kw', 'value_num' => 5.0,
+            'product_id' => $matchingB->id, 'key' => 'potenza_kw', 'value' => '3.5',
         ]);
         ProductAttribute::factory()->create([
-            'product_id' => $outOfRange->id, 'key' => 'potenza_kw', 'value_num' => 12.0,
+            'product_id' => $differentValue->id, 'key' => 'potenza_kw', 'value' => '12.0',
         ]);
-        // Same range but different key — must be excluded.
+        // Same value but different key — must be excluded.
         ProductAttribute::factory()->create([
-            'product_id' => $outOfRange->id, 'key' => 'capacita_litri', 'value_num' => 4.0,
+            'product_id' => $differentValue->id, 'key' => 'capacita_litri', 'value' => '3.5',
         ]);
 
         $matchedProductIds = ProductAttribute::query()
             ->where('key', 'potenza_kw')
-            ->whereBetween('value_num', [2, 6])
+            ->where('value', '3.5')
             ->pluck('product_id')
             ->all();
 
         $this->assertEqualsCanonicalizing(
-            [$inRangeA->id, $inRangeB->id],
+            [$matchingA->id, $matchingB->id],
             $matchedProductIds,
         );
     }

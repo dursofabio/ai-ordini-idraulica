@@ -21,8 +21,7 @@ class ProductAttributeFactory extends Factory
         return [
             'product_id' => Product::factory(),
             'key' => fake()->randomElement(['potenza_kw', 'capacita_litri', 'materiale']),
-            'value_num' => fake()->randomFloat(3, 1, 100),
-            'value_text' => null,
+            'value' => (string) fake()->randomFloat(3, 1, 100),
             'unit' => fake()->randomElement(['kW', 'L', 'mm']),
             'source' => fake()->randomElement(['regex', 'ai']),
             'confidence' => null,

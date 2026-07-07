@@ -9,9 +9,9 @@ namespace App\Services\Ai;
 final readonly class ClassifiedProduct
 {
     /**
-     * @param  array<string, array{value_num?: float, value_text?: string, unit?: string, confidence: int}>  $attributes
-     *                                                                                                                    Proposed technical attributes, keyed by free-form attribute key (not limited to the
-     *                                                                                                                    regex-known key list). Each entry carries its own confidence (0-100).
+     * @param  array<string, array{value: string, unit?: string, confidence: int}>  $attributes
+     *                                                                                           Proposed technical attributes, keyed by free-form attribute key (not limited to the
+     *                                                                                           regex-known key list). Each entry carries its own confidence (0-100).
      */
     public function __construct(
         public string $codiceArticolo,

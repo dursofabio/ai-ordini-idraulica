@@ -13,9 +13,9 @@ use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
- * US-019 acceptance criteria — structured filters (brand, family, numeric
- * attribute ranges) reduce the result pool before ranking, independently of
- * the free-text/vector search term.
+ * US-019 acceptance criteria — structured filters (brand, family, exact-match
+ * technical attribute) reduce the result pool before ranking, independently
+ * of the free-text/vector search term.
  *
  * US-047 flattens search onto a single `Product` row (no more grouping).
  */
@@ -74,49 +74,20 @@ class SearchServiceFiltersTest extends TestCase
         $this->assertSame($matching->id, $results->first()->product->id);
     }
 
-    public function test_attribute_range_filter_returns_only_products_within_range(): void
-    {
-        $inRange = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $inRange->id,
-            'key' => 'potenza_kw',
-            'value_num' => 2.5,
-        ]);
-
-        $outOfRange = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $outOfRange->id,
-            'key' => 'potenza_kw',
-            'value_num' => 10,
-        ]);
-
-        $results = app(SearchService::class)
-            ->search('scaldabagno', [
-                'attributes' => [
-                    ['key' => 'potenza_kw', 'min' => 1, 'max' => 3],
-                ],
-            ]);
-
-        $this->assertCount(1, $results);
-        $this->assertSame($inRange->id, $results->first()->product->id);
-    }
-
     public function test_text_attribute_filter_matches_value_case_insensitively(): void
     {
         $inox = Product::factory()->create();
         ProductAttribute::factory()->create([
             'product_id' => $inox->id,
             'key' => 'materiale',
-            'value_num' => null,
-            'value_text' => 'INOX',
+            'value' => 'INOX',
         ]);
 
         $pvc = Product::factory()->create();
         ProductAttribute::factory()->create([
             'product_id' => $pvc->id,
             'key' => 'materiale',
-            'value_num' => null,
-            'value_text' => 'PVC',
+            'value' => 'PVC',
         ]);
 
         $results = app(SearchService::class)
@@ -128,83 +99,6 @@ class SearchServiceFiltersTest extends TestCase
 
         $this->assertCount(1, $results);
         $this->assertSame($inox->id, $results->first()->product->id);
-    }
-
-    public function test_open_ended_attribute_range_filters_with_only_min_or_only_max(): void
-    {
-        $small = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $small->id,
-            'key' => 'capacita_litri',
-            'value_num' => 80,
-        ]);
-
-        $large = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $large->id,
-            'key' => 'capacita_litri',
-            'value_num' => 300,
-        ]);
-
-        $minOnly = app(SearchService::class)
-            ->search('bollitore', [
-                'attributes' => [
-                    ['key' => 'capacita_litri', 'min' => 100],
-                ],
-            ]);
-
-        $this->assertCount(1, $minOnly);
-        $this->assertSame($large->id, $minOnly->first()->product->id);
-
-        $maxOnly = app(SearchService::class)
-            ->search('bollitore', [
-                'attributes' => [
-                    ['key' => 'capacita_litri', 'max' => 100],
-                ],
-            ]);
-
-        $this->assertCount(1, $maxOnly);
-        $this->assertSame($small->id, $maxOnly->first()->product->id);
-    }
-
-    public function test_text_and_numeric_attribute_filters_combine(): void
-    {
-        $matching = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $matching->id,
-            'key' => 'materiale',
-            'value_num' => null,
-            'value_text' => 'INOX',
-        ]);
-        ProductAttribute::factory()->create([
-            'product_id' => $matching->id,
-            'key' => 'capacita_litri',
-            'value_num' => 200,
-        ]);
-
-        $wrongCapacity = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $wrongCapacity->id,
-            'key' => 'materiale',
-            'value_num' => null,
-            'value_text' => 'INOX',
-        ]);
-        ProductAttribute::factory()->create([
-            'product_id' => $wrongCapacity->id,
-            'key' => 'capacita_litri',
-            'value_num' => 80,
-        ]);
-
-        $results = app(SearchService::class)
-            ->search('bollitore', [
-                'attributes' => [
-                    ['key' => 'materiale', 'value' => 'INOX'],
-                    ['key' => 'capacita_litri', 'min' => 100, 'max' => 500],
-                ],
-            ]);
-
-        $this->assertCount(1, $results);
-        $this->assertSame($matching->id, $results->first()->product->id);
     }
 
     public function test_combined_filters_narrow_the_pool_regardless_of_search_term(): void

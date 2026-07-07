@@ -25,16 +25,16 @@ class AttributeDefinitionSeederTest extends TestCase
     use RequiresDatabase;
 
     private const EXPECTED_KEYS = [
-        'potenza_kw',
-        'capacita_litri',
-        'attacco_pollici',
-        'diametro_nominale',
+        'potenza',
+        'capacita',
+        'attacco',
+        'diametro',
         'pressione_nominale',
-        'pressione_bar',
-        'tensione_volt',
-        'colore_ral',
+        'pressione',
+        'tensione',
+        'colore',
         'materiale',
-        'portata_lmin',
+        'portata',
     ];
 
     public function test_seeds_the_expected_canonical_keys(): void
@@ -63,11 +63,11 @@ class AttributeDefinitionSeederTest extends TestCase
         );
     }
 
-    public function test_potenza_kw_accepts_watt_with_conversion_factor(): void
+    public function test_potenza_accepts_watt_with_conversion_factor(): void
     {
         $this->seed(AttributeDefinitionSeeder::class);
 
-        $definition = AttributeDefinition::query()->where('key', 'potenza_kw')->firstOrFail();
+        $definition = AttributeDefinition::query()->where('key', 'potenza')->firstOrFail();
 
         $this->assertSame('kW', $definition->canonical_unit);
         $this->assertSame(0.001, $definition->accepted_units['W']);
@@ -77,7 +77,7 @@ class AttributeDefinitionSeederTest extends TestCase
     {
         $this->seed(AttributeDefinitionSeeder::class);
 
-        foreach (['colore_ral', 'materiale'] as $key) {
+        foreach (['colore', 'materiale'] as $key) {
             $definition = AttributeDefinition::query()->where('key', $key)->firstOrFail();
 
             $this->assertSame('text', $definition->data_type);

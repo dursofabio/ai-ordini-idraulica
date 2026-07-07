@@ -18,8 +18,8 @@ use Tests\TestCase;
  *  - `search.natural_language.enabled = false` makes zero HTTP calls and
  *    falls back to whole-text.
  *  - An AI/validation failure falls back to whole-text without propagating.
- *  - A realistic "tubo inox 1 pollice" response produces `attacco_pollici`
- *    converted to its canonical unit.
+ *  - A realistic "tubo inox" response produces a `materiale` exact-match
+ *    filter and silently drops a numeric attribute mention (not supported).
  *
  * Runs against in-memory SQLite via RequiresDatabase.
  */
@@ -120,26 +120,23 @@ class QueryParserTest extends TestCase
         $this->assertFalse(Cache::has($cacheKey));
     }
 
-    public function test_realistic_response_for_tubo_inox_produces_converted_attacco_pollici_filter(): void
+    public function test_realistic_response_for_tubo_inox_produces_textual_filter_and_drops_numeric_mention(): void
     {
         $this->seed(AttributeDefinitionSeeder::class);
 
         Http::fake([
             '*' => Http::response($this->parseBody('tubo inox', [
-                ['key' => 'attacco_pollici', 'value_num' => 1, 'unit' => 'pollici'],
-                ['key' => 'materiale', 'value_text' => 'inox'],
+                ['key' => 'attacco', 'value' => '1'],
+                ['key' => 'materiale', 'value' => 'inox'],
             ])),
         ]);
 
         $parsed = app(QueryParser::class)->parse('tubo inox 1 pollice');
 
         $this->assertSame('tubo inox', $parsed->recognizedText);
-        $this->assertCount(2, $parsed->appliedFilters);
-
-        $attaccoFilter = collect($parsed->appliedFilters)->firstWhere('key', 'attacco_pollici');
-        $this->assertNotNull($attaccoFilter);
-        $this->assertSame(1.0, $attaccoFilter->min);
-        $this->assertSame(1.0, $attaccoFilter->max);
+        $this->assertCount(1, $parsed->appliedFilters);
+        $this->assertSame('materiale', $parsed->appliedFilters[0]->key);
+        $this->assertSame('inox', $parsed->appliedFilters[0]->value);
     }
 
     /**

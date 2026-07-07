@@ -19,9 +19,6 @@ use Tests\TestCase;
  * US-033 acceptance criteria for the read-only "Ricerca prodotti" page:
  *  - AC3: submitting the form (free text and/or filters) runs the hybrid
  *    search and shows the expected products in the results table.
- *  - AC2: the fixed numeric technical attribute filters (potenza_kw,
- *    diametro_nominale, pressione_nominale) narrow the results to products
- *    with a matching attribute.
  *  - AC1/AC3: brand/family/subfamily filters narrow the results.
  *  - AC4: with no text and no filter set, submitting never calls the search
  *    engine (no embedding HTTP call) and the table shows the guided empty
@@ -124,34 +121,6 @@ class ProductSearchPageTest extends TestCase
             ->assertCanNotSeeTableRecords([$nonMatching]);
     }
 
-    public function test_numeric_attribute_filter_returns_only_products_with_attribute_in_range(): void
-    {
-        $this->actingAs(User::factory()->create());
-
-        $inRange = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $inRange->id,
-            'key' => 'potenza_kw',
-            'value_num' => 2.5,
-        ]);
-
-        $outOfRange = Product::factory()->create();
-        ProductAttribute::factory()->create([
-            'product_id' => $outOfRange->id,
-            'key' => 'potenza_kw',
-            'value_num' => 10,
-        ]);
-
-        Livewire::test(ProductSearch::class)
-            ->fillForm([
-                'potenza_kw_min' => 1,
-                'potenza_kw_max' => 3,
-            ])
-            ->call('search')
-            ->assertCanSeeTableRecords([$inRange])
-            ->assertCanNotSeeTableRecords([$outOfRange]);
-    }
-
     public function test_submitting_with_no_text_and_no_filters_never_calls_search_and_shows_guided_empty_state(): void
     {
         $this->actingAs(User::factory()->create());
@@ -241,11 +210,11 @@ class ProductSearchPageTest extends TestCase
 
         $this->fakeAnthropicConfig();
 
-        AttributeDefinition::query()->updateOrCreate(['key' => 'attacco_pollici'], [
-            'data_type' => 'numeric',
-            'canonical_unit' => '"',
-            'accepted_units' => ['"' => 1, 'POLLICI' => 1, 'IN' => 1],
-            'description' => 'Dimensione dell\'attacco filettato, espressa in pollici (").',
+        AttributeDefinition::query()->updateOrCreate(['key' => 'materiale'], [
+            'data_type' => 'text',
+            'canonical_unit' => null,
+            'accepted_units' => null,
+            'description' => 'Materiale del prodotto.',
         ]);
 
         $matching = Product::factory()->create([
@@ -254,8 +223,8 @@ class ProductSearchPageTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $matching->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 1,
+            'key' => 'materiale',
+            'value' => 'inox',
         ]);
 
         $differentValue = Product::factory()->create([
@@ -264,23 +233,23 @@ class ProductSearchPageTest extends TestCase
         ]);
         ProductAttribute::factory()->create([
             'product_id' => $differentValue->id,
-            'key' => 'attacco_pollici',
-            'value_num' => 2,
+            'key' => 'materiale',
+            'value' => 'plastica',
         ]);
 
         Http::fake([
             'https://embedding.test/*' => Http::response(['embedding' => [0.1, 0.2, 0.3, 0.4]]),
             'https://api.anthropic.test/*' => Http::response($this->anthropicParseBody('tubo inox', [
-                ['key' => 'attacco_pollici', 'value_num' => 1, 'unit' => 'pollici'],
+                ['key' => 'materiale', 'value' => 'inox'],
             ])),
         ]);
 
         Livewire::test(ProductSearch::class)
-            ->fillForm(['query' => 'tubo inox 1 pollice'])
+            ->fillForm(['query' => 'tubo inox'])
             ->call('search')
             ->assertSee('Tipo riconosciuto:')
             ->assertSee('tubo inox')
-            ->assertSee('attacco filettato')
+            ->assertSee('Materiale del prodotto')
             ->assertCanSeeTableRecords([$matching])
             ->assertCanNotSeeTableRecords([$differentValue]);
     }

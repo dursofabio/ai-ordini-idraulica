@@ -26,6 +26,7 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Str;
 
 /**
  * US-041: work queue for individual pending proposals from the
@@ -121,6 +122,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
                         'subfamily' => 'Sottofamiglia',
                         'attribute' => 'Attributo',
                         'product_type' => 'Tipo prodotto',
+                        'descrizione_estesa' => 'Descrizione estesa',
                         'attribute_definition' => 'Nuova chiave attributo',
                     ]),
                 SelectFilter::make('confidence_band')
@@ -239,6 +241,7 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'subfamily' => 'Sottofamiglia',
             'attribute' => "Attributo: {$proposal->attribute_key}",
             'product_type' => 'Tipo prodotto',
+            'descrizione_estesa' => 'Descrizione estesa',
             'attribute_definition' => 'Nuova chiave attributo',
             default => $proposal->field,
         };
@@ -256,7 +259,8 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
             'family' => Family::query()->find($proposal->value_id)?->name ?? '—',
             'subfamily' => Subfamily::query()->find($proposal->value_id)?->name ?? '—',
             'attribute' => self::attributeValueLabel($proposal),
-            'product_type' => $proposal->value_text ?? '—',
+            'product_type' => $proposal->value ?? '—',
+            'descrizione_estesa' => Str::limit($proposal->value ?? '—', 80),
             'attribute_definition' => self::attributeDefinitionValueLabel($proposal),
             default => '—',
         };
@@ -276,16 +280,14 @@ class ReviewQueue extends Page implements HasActions, HasSchemas, HasTable
 
     /**
      * Formats an attribute proposal's value the same way as the technical
-     * attributes shown elsewhere (e.g. {@see ReviewQueueDetail}): the text
-     * value when present, otherwise the trimmed numeric value, plus the unit
-     * when present.
+     * attributes shown elsewhere (e.g. {@see ReviewQueueDetail}): the value
+     * plus the unit when present.
      */
     private static function attributeValueLabel(EnrichmentProposal $proposal): string
     {
-        $value = $proposal->value_text ?? rtrim(rtrim((string) $proposal->value_num, '0'), '.');
         $unit = filled($proposal->unit) ? ' '.$proposal->unit : '';
 
-        return "{$value}{$unit}";
+        return "{$proposal->value}{$unit}";
     }
 
     /**

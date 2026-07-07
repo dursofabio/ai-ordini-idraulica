@@ -45,7 +45,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 3500,
+            'value' => '3500',
             'unit' => 'W',
             'source' => 'regex',
             'confidence' => null,
@@ -57,7 +57,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         $this->assertSame(0, $product->attributes()->where('key', 'potenza_watt')->count());
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->firstOrFail();
-        $this->assertEquals(3.5, $attribute->value_num);
+        $this->assertEquals(3.5, $attribute->value);
         $this->assertSame('kW', $attribute->unit);
         $this->assertSame('regex', $attribute->source);
         $this->assertNull($attribute->confidence);
@@ -69,7 +69,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 3500,
+            'value' => '3500',
             'unit' => 'W',
             'source' => 'ai',
             'confidence' => 90,
@@ -77,7 +77,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 1.0,
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'ai',
             'confidence' => 40,
@@ -90,7 +90,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         $this->assertSame(1, $product->attributes()->where('key', 'potenza_kw')->count());
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->firstOrFail();
-        $this->assertEquals(3.5, $attribute->value_num);
+        $this->assertEquals(3.5, $attribute->value);
         $this->assertSame('kW', $attribute->unit);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(90, $attribute->confidence);
@@ -102,7 +102,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 3500,
+            'value' => '3500',
             'unit' => 'W',
             'source' => 'ai',
             'confidence' => 30,
@@ -110,7 +110,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 1.0,
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'ai',
             'confidence' => 80,
@@ -122,7 +122,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         $this->assertSame(0, $product->attributes()->where('key', 'potenza_watt')->count());
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->firstOrFail();
-        $this->assertEquals(1.0, $attribute->value_num);
+        $this->assertEquals(1.0, $attribute->value);
         $this->assertSame('kW', $attribute->unit);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(80, $attribute->confidence);
@@ -135,7 +135,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 2000,
+            'value' => '2000',
             'unit' => 'W',
             'source' => 'regex',
             'confidence' => null,
@@ -143,7 +143,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 1.0,
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'ai',
             'confidence' => 10,
@@ -152,7 +152,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         $this->migrator->migrate('potenza_watt', 'potenza_kw', 0.001, 'kW');
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->firstOrFail();
-        $this->assertEquals(2.0, $attribute->value_num);
+        $this->assertEquals(2.0, $attribute->value);
         $this->assertSame('regex', $attribute->source);
     }
 
@@ -163,7 +163,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 2000,
+            'value' => '2000',
             'unit' => 'W',
             'source' => 'ai',
             'confidence' => null,
@@ -171,7 +171,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 1.0,
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'ai',
             'confidence' => 1,
@@ -180,7 +180,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         $this->migrator->migrate('potenza_watt', 'potenza_kw', 0.001, 'kW');
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->firstOrFail();
-        $this->assertEquals(1.0, $attribute->value_num);
+        $this->assertEquals(1.0, $attribute->value);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(1, $attribute->confidence);
     }
@@ -191,7 +191,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 3500,
+            'value' => '3500',
             'unit' => 'W',
             'source' => 'ai',
             'confidence' => 50,
@@ -199,7 +199,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 1.0,
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'ai',
             'confidence' => 50,
@@ -208,7 +208,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         $this->migrator->migrate('potenza_watt', 'potenza_kw', 0.001, 'kW');
 
         $attribute = $product->attributes()->where('key', 'potenza_kw')->firstOrFail();
-        $this->assertEquals(1.0, $attribute->value_num);
+        $this->assertEquals(1.0, $attribute->value);
     }
 
     public function test_rows_already_canonical_and_other_keys_are_untouched(): void
@@ -217,7 +217,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 5.0,
+            'value' => '5.0',
             'unit' => 'kW',
             'source' => 'regex',
             'confidence' => null,
@@ -225,15 +225,15 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'materiale',
-            'value_text' => 'INOX',
+            'value' => 'INOX',
             'source' => 'regex',
         ]);
 
         $migrated = $this->migrator->migrate('potenza_watt', 'potenza_kw', 0.001, 'kW');
 
         $this->assertSame(0, $migrated);
-        $this->assertEquals(5.0, $product->attributes()->where('key', 'potenza_kw')->firstOrFail()->value_num);
-        $this->assertSame('INOX', $product->attributes()->where('key', 'materiale')->firstOrFail()->value_text);
+        $this->assertEquals(5.0, $product->attributes()->where('key', 'potenza_kw')->firstOrFail()->value);
+        $this->assertSame('INOX', $product->attributes()->where('key', 'materiale')->firstOrFail()->value);
     }
 
     public function test_migration_is_idempotent(): void
@@ -242,7 +242,7 @@ class LegacyAttributeKeyMigratorTest extends TestCase
         ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_watt',
-            'value_num' => 3500,
+            'value' => '3500',
             'unit' => 'W',
             'source' => 'regex',
             'confidence' => null,

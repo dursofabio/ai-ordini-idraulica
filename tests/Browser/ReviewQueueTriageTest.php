@@ -61,8 +61,6 @@ class ReviewQueueTriageTest extends DuskTestCase
             'field' => 'brand',
             'attribute_key' => null,
             'value_id' => $aiBrand->id,
-            'value_num' => null,
-            'value_text' => null,
             'unit' => null,
             'origin' => 'ai',
             'confidence' => 70,
@@ -84,8 +82,6 @@ class ReviewQueueTriageTest extends DuskTestCase
             'field' => 'family',
             'attribute_key' => null,
             'value_id' => $aiFamily->id,
-            'value_num' => null,
-            'value_text' => null,
             'unit' => null,
             'origin' => 'ai',
             'confidence' => 50,
@@ -96,8 +92,7 @@ class ReviewQueueTriageTest extends DuskTestCase
             'field' => 'attribute',
             'attribute_key' => 'kW',
             'value_id' => null,
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'origin' => 'regex',
             'confidence' => 40,
@@ -114,8 +109,7 @@ class ReviewQueueTriageTest extends DuskTestCase
             'field' => 'attribute',
             'attribute_key' => 'Materiale',
             'value_id' => null,
-            'value_num' => null,
-            'value_text' => 'Ottone',
+            'value' => 'Ottone',
             'unit' => null,
             'origin' => 'dictionary',
             'confidence' => 20,
@@ -276,8 +270,6 @@ class ReviewQueueTriageTest extends DuskTestCase
                 'field' => 'brand',
                 'attribute_key' => null,
                 'value_id' => $aiBrand->id,
-                'value_num' => null,
-                'value_text' => null,
                 'unit' => null,
                 'origin' => 'ai',
                 'confidence' => 65,
@@ -292,8 +284,6 @@ class ReviewQueueTriageTest extends DuskTestCase
                 'field' => 'brand',
                 'attribute_key' => null,
                 'value_id' => $aiBrand->id,
-                'value_num' => null,
-                'value_text' => null,
                 'unit' => null,
                 'origin' => 'file',
                 'confidence' => 68,
@@ -308,8 +298,7 @@ class ReviewQueueTriageTest extends DuskTestCase
                 'field' => 'attribute',
                 'attribute_key' => 'DN',
                 'value_id' => null,
-                'value_num' => 25,
-                'value_text' => null,
+                'value' => '25',
                 'unit' => 'mm',
                 'origin' => 'regex',
                 'confidence' => 25,
@@ -324,8 +313,7 @@ class ReviewQueueTriageTest extends DuskTestCase
                 'field' => 'attribute',
                 'attribute_key' => 'DN',
                 'value_id' => null,
-                'value_num' => 32,
-                'value_text' => null,
+                'value' => '32',
                 'unit' => 'mm',
                 'origin' => 'regex',
                 'confidence' => 35,
@@ -465,8 +453,8 @@ class ReviewQueueTriageTest extends DuskTestCase
                 ->waitForText('Correggi')
                 ->screenshot('18-attribute-definition-correct-modal-open');
 
-            $browser->waitFor('#mountedActionSchema0\\.value_text')
-                ->type('#mountedActionSchema0\\.value_text', 'Pressione di esercizio nominale')
+            $browser->waitFor('#mountedActionSchema0\\.value')
+                ->type('#mountedActionSchema0\\.value', 'Pressione di esercizio nominale')
                 ->pause(400)
                 ->screenshot('19-attribute-definition-description-filled');
 

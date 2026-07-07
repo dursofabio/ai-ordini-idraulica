@@ -32,8 +32,7 @@ class EnrichmentProposalTriage
     {
         $this->writeProposalValue($proposal, $proposal->origin, [
             'value_id' => $proposal->value_id,
-            'value_text' => $proposal->value_text,
-            'value_num' => $proposal->value_num,
+            'value' => $proposal->value,
             'unit' => $proposal->unit,
             'attribute_key' => $proposal->attribute_key,
             'data_type' => $proposal->data_type,
@@ -46,14 +45,13 @@ class EnrichmentProposalTriage
      * Writes the admin-submitted value to the product with
      * `source = 'manual'`, then marks the proposal `applied`.
      *
-     * @param  array{value_id?: ?int, value_text?: ?string, value_num?: ?float, unit?: ?string, attribute_key?: ?string, data_type?: ?string}  $data
+     * @param  array{value_id?: ?int, value?: ?string, unit?: ?string, attribute_key?: ?string, data_type?: ?string}  $data
      */
     public function correct(EnrichmentProposal $proposal, array $data): void
     {
         $this->writeProposalValue($proposal, 'manual', [
             'value_id' => $data['value_id'] ?? null,
-            'value_text' => $data['value_text'] ?? null,
-            'value_num' => $data['value_num'] ?? null,
+            'value' => $data['value'] ?? null,
             'unit' => $data['unit'] ?? null,
             'attribute_key' => $data['attribute_key'] ?? null,
             'data_type' => $data['data_type'] ?? null,
@@ -86,9 +84,11 @@ class EnrichmentProposalTriage
      * (US-044 AC3) doesn't touch the product at all: it creates the new
      * `AttributeDefinition` registry row instead, via `firstOrCreate` on the
      * key so an already-registered key (e.g. approved from a concurrent
-     * duplicate proposal) is not re-created or errored on.
+     * duplicate proposal) is not re-created or errored on. `descrizione_estesa`
+     * (US-051) behaves like `product_type`: no `_id`/`_source` columns, the
+     * markdown text is written directly onto the `descrizione_estesa` column.
      *
-     * @param  array{value_id: ?int, value_text: ?string, value_num: ?float, unit: ?string, attribute_key?: ?string, data_type?: ?string}  $values
+     * @param  array{value_id: ?int, value: ?string, unit: ?string, attribute_key?: ?string, data_type?: ?string}  $values
      */
     private function writeProposalValue(EnrichmentProposal $proposal, string $source, array $values, ?int $confidence = null): void
     {
@@ -98,7 +98,7 @@ class EnrichmentProposalTriage
                 [
                     'data_type' => $values['data_type'],
                     'canonical_unit' => $values['unit'],
-                    'description' => $values['value_text'],
+                    'description' => $values['value'],
                 ],
             );
 
@@ -109,8 +109,7 @@ class EnrichmentProposalTriage
             $proposal->product->attributes()->updateOrCreate(
                 ['key' => $proposal->attribute_key],
                 [
-                    'value_text' => $values['value_text'],
-                    'value_num' => $values['value_num'],
+                    'value' => $values['value'],
                     'unit' => $values['unit'],
                     'source' => $source,
                     'confidence' => $confidence,
@@ -122,7 +121,15 @@ class EnrichmentProposalTriage
 
         if ($proposal->field === 'product_type') {
             $proposal->product->update([
-                'product_type' => $values['value_text'],
+                'product_type' => $values['value'],
+            ]);
+
+            return;
+        }
+
+        if ($proposal->field === 'descrizione_estesa') {
+            $proposal->product->update([
+                'descrizione_estesa' => $values['value'],
             ]);
 
             return;

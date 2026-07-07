@@ -23,8 +23,7 @@ class EnrichmentProposalFactory extends Factory
             'field' => fake()->randomElement(['brand', 'family', 'subfamily', 'attribute']),
             'attribute_key' => null,
             'value_id' => null,
-            'value_num' => null,
-            'value_text' => null,
+            'value' => null,
             'unit' => null,
             'data_type' => null,
             'origin' => fake()->randomElement(['file', 'regex', 'dictionary', 'propagated', 'ai']),
@@ -37,8 +36,8 @@ class EnrichmentProposalFactory extends Factory
      * US-044: a proposal for a new attribute-definition registry entry, with
      * the columns reused by this proposal type — `attribute_key` (the
      * proposed key), `data_type`, `unit` (the proposed canonical unit) —
-     * populated, and `value_id`/`value_num` left null (`value_text` carries
-     * the proposed description, initially null until a reviewer fills it in).
+     * populated, and `value_id` left null (`value` carries the proposed
+     * description, initially null until a reviewer fills it in).
      */
     public function attributeDefinition(): static
     {
@@ -46,8 +45,7 @@ class EnrichmentProposalFactory extends Factory
             'field' => 'attribute_definition',
             'attribute_key' => fake()->unique()->word(),
             'value_id' => null,
-            'value_num' => null,
-            'value_text' => null,
+            'value' => null,
             'unit' => null,
             'data_type' => 'numeric',
             'origin' => 'ai',

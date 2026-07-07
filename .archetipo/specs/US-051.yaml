@@ -1,0 +1,35 @@
+schema: archetipo/spec/v2
+code: US-051
+title: Azione AI di arricchimento approfondito con descrizione estesa e scheda tecnica
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: HIGH
+points: 5
+status: REVIEW
+blocked_by:
+  - US-050
+scope: MVP
+body: |-
+  #### US-051: Azione AI di arricchimento approfondito con descrizione estesa e scheda tecnica
+
+  **Epica:** EP-004 | **Priorità:** HIGH | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-050
+
+  **User Story**
+  Come operatore del catalogo,
+  voglio un tasto azione sulla pagina del singolo prodotto che chiede all'AI di generare la descrizione estesa e l'elenco completo delle caratteristiche tecniche,
+  così da ottenere una scheda tecnica dettagliata senza inserimento manuale.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'operatore preme "Arricchisci con AI" su un prodotto, il job viene accodato e al termine trova nella coda di revisione le proposte di descrizione estesa e di attributi tecnici; confermandole, il prodotto risulta arricchito.
+
+  **Criteri di Accettazione**
+  - [ ] La pagina prodotto espone un'azione che accoda un job di arricchimento approfondito per quel singolo prodotto, con notifica di avvenuto accodamento
+  - [ ] Il job usa il client AI configurato e produce output strutturato: descrizione estesa in markdown e lista di caratteristiche tecniche ancorate al registro attributi (chiavi esistenti, o proposta di nuove chiavi secondo il flusso già previsto)
+  - [ ] I risultati sono registrati come proposte di arricchimento con confidenza e passano dalla coda di revisione esistente; la conferma applica descrizione estesa e attributi al prodotto
+  - [ ] Ogni esecuzione è tracciata negli enrichment log (token, costo) e rispetta il tetto di spesa AI
+  - [ ] Se il job fallisce, lo stato è segnalato sul prodotto e i dati esistenti restano intatti
+  - [ ] Con dati di partenza minimi (solo codice e descrizione di listino) l'AI dichiara bassa confidenza invece di inventare caratteristiche
+
+  *Nota (fuori scope, considerazione futura): descrizione estesa e attributi arricchiti potranno essere inclusi nel testo di embedding e nella ricerca — da valutare in una spec dedicata.*

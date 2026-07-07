@@ -139,14 +139,36 @@ class ClassificationResponseValidator
     }
 
     /**
+     * Attribute keys that must never be accepted, because they duplicate a
+     * field the product already carries outside `product_attributes` — its
+     * article code, description, or taxonomy — proposing one of these as a
+     * technical attribute would let a reviewer overwrite those fields
+     * through the attribute-proposal pipeline instead of the dedicated one.
+     * Matched case-insensitively since the AI is free-form on key naming.
+     */
+    private const RESERVED_ATTRIBUTE_KEYS = [
+        'codice_articolo',
+        'descrizione',
+        'descrizione_estesa',
+        'tipo_prodotto',
+        'product_type',
+        'marca',
+        'brand',
+        'famiglia',
+        'family',
+        'sottofamiglia',
+        'subfamily',
+    ];
+
+    /**
      * Parses the optional per-result "attributes" array with free-form,
      * non-taxonomy-bound keys. Unlike brand/family/subfamily, a malformed
-     * attribute entry (missing/empty key, non-numeric or out-of-range
-     * confidence, or no value_num/value_text at all) is silently dropped
+     * attribute entry (missing/empty key, a reserved key, non-numeric or
+     * out-of-range confidence, or no value at all) is silently dropped
      * instead of invalidating the whole classification result — a bad
      * attribute proposal shouldn't cost the product its brand/family match.
      *
-     * @return array<string, array{value_num?: float, value_text?: string, unit?: string, confidence: int}>
+     * @return array<string, array{value: string, unit?: string, confidence: int}>
      */
     private function parseAttributes(mixed $item): array
     {
@@ -169,28 +191,29 @@ class ClassificationResponseValidator
                 continue;
             }
 
+            $key = trim($key);
+
+            if (in_array(strtolower($key), self::RESERVED_ATTRIBUTE_KEYS, true)) {
+                Log::warning('Attributo con chiave riservata scartato dalla classificazione AI.', [
+                    'key' => $key,
+                ]);
+
+                continue;
+            }
+
             $confidence = $rawAttribute['confidence'] ?? null;
 
             if (! is_numeric($confidence) || (int) $confidence < 0 || (int) $confidence > 100) {
                 continue;
             }
 
-            $valueNum = $rawAttribute['value_num'] ?? null;
-            $valueText = $this->nullableString($rawAttribute['value_text'] ?? null);
+            $value = $this->attributeValueToString($rawAttribute['value'] ?? null);
 
-            if (! is_numeric($valueNum) && $valueText === null) {
+            if ($value === null) {
                 continue;
             }
 
-            $attribute = ['confidence' => (int) $confidence];
-
-            if (is_numeric($valueNum)) {
-                $attribute['value_num'] = (float) $valueNum;
-            }
-
-            if ($valueText !== null) {
-                $attribute['value_text'] = $valueText;
-            }
+            $attribute = ['confidence' => (int) $confidence, 'value' => $value];
 
             $unit = $this->nullableString($rawAttribute['unit'] ?? null);
 
@@ -198,7 +221,7 @@ class ClassificationResponseValidator
                 $attribute['unit'] = $unit;
             }
 
-            $attributes[trim($key)] = $attribute;
+            $attributes[$key] = $attribute;
         }
 
         return $attributes;
@@ -232,5 +255,22 @@ class ClassificationResponseValidator
         $trimmed = trim($value);
 
         return $trimmed === '' ? null : $trimmed;
+    }
+
+    /**
+     * The prompt asks for `value` as a JSON string, but tolerates the model
+     * emitting a bare JSON number instead of following that instruction.
+     */
+    private function attributeValueToString(mixed $value): ?string
+    {
+        if (is_string($value)) {
+            return $this->nullableString($value);
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        return null;
     }
 }

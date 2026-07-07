@@ -33,8 +33,7 @@ class EnrichmentProposalRecorder
         ?int $confidence = null,
         ?string $attributeKey = null,
         ?int $valueId = null,
-        ?float $valueNum = null,
-        ?string $valueText = null,
+        ?string $value = null,
         ?string $unit = null,
         ?string $dataType = null,
     ): EnrichmentProposal {
@@ -42,8 +41,7 @@ class EnrichmentProposalRecorder
             'field' => $field,
             'attribute_key' => $attributeKey,
             'value_id' => $valueId,
-            'value_num' => $valueNum,
-            'value_text' => $valueText,
+            'value' => $value,
             'unit' => $unit,
             'data_type' => $dataType,
             'origin' => $origin,
@@ -59,8 +57,8 @@ class EnrichmentProposalRecorder
      *
      * Each row must already contain `product_id`, `field`, `origin`, and
      * `status`, and MAY contain `confidence`, `attribute_key`, `value_id`,
-     * `value_num`, `value_text`, `unit`. Missing optional keys are filled
-     * with `null` and `created_at`/`updated_at` are stamped with `now()`.
+     * `value`, `unit`. Missing optional keys are filled with `null` and
+     * `created_at`/`updated_at` are stamped with `now()`.
      *
      * @param  array<int, array<string, mixed>>  $rows
      */
@@ -78,8 +76,7 @@ class EnrichmentProposalRecorder
                 'field' => $row['field'],
                 'attribute_key' => $row['attribute_key'] ?? null,
                 'value_id' => $row['value_id'] ?? null,
-                'value_num' => $row['value_num'] ?? null,
-                'value_text' => $row['value_text'] ?? null,
+                'value' => $row['value'] ?? null,
                 'unit' => $row['unit'] ?? null,
                 'origin' => $row['origin'],
                 'confidence' => $row['confidence'] ?? null,
@@ -109,14 +106,14 @@ class EnrichmentProposalRecorder
      * proposal is a decision about that one occurrence, not a permanent ban
      * on the key ever being proposed again.
      *
-     * `data_type` is inferred deterministically from which of
-     * `value_num`/`value_text` the AI populated for this attribute — no
-     * extra AI call. `unit` is kept exactly as read (unconverted, there is no
-     * registry entry yet to convert against). `value_text` is left `null`:
-     * the proposed description is filled in later by the reviewer, not by
-     * the AI (US-044 assumption).
+     * `data_type` is inferred deterministically from whether the AI's
+     * reported value for this attribute looks numeric — no extra AI call.
+     * `unit` is kept exactly as read (unconverted, there is no registry
+     * entry yet to convert against). `value` is left `null`: the proposed
+     * description is filled in later by the reviewer, not by the AI (US-044
+     * assumption).
      *
-     * @param  array{value_num?: float, value_text?: string, unit?: string, confidence: int}  $attribute
+     * @param  array{value?: string, unit?: string, confidence: int}  $attribute
      */
     public function recordAttributeDefinitionProposal(Product $product, string $key, array $attribute): void
     {
@@ -130,9 +127,7 @@ class EnrichmentProposalRecorder
             return;
         }
 
-        $dataType = array_key_exists('value_num', $attribute) && $attribute['value_num'] !== null
-            ? 'numeric'
-            : 'text';
+        $dataType = is_numeric($attribute['value'] ?? null) ? 'numeric' : 'text';
 
         $this->record(
             product: $product,

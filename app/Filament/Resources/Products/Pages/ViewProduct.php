@@ -23,6 +23,7 @@ class ViewProduct extends ViewRecord
         return [
             ProductEnrichmentActions::relaunchDeterministicEnrichment(),
             ProductEnrichmentActions::relaunchAiClassification(),
+            ProductEnrichmentActions::deepEnrichWithAi(),
             ProductEnrichmentActions::regenerateEmbedding(),
         ];
     }

@@ -1,0 +1,31 @@
+schema: archetipo/spec/v2
+code: US-052
+title: Ricerca web come fonte dell'arricchimento approfondito
+epic:
+  code: EP-004
+  title: Arricchimento AI
+priority: MEDIUM
+points: 5
+status: TODO
+blocked_by:
+  - US-051
+scope: MVP
+body: |-
+  #### US-052: Ricerca web come fonte dell'arricchimento approfondito
+
+  **Epica:** EP-004 | **Priorità:** MEDIUM | **Punti:** 5 | **Stato:** TODO
+  **Bloccata da:** US-051
+
+  **User Story**
+  Come operatore del catalogo,
+  voglio che l'azione di arricchimento approfondito possa consultare il web per reperire la scheda tecnica ufficiale del prodotto,
+  così da ottenere caratteristiche verificate anche quando i dati di listino non bastano alla conoscenza del modello.
+
+  **Dimostra**
+  Dopo aver implementato questa spec, l'operatore lancia l'arricchimento su un prodotto poco documentato e le proposte generate riportano l'URL della fonte web consultata, visibile in coda di revisione.
+
+  **Criteri di Accettazione**
+  - [ ] La ricerca web è attivabile via configurazione (disattiva di default) tramite un provider AI con capacità di browsing
+  - [ ] Le proposte generate a partire da fonti web riportano la fonte (URL) visibile in fase di revisione
+  - [ ] Con ricerca web disattivata o non disponibile, l'azione funziona come in US-051 senza errori
+  - [ ] I costi delle ricerche web sono tracciati negli enrichment log

@@ -11,7 +11,7 @@ use App\Models\ProductAttribute;
  * independently testable.
  *
  * For each `$fromKey` row: if the product has no `$toKey` row yet, the row
- * is converted in place (key, value_num, unit) while preserving `source`
+ * is converted in place (key, value, unit) while preserving `source`
  * and `confidence`. If a `$toKey` row already exists, the row with the
  * higher effective confidence wins — effective confidence is
  * `confidence ?? (source === 'regex' ? 100 : 0)`, and a tie favors the
@@ -24,10 +24,10 @@ use App\Models\ProductAttribute;
 class LegacyAttributeKeyMigrator
 {
     /**
-     * Migrates every `$fromKey` row to `$toKey`, converting `value_num` by
-     * `$factor` and setting `unit` to `$canonicalUnit`. Returns the number
-     * of `$fromKey` rows processed (converted or discarded as a losing
-     * duplicate).
+     * Migrates every `$fromKey` row to `$toKey`, converting the numeric
+     * `value` by `$factor` and setting `unit` to `$canonicalUnit`. Returns
+     * the number of `$fromKey` rows processed (converted or discarded as a
+     * losing duplicate).
      */
     public function migrate(string $fromKey, string $toKey, float $factor, string $canonicalUnit): int
     {
@@ -48,7 +48,7 @@ class LegacyAttributeKeyMigrator
 
     private function migrateRow(ProductAttribute $row, string $toKey, float $factor, string $canonicalUnit): void
     {
-        $convertedValue = $row->value_num !== null ? ((float) $row->value_num) * $factor : null;
+        $convertedValue = is_numeric($row->value) ? self::formatNumericValue(((float) $row->value) * $factor) : null;
 
         $existing = ProductAttribute::query()
             ->where('product_id', $row->product_id)
@@ -58,7 +58,7 @@ class LegacyAttributeKeyMigrator
         if ($existing === null) {
             $row->update([
                 'key' => $toKey,
-                'value_num' => $convertedValue,
+                'value' => $convertedValue,
                 'unit' => $canonicalUnit,
             ]);
 
@@ -67,7 +67,7 @@ class LegacyAttributeKeyMigrator
 
         if ($this->effectiveConfidence($row) > $this->effectiveConfidence($existing)) {
             $existing->update([
-                'value_num' => $convertedValue,
+                'value' => $convertedValue,
                 'unit' => $canonicalUnit,
                 'source' => $row->source,
                 'confidence' => $row->confidence,
@@ -75,6 +75,15 @@ class LegacyAttributeKeyMigrator
         }
 
         $row->delete();
+    }
+
+    /**
+     * Formats a converted canonical value back into the trimmed decimal
+     * string `product_attributes.value` stores (e.g. `12.500` → `12.5`).
+     */
+    private static function formatNumericValue(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 3, '.', ''), '0'), '.');
     }
 
     private function effectiveConfidence(ProductAttribute $attribute): int

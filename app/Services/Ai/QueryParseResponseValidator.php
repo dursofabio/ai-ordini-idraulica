@@ -4,12 +4,9 @@ namespace App\Services\Ai;
 
 use App\Exceptions\InvalidQueryParseResponseException;
 use App\Models\AttributeDefinition;
-use App\Services\Enrichment\AttributeUnitConverter;
-use App\Services\Enrichment\UnknownAttributeUnitException;
 use App\Services\Search\AppliedAttributeFilter;
 use App\Services\Search\ParsedSearchQuery;
 use App\Services\Search\QueryParser;
-use Illuminate\Support\Facades\Log;
 
 /**
  * Parses and validates a query-parse response from the Anthropic Messages
@@ -22,16 +19,13 @@ use Illuminate\Support\Facades\Log;
  * ({@see QueryParser}) can fall back to whole-text
  * search. Individual attribute entries are treated far more leniently
  * (US-048 AC3 — "no invented filter", never "no result at all"): a key
- * outside the registry, or a numeric value in a unit the registry doesn't
- * recognize, silently drops just that one attribute instead of failing the
- * whole parse.
+ * outside the registry silently drops just that one attribute instead of
+ * failing the whole parse. Only textual attributes produce a filter —
+ * numeric attribute filtering is not supported for now (search is being
+ * redesigned), so a numeric registry key is dropped the same way.
  */
 class QueryParseResponseValidator
 {
-    public function __construct(
-        private readonly AttributeUnitConverter $converter = new AttributeUnitConverter,
-    ) {}
-
     /**
      * @throws InvalidQueryParseResponseException
      */
@@ -72,70 +66,25 @@ class QueryParseResponseValidator
 
         $definition = $catalog->find($key);
 
-        if ($definition === null) {
+        if ($definition === null || $definition->data_type !== 'text') {
             return null;
         }
 
-        return $definition->data_type === 'numeric'
-            ? $this->numericFilter($definition, $rawAttribute)
-            : $this->textFilter($definition, $rawAttribute);
-    }
-
-    private function numericFilter(AttributeDefinition $definition, array $rawAttribute): ?AppliedAttributeFilter
-    {
-        $unit = $this->nullableString($rawAttribute['unit'] ?? null);
-        $valueNum = $rawAttribute['value_num'] ?? null;
-        $min = $rawAttribute['min'] ?? null;
-        $max = $rawAttribute['max'] ?? null;
-
-        try {
-            if (is_numeric($valueNum)) {
-                $canonicalValue = $this->converter->convertToCanonical($definition, (float) $valueNum, $unit);
-
-                return new AppliedAttributeFilter(
-                    key: $definition->key,
-                    label: $this->label($definition),
-                    unit: $definition->canonical_unit,
-                    min: $canonicalValue,
-                    max: $canonicalValue,
-                );
-            }
-
-            if (! is_numeric($min) && ! is_numeric($max)) {
-                return null;
-            }
-
-            return new AppliedAttributeFilter(
-                key: $definition->key,
-                label: $this->label($definition),
-                unit: $definition->canonical_unit,
-                min: is_numeric($min) ? $this->converter->convertToCanonical($definition, (float) $min, $unit) : null,
-                max: is_numeric($max) ? $this->converter->convertToCanonical($definition, (float) $max, $unit) : null,
-            );
-        } catch (UnknownAttributeUnitException $e) {
-            Log::warning('Attributo scartato dal parsing query: unità sconosciuta.', [
-                'key' => $definition->key,
-                'unit' => $unit,
-                'exception' => $e->getMessage(),
-            ]);
-
-            return null;
-        }
+        return $this->textFilter($definition, $rawAttribute);
     }
 
     private function textFilter(AttributeDefinition $definition, array $rawAttribute): ?AppliedAttributeFilter
     {
-        $valueText = $this->nullableString($rawAttribute['value_text'] ?? null);
+        $value = $this->nullableString($rawAttribute['value'] ?? null);
 
-        if ($valueText === null) {
+        if ($value === null) {
             return null;
         }
 
         return new AppliedAttributeFilter(
             key: $definition->key,
             label: $this->label($definition),
-            unit: null,
-            value: $valueText,
+            value: $value,
         );
     }
 

@@ -13,12 +13,10 @@ use Tests\TestCase;
 
 /**
  * US-048 TASK-07 — QueryParseResponseValidator matrix:
- *  - A known numeric attribute in a non-canonical unit is converted to the
- *    registry's canonical unit.
  *  - A known textual attribute produces an exact-match filter.
  *  - A key outside the registry is silently dropped (no exception).
- *  - An unconvertible unit drops only that attribute (with a warning),
- *    without failing the whole parse.
+ *  - A numeric registry key is silently dropped (numeric attribute filtering
+ *    isn't supported for now — search is being redesigned).
  *  - Malformed JSON or a response missing "recognized_text" throws
  *    InvalidQueryParseResponseException.
  *
@@ -28,34 +26,6 @@ class QueryParseResponseValidatorTest extends TestCase
 {
     use RefreshDatabase;
     use RequiresDatabase;
-
-    public function test_known_numeric_attribute_in_non_canonical_unit_is_converted(): void
-    {
-        AttributeDefinition::factory()->create([
-            'key' => 'potenza_kw',
-            'data_type' => 'numeric',
-            'canonical_unit' => 'kW',
-            'accepted_units' => ['kW' => 1, 'W' => 0.001],
-        ]);
-
-        $response = $this->claudeResponse([
-            'recognized_text' => 'caldaia',
-            'attributes' => [
-                ['key' => 'potenza_kw', 'value_num' => 3500, 'unit' => 'W'],
-            ],
-        ]);
-
-        $parsed = (new QueryParseResponseValidator)->validate($response, new AttributeDefinitionCatalog);
-
-        $this->assertSame('caldaia', $parsed->recognizedText);
-        $this->assertCount(1, $parsed->appliedFilters);
-
-        $filter = $parsed->appliedFilters[0];
-        $this->assertSame('potenza_kw', $filter->key);
-        $this->assertSame(3.5, $filter->min);
-        $this->assertSame(3.5, $filter->max);
-        $this->assertSame('kW', $filter->unit);
-    }
 
     public function test_known_textual_attribute_produces_exact_match_filter(): void
     {
@@ -69,7 +39,7 @@ class QueryParseResponseValidatorTest extends TestCase
         $response = $this->claudeResponse([
             'recognized_text' => 'tubo',
             'attributes' => [
-                ['key' => 'materiale', 'value_text' => 'inox'],
+                ['key' => 'materiale', 'value' => 'inox'],
             ],
         ]);
 
@@ -87,7 +57,7 @@ class QueryParseResponseValidatorTest extends TestCase
         $response = $this->claudeResponse([
             'recognized_text' => 'tubo particolare',
             'attributes' => [
-                ['key' => 'chiave_inesistente', 'value_text' => 'qualcosa'],
+                ['key' => 'chiave_inesistente', 'value' => 'qualcosa'],
             ],
         ]);
 
@@ -97,7 +67,7 @@ class QueryParseResponseValidatorTest extends TestCase
         $this->assertSame([], $parsed->appliedFilters);
     }
 
-    public function test_unconvertible_unit_drops_only_that_attribute(): void
+    public function test_numeric_registry_key_is_dropped_without_exception(): void
     {
         AttributeDefinition::factory()->create([
             'key' => 'potenza_kw',
@@ -115,8 +85,8 @@ class QueryParseResponseValidatorTest extends TestCase
         $response = $this->claudeResponse([
             'recognized_text' => 'caldaia inox',
             'attributes' => [
-                ['key' => 'potenza_kw', 'value_num' => 10, 'unit' => 'BTU'],
-                ['key' => 'materiale', 'value_text' => 'inox'],
+                ['key' => 'potenza_kw', 'value' => '3500'],
+                ['key' => 'materiale', 'value' => 'inox'],
             ],
         ]);
 

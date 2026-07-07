@@ -13,10 +13,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'step',
     'input',
     'output',
+    'request_payload',
+    'response_payload',
     'confidence',
     'model',
     'tokens_in',
     'tokens_out',
+    'cost',
 ])]
 class EnrichmentLog extends Model
 {
@@ -33,9 +36,12 @@ class EnrichmentLog extends Model
         return [
             'input' => 'array',
             'output' => 'array',
+            'request_payload' => 'array',
+            'response_payload' => 'array',
             'confidence' => 'integer',
             'tokens_in' => 'integer',
             'tokens_out' => 'integer',
+            'cost' => 'decimal:6',
         ];
     }
 

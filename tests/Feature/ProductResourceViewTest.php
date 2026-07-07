@@ -9,6 +9,7 @@ use App\Filament\Resources\Products\RelationManagers\AttributesRelationManager;
 use App\Filament\Resources\Products\RelationManagers\EnrichmentLogsRelationManager;
 use App\Filament\Resources\Products\RelationManagers\EnrichmentProposalsRelationManager;
 use App\Jobs\ClassifyProductsBatchJob;
+use App\Jobs\DeepEnrichProductJob;
 use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\Brand;
@@ -231,7 +232,7 @@ class ProductResourceViewTest extends TestCase
         $attribute = ProductAttribute::factory()->create([
             'product_id' => $product->id,
             'key' => 'potenza_kw',
-            'value_num' => 25,
+            'value' => '25',
             'unit' => 'kW',
         ]);
 
@@ -350,8 +351,7 @@ class ProductResourceViewTest extends TestCase
             'product_id' => $product->id,
             'field' => 'attribute',
             'attribute_key' => 'potenza_kw',
-            'value_text' => null,
-            'value_num' => 1.5,
+            'value' => '1.5',
             'unit' => 'kW',
             'origin' => 'ai',
             'status' => 'pending',
@@ -363,11 +363,10 @@ class ProductResourceViewTest extends TestCase
         ])
             ->mountTableAction('correct', $proposal)
             ->assertTableActionDataSet([
-                'value_text' => null,
-                'value_num' => 1.5,
+                'value' => '1.5',
                 'unit' => 'kW',
             ])
-            ->setTableActionData(['value_num' => 3.2])
+            ->setTableActionData(['value' => '3.2'])
             ->callMountedTableAction()
             ->assertNotified('Correzione salvata');
 
@@ -375,7 +374,7 @@ class ProductResourceViewTest extends TestCase
         $attribute = $product->attributes()->where('key', 'potenza_kw')->first();
 
         $this->assertNotNull($attribute);
-        $this->assertSame('3.200', $attribute->value_num);
+        $this->assertSame('3.2', $attribute->value);
         $this->assertSame('manual', $attribute->source);
         $this->assertSame('applied', $proposal->status);
     }
@@ -395,7 +394,7 @@ class ProductResourceViewTest extends TestCase
             'product_id' => $product->id,
             'field' => 'attribute',
             'attribute_key' => 'potenza_kw',
-            'value_num' => 1.5,
+            'value' => '1.5',
             'unit' => 'kW',
             'status' => 'pending',
         ]);
@@ -411,6 +410,108 @@ class ProductResourceViewTest extends TestCase
 
         $this->assertSame('discarded', $proposal->status);
         $this->assertSame(0, $product->attributes()->count());
+    }
+
+    /**
+     * US-051: the `descrizione_estesa` proposal's value is markdown, so the
+     * "Valore proposto" column must render it (not the raw `#`/`**` source)
+     * — other proposal types keep showing their plain value + unit.
+     */
+    public function test_enrichment_proposals_relation_manager_renders_descrizione_estesa_value_as_markdown(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+        EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'descrizione_estesa',
+            'value' => 'Descrizione **ricca** del prodotto.',
+            'status' => 'pending',
+        ]);
+
+        Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->assertSee('<strong>ricca</strong>', escape: false);
+    }
+
+    /**
+     * A `descrizione_estesa` value longer than the column's preview budget
+     * is truncated in the table — the full text is only reachable via the
+     * "Visualizza" modal action.
+     */
+    public function test_enrichment_proposals_relation_manager_truncates_a_long_descrizione_estesa_value(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+        $longValue = str_repeat('Parola ', 60);
+        EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'descrizione_estesa',
+            'value' => $longValue,
+            'status' => 'pending',
+        ]);
+
+        $html = Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])->html();
+
+        $this->assertStringNotContainsString(trim($longValue), $html);
+    }
+
+    /**
+     * "Visualizza" is only offered on a `descrizione_estesa` proposal —
+     * viewing a plain attribute value in a modal would add nothing.
+     */
+    public function test_enrichment_proposals_relation_manager_view_action_only_visible_for_descrizione_estesa(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create();
+        $descriptionProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'descrizione_estesa',
+            'value' => 'Testo',
+            'status' => 'pending',
+        ]);
+        $attributeProposal = EnrichmentProposal::factory()->create([
+            'product_id' => $product->id,
+            'field' => 'attribute',
+            'attribute_key' => 'potenza_kw',
+            'status' => 'pending',
+        ]);
+
+        Livewire::test(EnrichmentProposalsRelationManager::class, [
+            'ownerRecord' => $product,
+            'pageClass' => ViewProduct::class,
+        ])
+            ->assertActionVisible(TestAction::make('viewDescription')->table($descriptionProposal))
+            ->assertActionHidden(TestAction::make('viewDescription')->table($attributeProposal));
+    }
+
+    /**
+     * The "Visualizza" modal's content is built from the full, untruncated
+     * value — {@see EnrichmentProposalsRelationManager::renderDescriptionMarkdown()}
+     * converts markdown to sanitized HTML, extracted out of the action's
+     * `->modalContent()` closure specifically so this can be asserted
+     * directly: Livewire renders a table action's modal content lazily on
+     * the client, so it never appears in a component's server-rendered test
+     * HTML.
+     */
+    public function test_render_description_markdown_converts_the_full_untruncated_value(): void
+    {
+        $longValue = str_repeat('Parola ', 60).'FINE-TESTO';
+
+        $html = EnrichmentProposalsRelationManager::renderDescriptionMarkdown("# Titolo\n\n**{$longValue}**")->toHtml();
+
+        $this->assertStringContainsString('<h1>Titolo</h1>', $html);
+        $this->assertStringContainsString("<strong>{$longValue}</strong>", $html);
     }
 
     /**
@@ -475,6 +576,45 @@ class ProductResourceViewTest extends TestCase
             ->assertActionDisabled('relaunchAiClassification');
 
         Queue::assertNotPushed(ClassifyProductsBatchJob::class);
+    }
+
+    public function test_view_page_deep_enrich_with_ai_dispatches_job(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'description_raw' => 'CALDAIA A CONDENSAZIONE 25KW',
+        ]);
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->callAction('deepEnrichWithAi')
+            ->assertNotified();
+
+        Queue::assertPushed(
+            DeepEnrichProductJob::class,
+            static fn (DeepEnrichProductJob $job): bool => $job->productId === $product->id,
+        );
+    }
+
+    public function test_view_page_deep_enrich_with_ai_is_disabled_when_description_is_empty(): void
+    {
+        $admin = User::factory()->create();
+        $this->actingAs($admin);
+
+        $product = Product::factory()->create([
+            'description_raw' => '',
+            'description_clean' => null,
+        ]);
+
+        Queue::fake();
+
+        Livewire::test(ViewProduct::class, ['record' => $product->getRouteKey()])
+            ->assertActionDisabled('deepEnrichWithAi');
+
+        Queue::assertNotPushed(DeepEnrichProductJob::class);
     }
 
     public function test_view_page_regenerate_embedding_dispatches_job(): void

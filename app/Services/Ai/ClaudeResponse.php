@@ -19,12 +19,14 @@ final readonly class ClaudeResponse
         public int $tokensIn,
         public int $tokensOut,
         public array $raw,
+        public ?float $cost = null,
     ) {}
 
     /**
      * Build a ClaudeResponse from a raw Anthropic Messages API HTTP response,
      * extracting the first text content block and the input/output token
-     * usage.
+     * usage. The Anthropic API does not report a per-request cost, so `cost`
+     * is always null.
      */
     public static function fromHttpResponse(Response $response): self
     {
@@ -44,7 +46,8 @@ final readonly class ClaudeResponse
     /**
      * Build a ClaudeResponse from a raw OpenRouter (OpenAI-compatible) chat
      * completions HTTP response, extracting the first choice's message
-     * content and the prompt/completion token usage.
+     * content, the prompt/completion token usage, and the actual USD cost
+     * OpenRouter billed for the request (`usage.cost`).
      */
     public static function fromOpenRouterResponse(Response $response): self
     {
@@ -57,6 +60,7 @@ final readonly class ClaudeResponse
             tokensIn: (int) ($body['usage']['prompt_tokens'] ?? 0),
             tokensOut: (int) ($body['usage']['completion_tokens'] ?? 0),
             raw: $body,
+            cost: isset($body['usage']['cost']) ? (float) $body['usage']['cost'] : null,
         );
     }
 }

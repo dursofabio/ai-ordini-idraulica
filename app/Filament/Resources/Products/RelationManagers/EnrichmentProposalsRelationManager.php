@@ -5,9 +5,13 @@ namespace App\Filament\Resources\Products\RelationManagers;
 use App\Filament\Pages\ReviewQueue;
 use App\Filament\Resources\Products\Actions\EnrichmentProposalTriageActions;
 use App\Models\EnrichmentProposal;
+use Filament\Actions\Action;
 use Filament\Resources\RelationManagers\RelationManager;
+use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Support\HtmlString;
+use Illuminate\Support\Str;
 
 /**
  * Lists every proposal (applied/discarded ones included, as an audit trail)
@@ -16,12 +20,26 @@ use Filament\Tables\Table;
  * {@see EnrichmentProposalTriageActions} — on the rows still `pending`, so
  * an admin looking at a product can resolve its open proposals without
  * leaving the page.
+ *
+ * The `descrizione_estesa` proposal's value is markdown (US-051): the
+ * "Valore proposto" column renders it (rather than the raw source) and
+ * truncates it to {@see self::DESCRIPTION_PREVIEW_LENGTH} characters, with
+ * {@see self::viewDescriptionAction()} opening a modal with the full
+ * rendered text for rows too long to skim in the table.
  */
 class EnrichmentProposalsRelationManager extends RelationManager
 {
     protected static string $relationship = 'enrichmentProposals';
 
     protected static ?string $title = 'Proposte di arricchimento';
+
+    /**
+     * Character budget for the "Valore proposto" column preview of a
+     * `descrizione_estesa` proposal, truncated before markdown conversion so
+     * the table row stays scannable — the full text remains one click away
+     * via {@see self::viewDescriptionAction()}.
+     */
+    private const DESCRIPTION_PREVIEW_LENGTH = 150;
 
     public function table(Table $table): Table
     {
@@ -36,16 +54,21 @@ class EnrichmentProposalsRelationManager extends RelationManager
                         'subfamily' => 'Sottofamiglia',
                         'attribute' => "Attributo: {$record->attribute_key}",
                         'product_type' => 'Tipo prodotto',
+                        'descrizione_estesa' => 'Descrizione',
                         'attribute_definition' => 'Nuova chiave attributo',
                         default => $record->field,
                     }),
                 TextColumn::make('value')
                     ->label('Valore proposto')
+                    ->markdown(fn (EnrichmentProposal $record): bool => $record->field === 'descrizione_estesa')
                     ->state(function (EnrichmentProposal $record): string {
-                        $value = $record->value_text ?? rtrim(rtrim((string) $record->value_num, '0'), '.');
+                        if ($record->field === 'descrizione_estesa') {
+                            return Str::limit((string) $record->value, self::DESCRIPTION_PREVIEW_LENGTH);
+                        }
+
                         $unit = filled($record->unit) ? ' '.$record->unit : '';
 
-                        return "{$value}{$unit}";
+                        return "{$record->value}{$unit}";
                     }),
                 TextColumn::make('data_type')
                     ->label('Tipo dato')
@@ -85,10 +108,42 @@ class EnrichmentProposalsRelationManager extends RelationManager
             ->defaultSort('created_at', 'desc')
             ->headerActions([])
             ->recordActions([
+                self::viewDescriptionAction(),
                 EnrichmentProposalTriageActions::confirm(),
                 EnrichmentProposalTriageActions::correct(),
                 EnrichmentProposalTriageActions::discard(),
             ])
             ->toolbarActions([]);
+    }
+
+    /**
+     * Opens a read-only modal with the full rendered markdown of a
+     * `descrizione_estesa` proposal — the "Valore proposto" column only
+     * shows a truncated preview.
+     */
+    private static function viewDescriptionAction(): Action
+    {
+        return Action::make('viewDescription')
+            ->label('Visualizza')
+            ->color('gray')
+            ->icon(Heroicon::OutlinedEye)
+            ->visible(fn (EnrichmentProposal $record): bool => $record->field === 'descrizione_estesa' && filled($record->value))
+            ->modalHeading('Descrizione estesa proposta')
+            ->modalContent(fn (EnrichmentProposal $record): HtmlString => self::renderDescriptionMarkdown($record->value))
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel('Chiudi');
+    }
+
+    /**
+     * Converts a proposal's full, untruncated markdown value to sanitized
+     * HTML for {@see self::viewDescriptionAction()}'s modal. Extracted as
+     * its own method (rather than inlined in the action's `->modalContent()`
+     * closure) so it can be unit-tested directly — Livewire's table-action
+     * modal content is rendered lazily on the client and isn't present in a
+     * component's server-rendered test HTML.
+     */
+    public static function renderDescriptionMarkdown(?string $value): HtmlString
+    {
+        return new HtmlString(Str::sanitizeHtml(Str::markdown((string) $value)));
     }
 }

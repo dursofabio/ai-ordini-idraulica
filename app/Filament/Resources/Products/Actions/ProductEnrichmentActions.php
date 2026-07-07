@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Products\Actions;
 use App\Filament\Resources\Products\Pages\ViewProduct;
 use App\Filament\Resources\Products\Tables\ProductsTable;
 use App\Jobs\ClassifyProductsBatchJob;
+use App\Jobs\DeepEnrichProductJob;
 use App\Jobs\GenerateProductEmbeddingJob;
 use App\Jobs\RunDeterministicEnrichmentJob;
 use App\Models\Product;
@@ -70,6 +71,40 @@ class ProductEnrichmentActions
 
                 Notification::make()
                     ->title('Classificazione AI accodata')
+                    ->success()
+                    ->send();
+            });
+    }
+
+    /**
+     * Queues a deep AI enrichment for a single product via
+     * {@see DeepEnrichProductJob} (US-051): a markdown extended description
+     * plus a full technical fact sheet, recorded as `pending` proposals in
+     * the existing review queue rather than written directly to the product.
+     * Disabled (and defensively guarded in `action()`) when the product has
+     * no description to enrich from, mirroring
+     * {@see self::relaunchAiClassification()}.
+     */
+    public static function deepEnrichWithAi(): Action
+    {
+        return Action::make('deepEnrichWithAi')
+            ->label('Arricchisci con AI')
+            ->icon(Heroicon::OutlinedSparkles)
+            ->disabled(fn (Product $record): bool => ! self::hasDescription($record))
+            ->action(function (Product $record): void {
+                if (! self::hasDescription($record)) {
+                    Notification::make()
+                        ->title('Impossibile arricchire: descrizione mancante')
+                        ->danger()
+                        ->send();
+
+                    return;
+                }
+
+                DeepEnrichProductJob::dispatch($record->id);
+
+                Notification::make()
+                    ->title('Arricchimento AI accodato')
                     ->success()
                     ->send();
             });

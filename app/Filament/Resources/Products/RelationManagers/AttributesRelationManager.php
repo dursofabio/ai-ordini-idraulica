@@ -32,10 +32,9 @@ class AttributesRelationManager extends RelationManager
                 TextColumn::make('value')
                     ->label('Valore')
                     ->state(function (ProductAttribute $record): string {
-                        $value = $record->value_text ?? rtrim(rtrim((string) $record->value_num, '0'), '.');
                         $unit = filled($record->unit) ? ' '.$record->unit : '';
 
-                        return "{$value}{$unit}";
+                        return "{$record->value}{$unit}";
                     }),
                 TextColumn::make('source')
                     ->label('Origine')

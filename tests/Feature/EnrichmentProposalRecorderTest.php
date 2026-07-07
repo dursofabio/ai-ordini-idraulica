@@ -14,7 +14,7 @@ use Tests\TestCase;
  *  - `record()` persists a taxonomy-shaped proposal (brand/family/subfamily)
  *    with `value_id` set and the attribute-only columns left null.
  *  - `record()` persists an attribute-shaped proposal with `attribute_key`,
- *    `value_num`, and `unit` set and `value_id` left null.
+ *    `value`, and `unit` set and `value_id` left null.
  *  - `insertMany()` bulk-inserts multiple rows in one call.
  *
  * Runs against in-memory SQLite via RequiresDatabase, matching the sibling
@@ -52,13 +52,12 @@ class EnrichmentProposalRecorderTest extends TestCase
             'confidence' => 100,
             'value_id' => 5,
             'attribute_key' => null,
-            'value_num' => null,
-            'value_text' => null,
+            'value' => null,
             'unit' => null,
         ]);
     }
 
-    public function test_records_an_attribute_proposal_with_value_num_and_unit(): void
+    public function test_records_an_attribute_proposal_with_value_and_unit(): void
     {
         $product = Product::factory()->create();
 
@@ -69,7 +68,7 @@ class EnrichmentProposalRecorderTest extends TestCase
             status: 'applied',
             confidence: 100,
             attributeKey: 'diametro',
-            valueNum: 32.5,
+            value: '32.5',
             unit: 'mm',
         );
 
@@ -81,7 +80,7 @@ class EnrichmentProposalRecorderTest extends TestCase
             'status' => 'applied',
             'confidence' => 100,
             'attribute_key' => 'diametro',
-            'value_num' => 32.5,
+            'value' => '32.5',
             'unit' => 'mm',
             'value_id' => null,
         ]);
@@ -89,15 +88,15 @@ class EnrichmentProposalRecorderTest extends TestCase
 
     /**
      * US-044 AC1: a first out-of-registry key creates the `attribute_definition`
-     * proposal row with `data_type` inferred as `numeric` (a `value_num` was
-     * present) and `unit` kept as read.
+     * proposal row with `data_type` inferred as `numeric` (the reported value
+     * is numeric) and `unit` kept as read.
      */
     public function test_records_a_numeric_attribute_definition_proposal(): void
     {
         $product = Product::factory()->create();
 
         $this->recorder()->recordAttributeDefinitionProposal($product, 'portata_lmin', [
-            'value_num' => 12.5,
+            'value' => '12.5',
             'unit' => 'l/min',
             'confidence' => 80,
         ]);
@@ -108,7 +107,7 @@ class EnrichmentProposalRecorderTest extends TestCase
             'attribute_key' => 'portata_lmin',
             'data_type' => 'numeric',
             'unit' => 'l/min',
-            'value_text' => null,
+            'value' => null,
             'origin' => 'ai',
             'status' => 'pending',
             'confidence' => 80,
@@ -116,15 +115,14 @@ class EnrichmentProposalRecorderTest extends TestCase
     }
 
     /**
-     * US-044 AC1: a value carried in `value_text` (no `value_num`) infers
-     * `data_type = 'text'`.
+     * US-044 AC1: a non-numeric reported value infers `data_type = 'text'`.
      */
     public function test_records_a_textual_attribute_definition_proposal(): void
     {
         $product = Product::factory()->create();
 
         $this->recorder()->recordAttributeDefinitionProposal($product, 'finitura_superficie', [
-            'value_text' => 'satinata',
+            'value' => 'satinata',
             'confidence' => 75,
         ]);
 
@@ -134,7 +132,7 @@ class EnrichmentProposalRecorderTest extends TestCase
             'attribute_key' => 'finitura_superficie',
             'data_type' => 'text',
             'unit' => null,
-            'value_text' => null,
+            'value' => null,
             'status' => 'pending',
         ]);
     }
@@ -150,12 +148,12 @@ class EnrichmentProposalRecorderTest extends TestCase
 
         $recorder = $this->recorder();
         $recorder->recordAttributeDefinitionProposal($firstProduct, 'portata_lmin', [
-            'value_num' => 12.5,
+            'value' => '12.5',
             'unit' => 'l/min',
             'confidence' => 80,
         ]);
         $recorder->recordAttributeDefinitionProposal($secondProduct, 'portata_lmin', [
-            'value_num' => 9.0,
+            'value' => '9.0',
             'unit' => 'l/min',
             'confidence' => 60,
         ]);
@@ -179,7 +177,7 @@ class EnrichmentProposalRecorderTest extends TestCase
         ]);
 
         $this->recorder()->recordAttributeDefinitionProposal($product, 'portata_lmin', [
-            'value_num' => 12.5,
+            'value' => '12.5',
             'unit' => 'l/min',
             'confidence' => 80,
         ]);

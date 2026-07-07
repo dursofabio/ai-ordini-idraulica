@@ -86,6 +86,34 @@ class OpenRouterClientTest extends TestCase
         $this->assertSame(17, $response->tokensOut);
     }
 
+    public function test_messages_parses_the_reported_cost(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'choices' => [['message' => ['content' => 'ciao']]],
+                'usage' => ['prompt_tokens' => 42, 'completion_tokens' => 17, 'cost' => 0.001234],
+            ]),
+        ]);
+
+        $response = (new OpenRouterClient)->messages(['model' => 'openrouter-test-model', 'messages' => []]);
+
+        $this->assertSame(0.001234, $response->cost);
+    }
+
+    public function test_messages_defaults_cost_to_null_when_usage_omits_it(): void
+    {
+        Http::fake([
+            '*' => Http::response([
+                'choices' => [['message' => ['content' => 'ciao']]],
+                'usage' => ['prompt_tokens' => 42, 'completion_tokens' => 17],
+            ]),
+        ]);
+
+        $response = (new OpenRouterClient)->messages(['model' => 'openrouter-test-model', 'messages' => []]);
+
+        $this->assertNull($response->cost);
+    }
+
     public function test_messages_throws_request_exception_after_retries_on_server_error(): void
     {
         Http::fake([

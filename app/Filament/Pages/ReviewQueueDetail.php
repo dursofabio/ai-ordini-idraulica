@@ -151,11 +151,10 @@ class ReviewQueueDetail extends Page implements HasActions, HasSchemas
                             ->state(function (Product $record): array {
                                 return $record->attributes
                                     ->map(function (ProductAttribute $attribute): string {
-                                        $value = $attribute->value_text ?? rtrim(rtrim((string) $attribute->value_num, '0'), '.');
                                         $unit = filled($attribute->unit) ? ' '.$attribute->unit : '';
                                         $origin = ReviewQueue::originLabel($attribute->source);
 
-                                        return "{$attribute->key}: {$value}{$unit} · {$origin}";
+                                        return "{$attribute->key}: {$attribute->value}{$unit} · {$origin}";
                                     })
                                     ->all();
                             }),
@@ -205,15 +204,12 @@ class ReviewQueueDetail extends Page implements HasActions, HasSchemas
                                 TextInput::make('key')
                                     ->label('Chiave')
                                     ->required(),
-                                TextInput::make('value_text')
-                                    ->label('Valore testuale'),
-                                TextInput::make('value_num')
-                                    ->label('Valore numerico')
-                                    ->numeric(),
+                                TextInput::make('value')
+                                    ->label('Valore'),
                                 TextInput::make('unit')
                                     ->label('Unità'),
                             ])
-                            ->columns(4)
+                            ->columns(3)
                             ->addActionLabel('Aggiungi attributo')
                             // AC4: a brand-new row is a manual override by
                             // definition (it didn't exist before this save).
@@ -230,11 +226,9 @@ class ReviewQueueDetail extends Page implements HasActions, HasSchemas
                             // dictionary/file provenance of every untouched
                             // attribute just because the admin corrected an
                             // unrelated field (e.g. brand). Loose (`!=`)
-                            // comparison mirrors EditProduct's dirty-check,
-                            // since value_num round-trips as a numeric string
-                            // (e.g. "1.5" submitted vs "1.500" stored).
+                            // comparison mirrors EditProduct's dirty-check.
                             ->mutateRelationshipDataBeforeSaveUsing(function (array $data, ProductAttribute $record): array {
-                                $isChanged = collect(['key', 'value_text', 'value_num', 'unit'])
+                                $isChanged = collect(['key', 'value', 'unit'])
                                     ->contains(fn (string $field): bool => ($data[$field] ?? null) != $record->{$field});
 
                                 $data['source'] = $isChanged ? 'manual' : $record->source;

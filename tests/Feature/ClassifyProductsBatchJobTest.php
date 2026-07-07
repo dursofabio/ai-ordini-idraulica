@@ -82,8 +82,8 @@ class ClassifyProductsBatchJobTest extends TestCase
         Queue::fake();
 
         // US-043: attribute extraction is anchored to the registry —
-        // seed the canonical keys the tests below reference (potenza_kw,
-        // portata_lmin) so the applier's registry filter/conversion doesn't
+        // seed the canonical keys the tests below reference (potenza,
+        // portata) so the applier's registry filter/conversion doesn't
         // silently discard them.
         $this->seed(AttributeDefinitionSeeder::class);
 
@@ -132,6 +132,8 @@ class ClassifyProductsBatchJobTest extends TestCase
             $this->assertNotNull($log);
             $this->assertSame('claude-fast-test', $log->model);
             $this->assertSame(90, $log->confidence);
+            $this->assertSame('claude-fast-test', $log->request_payload['model']);
+            $this->assertNotEmpty($log->response_payload['content']);
         }
 
         Http::assertSentCount(1);
@@ -162,6 +164,8 @@ class ClassifyProductsBatchJobTest extends TestCase
             $log = EnrichmentLog::query()->where('product_id', $product->id)->first();
             $this->assertNotNull($log);
             $this->assertNull($log->confidence);
+            $this->assertNotNull($log->request_payload);
+            $this->assertSame('not valid json {{{', $log->response_payload['content'][0]['text']);
         }
     }
 
@@ -219,11 +223,15 @@ class ClassifyProductsBatchJobTest extends TestCase
         $this->assertNotNull($escalatedLog);
         $this->assertSame('claude-smart-test', $escalatedLog->model);
         $this->assertSame(85, $escalatedLog->confidence);
+        $this->assertSame('claude-smart-test', $escalatedLog->request_payload['model']);
+        $this->assertSame($escalationBody, $escalatedLog->response_payload);
 
         $normalLog = EnrichmentLog::query()->where('product_id', $highConfidenceProduct->id)->first();
         $this->assertNotNull($normalLog);
         $this->assertSame('claude-fast-test', $normalLog->model);
         $this->assertSame(95, $normalLog->confidence);
+        $this->assertSame('claude-fast-test', $normalLog->request_payload['model']);
+        $this->assertSame($batchBody, $normalLog->response_payload);
     }
 
     public function test_high_confidence_classification_enriches_the_product(): void
@@ -784,9 +792,8 @@ class ClassifyProductsBatchJobTest extends TestCase
 
         $product = Product::factory()->create(['enrichment_status' => 'pending']);
         ProductAttribute::factory()->for($product)->create([
-            'key' => 'potenza_kw',
-            'value_num' => 1.0,
-            'value_text' => null,
+            'key' => 'potenza',
+            'value' => '1.0',
             'unit' => 'kW',
             'source' => 'regex',
             'confidence' => null,
@@ -798,8 +805,8 @@ class ClassifyProductsBatchJobTest extends TestCase
                 'text' => json_encode([
                     'results' => [
                         $this->resultFor($product, confidence: 90, attributes: [
-                            ['key' => 'potenza_kw', 'value_num' => 1.5, 'unit' => 'kW', 'confidence' => 92],
-                            ['key' => 'portata_lmin', 'value_num' => 12.0, 'unit' => 'L/min', 'confidence' => 88],
+                            ['key' => 'potenza', 'value' => '1.5', 'unit' => 'kW', 'confidence' => 92],
+                            ['key' => 'portata', 'value' => '12.0', 'unit' => 'L/min', 'confidence' => 88],
                         ]),
                     ],
                 ], JSON_UNESCAPED_UNICODE),
@@ -815,15 +822,15 @@ class ClassifyProductsBatchJobTest extends TestCase
             app(ClassificationResponseValidator::class),
         );
 
-        $potenza = $product->attributes()->where('key', 'potenza_kw')->first();
+        $potenza = $product->attributes()->where('key', 'potenza')->first();
         $this->assertNotNull($potenza);
-        $this->assertEquals(1.5, $potenza->value_num);
+        $this->assertEquals(1.5, $potenza->value);
         $this->assertSame('ai', $potenza->source);
         $this->assertSame(92, $potenza->confidence);
 
-        $portata = $product->attributes()->where('key', 'portata_lmin')->first();
+        $portata = $product->attributes()->where('key', 'portata')->first();
         $this->assertNotNull($portata);
-        $this->assertEquals(12.0, $portata->value_num);
+        $this->assertEquals(12.0, $portata->value);
         $this->assertSame('ai', $portata->source);
         $this->assertSame(88, $portata->confidence);
     }
@@ -846,7 +853,7 @@ class ClassifyProductsBatchJobTest extends TestCase
             enrichedDescription: 'Descrizione arricchita cacheata',
             confidence: 92,
             attributes: [
-                'portata_lmin' => ['value_num' => 10.0, 'unit' => 'L/min', 'confidence' => 90],
+                'portata' => ['value' => '10.0', 'unit' => 'L/min', 'confidence' => 90],
             ],
         ));
 
@@ -860,9 +867,9 @@ class ClassifyProductsBatchJobTest extends TestCase
 
         Http::assertNothingSent();
 
-        $attribute = $cachedProduct->attributes()->where('key', 'portata_lmin')->first();
+        $attribute = $cachedProduct->attributes()->where('key', 'portata')->first();
         $this->assertNotNull($attribute);
-        $this->assertEquals(10.0, $attribute->value_num);
+        $this->assertEquals(10.0, $attribute->value);
         $this->assertSame('ai', $attribute->source);
         $this->assertSame(90, $attribute->confidence);
     }
@@ -891,7 +898,7 @@ class ClassifyProductsBatchJobTest extends TestCase
             enrichedDescription: 'Descrizione arricchita cacheata',
             confidence: 92,
             attributes: [
-                'chiave_pre_registro' => ['value_num' => 42.0, 'unit' => 'x', 'confidence' => 90],
+                'chiave_pre_registro' => ['value' => '42.0', 'unit' => 'x', 'confidence' => 90],
             ],
         ));
 
@@ -906,6 +913,15 @@ class ClassifyProductsBatchJobTest extends TestCase
         Http::assertNothingSent();
 
         $this->assertNull($cachedProduct->attributes()->where('key', 'chiave_pre_registro')->first());
+
+        $this->assertDatabaseHas('enrichment_proposals', [
+            'product_id' => $cachedProduct->id,
+            'field' => 'attribute',
+            'attribute_key' => 'chiave_pre_registro',
+            'value' => '42.0',
+            'unit' => 'x',
+            'status' => 'pending',
+        ]);
     }
 
     /**
@@ -926,7 +942,7 @@ class ClassifyProductsBatchJobTest extends TestCase
                 'text' => json_encode([
                     'results' => [
                         $this->resultFor($product, confidence: 90, attributes: [
-                            ['key' => 'potenza_kw', 'value_num' => 3500, 'unit' => 'W', 'confidence' => 92],
+                            ['key' => 'potenza', 'value' => '3500', 'unit' => 'W', 'confidence' => 92],
                         ]),
                     ],
                 ], JSON_UNESCAPED_UNICODE),
@@ -942,9 +958,9 @@ class ClassifyProductsBatchJobTest extends TestCase
             app(ClassificationResponseValidator::class),
         );
 
-        $potenza = $product->attributes()->where('key', 'potenza_kw')->first();
+        $potenza = $product->attributes()->where('key', 'potenza')->first();
         $this->assertNotNull($potenza);
-        $this->assertEquals(3.5, $potenza->value_num);
+        $this->assertEquals(3.5, $potenza->value);
         $this->assertSame('kW', $potenza->unit);
         $this->assertSame('ai', $potenza->source);
         $this->assertSame(92, $potenza->confidence);

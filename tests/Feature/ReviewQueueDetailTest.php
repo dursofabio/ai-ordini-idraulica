@@ -59,8 +59,7 @@ class ReviewQueueDetailTest extends TestCase
         ]);
         $product->attributes()->create([
             'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'source' => 'regex',
         ]);
@@ -151,8 +150,7 @@ class ReviewQueueDetailTest extends TestCase
         $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
         $attribute = $product->attributes()->create([
             'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'source' => 'regex',
         ]);
@@ -164,8 +162,7 @@ class ReviewQueueDetailTest extends TestCase
                 'attributes' => [
                     "record-{$attribute->id}" => [
                         'key' => 'kW',
-                        'value_text' => null,
-                        'value_num' => 3.2,
+                        'value' => '3.2',
                         'unit' => 'kW',
                     ],
                 ],
@@ -174,7 +171,7 @@ class ReviewQueueDetailTest extends TestCase
 
         $attribute->refresh();
 
-        $this->assertSame('3.200', $attribute->value_num);
+        $this->assertSame('3.2', $attribute->value);
         $this->assertSame('manual', $attribute->source);
     }
 
@@ -192,8 +189,7 @@ class ReviewQueueDetailTest extends TestCase
         $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
         $untouchedAttribute = $product->attributes()->create([
             'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'source' => 'regex',
         ]);
@@ -207,7 +203,7 @@ class ReviewQueueDetailTest extends TestCase
         $untouchedAttribute->refresh();
 
         $this->assertSame('regex', $untouchedAttribute->source);
-        $this->assertSame('1.500', $untouchedAttribute->value_num);
+        $this->assertSame('1.5', $untouchedAttribute->value);
     }
 
     public function test_save_persists_a_newly_added_technical_attribute_as_manual(): void
@@ -222,8 +218,7 @@ class ReviewQueueDetailTest extends TestCase
                 'attributes' => [
                     'new-attribute-1' => [
                         'key' => 'Materiale',
-                        'value_text' => 'Ottone',
-                        'value_num' => null,
+                        'value' => 'Ottone',
                         'unit' => null,
                     ],
                 ],
@@ -235,7 +230,7 @@ class ReviewQueueDetailTest extends TestCase
         $this->assertSame(1, $product->attributes()->count());
         $newAttribute = $product->attributes()->first();
         $this->assertSame('Materiale', $newAttribute->key);
-        $this->assertSame('Ottone', $newAttribute->value_text);
+        $this->assertSame('Ottone', $newAttribute->value);
         $this->assertSame('manual', $newAttribute->source);
     }
 
@@ -258,8 +253,7 @@ class ReviewQueueDetailTest extends TestCase
         $product = Product::factory()->create(['enrichment_status' => 'needs_review']);
         $product->attributes()->create([
             'key' => 'kW',
-            'value_num' => 1.5,
-            'value_text' => null,
+            'value' => '1.5',
             'unit' => 'kW',
             'source' => 'regex',
         ]);
@@ -314,7 +308,7 @@ class ReviewQueueDetailTest extends TestCase
         $pendingProductTypeProposal = EnrichmentProposal::factory()->create([
             'product_id' => $product->id,
             'field' => 'product_type',
-            'value_text' => 'Caldaia a condensazione',
+            'value' => 'Caldaia a condensazione',
             'status' => 'pending',
         ]);
 
